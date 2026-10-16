@@ -2429,7 +2429,7 @@ impl kernel::InPlaceModule for SepModule {
                 match profile::detect() {
                     Ok(p) => {
                         if matches!(p.bootstrap, profile::Bootstrap::WarmRegister) {
-                            dt::enable_sep_and_dart()?;
+                            dt::enable_sep_and_dart(p.dart_window)?;
                         }
                     }
                     // Without this the module loads, probes nothing and logs

@@ -127,6 +127,31 @@ pub(crate) enum KeyStore {
     Variant5,
 }
 
+/// The SEP DART DMA window a warm-attach profile programs when the device
+/// tree does not describe it, as `apple,dma-offset` and `apple,dma-range`
+/// cells.
+pub(crate) struct DartWindow {
+    pub(crate) name: &'static str,
+    pub(crate) offset: [u32; 2],
+    pub(crate) range: [u32; 4],
+}
+
+/// IOVAs 0..4 GiB, offset by BIT(40): `[0x100, 0]`. `[0x1, 0]` would be
+/// BIT(32) and miss the page tables.
+const DART_HIGH_ALIAS: DartWindow = DartWindow {
+    name: "offset BIT(40), range 0..4 GiB",
+    offset: [0x100, 0x0],
+    range: [0, 0, 1, 0],
+};
+
+/// The T8112 SEP DART has a 32-bit input aperture, 0x4000 + 0xffff0000, and
+/// no high alias.
+const DART_T8112: DartWindow = DartWindow {
+    name: "no offset, range 0x4000..4 GiB",
+    offset: [0x0, 0x0],
+    range: [0x0, 0x4000, 0x0, 0xffff_0000],
+};
+
 pub(crate) struct PlatformProfile {
     pub(crate) name: &'static str,
     /// Capacity of the boot shared-memory window. The layout is still checked
@@ -143,6 +168,8 @@ pub(crate) struct PlatformProfile {
     pub(crate) dart_range_required: bool,
     /// Whether the SEP DART IOVA window needs a DMA mask wider than 32 bits.
     pub(crate) wide_dma_mask: bool,
+    /// The SEP DART DMA window programmed on warm attach (see [`DartWindow`]).
+    pub(crate) dart_window: &'static DartWindow,
     /// Reserved-memory region holding the SEP firmware image (cold-boot path).
     pub(crate) firmware_region: &'static CStr,
     /// Identity keybag CREATE_KEYBAG field encoding (per-SoC; see [`KeybagCreate`]).
@@ -173,6 +200,7 @@ const T8103: PlatformProfile = PlatformProfile {
     },
     dart_range_required: false,
     wide_dma_mask: false,
+    dart_window: &DART_HIGH_ALIAS,
     firmware_region: c"sepfw",
     // 13.5 identity create: version 2, type 0x400000, parent -1 (the enclave
     // accepts only -1 or <= -10).
@@ -212,6 +240,7 @@ const T6000: PlatformProfile = PlatformProfile {
     },
     dart_range_required: false,
     wide_dma_mask: false,
+    dart_window: &DART_HIGH_ALIAS,
     firmware_region: c"sepfw",
     keybag_create: KeybagCreate {
         variant: T8103.keybag_create.variant,
@@ -244,6 +273,7 @@ const T6020: PlatformProfile = PlatformProfile {
     },
     dart_range_required: true,
     wide_dma_mask: false,
+    dart_window: &DART_HIGH_ALIAS,
     firmware_region: c"sepfw",
     // Proven encoding: the lenient enclave takes the variant in the first word.
     keybag_create: KeybagCreate {
@@ -297,6 +327,7 @@ const T8140: PlatformProfile = PlatformProfile {
     },
     dart_range_required: true,
     wide_dma_mask: true,
+    dart_window: &DART_HIGH_ALIAS,
     firmware_region: c"sepfw",
     // J700 hardware refused the strict encoding and accepted this T6020 form
     // (linux-aurora commit 18165cf1de, 2026-09-19).
@@ -336,6 +367,7 @@ const T8112: PlatformProfile = PlatformProfile {
     },
     dart_range_required: true,
     wide_dma_mask: false,
+    dart_window: &DART_T8112,
     firmware_region: c"sepfw",
     // J415 accepted the 13.5 GET_CAPABILITIES/SET_ENV init but refused the
     // strict CREATE_KEYBAG (mailbox status -1, empty reply), as J700 did;
