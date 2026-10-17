@@ -70,6 +70,12 @@ static unsigned char migratable __ro_after_init;
 static DEFINE_MUTEX(trusted_key_source_lock);
 static bool trusted_key_source_active;
 static struct trusted_key_source *trusted_key_source_registered;
+/*
+ * trusted_key_exit and migratable belong to the built-in source and only
+ * init_trusted() sets them; migratable is read-only after init. A source
+ * registered later keeps its migration policy here, -1 while there is none.
+ */
+static int trusted_key_source_migratable = -1;
 
 /* Defined below; registration needs it before its definition. */
 static int kernel_get_random(unsigned char *key, size_t key_len);
@@ -142,8 +148,7 @@ int register_trusted_key_source(struct trusted_key_source *src)
 	static_call_update(trusted_key_seal, src->ops->seal);
 	static_call_update(trusted_key_unseal, src->ops->unseal);
 	static_call_update(trusted_key_get_random, get_random);
-	trusted_key_exit = src->ops->exit;
-	migratable = src->ops->migratable;
+	WRITE_ONCE(trusted_key_source_migratable, src->ops->migratable);
 	trusted_key_source_active = true;
 	trusted_key_source_registered = src;
 
@@ -174,10 +179,9 @@ void unregister_trusted_key_source(struct trusted_key_source *src)
 	static_call_update(trusted_key_unseal, trusted_key_absent_unseal);
 	static_call_update(trusted_key_get_random, trusted_key_absent_get_random);
 
-	if (trusted_key_exit)
-		trusted_key_exit();
-	trusted_key_exit = NULL;
-	migratable = 0;
+	if (src->ops->exit)
+		src->ops->exit();
+	WRITE_ONCE(trusted_key_source_migratable, -1);
 	trusted_key_source_active = false;
 	trusted_key_source_registered = NULL;
 
@@ -266,6 +270,14 @@ static int datablob_parse(char **datablob, struct trusted_key_payload *p)
 	return ret;
 }
 
+/* The migration policy of the source that seals new keys. */
+static unsigned char trusted_key_migratable(void)
+{
+	int m = READ_ONCE(trusted_key_source_migratable);
+
+	return m < 0 ? migratable : m;
+}
+
 static struct trusted_key_payload *trusted_payload_alloc(struct key *key)
 {
 	struct trusted_key_payload *p = NULL;
@@ -278,7 +290,7 @@ static struct trusted_key_payload *trusted_payload_alloc(struct key *key)
 	if (!p)
 		goto err;
 
-	p->migratable = migratable;
+	p->migratable = trusted_key_migratable();
 err:
 	return p;
 }
