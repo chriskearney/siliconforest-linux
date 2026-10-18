@@ -648,9 +648,14 @@ pub(crate) fn start(
 
     // From here on the firmware is touched: nothing it can reach is freed.
     glue::retain_module();
-    let rtkit = match Rtkit::new(&d, shared, cfg.platform == hw::Platform::AdtWithPmp) {
+    // Full-stack T6030 synthesizes a named mailbox. The maintained T6030
+    // DT instead has one unnamed mailbox, like the other device-tree GPUs.
+    let named_mailbox = cfg.platform == hw::Platform::AdtWithPmp
+        && !cfg!(CONFIG_SILICONFOREST_NATIVE_GPU);
+    let rtkit = match Rtkit::new(&d, shared, named_mailbox) {
         Ok(rtkit) => rtkit,
         Err(e) => {
+            dev_err!(d, "G15: RTKit mailbox initialization failed: {:?}\n", e);
             core::mem::forget(objects);
             return Err(e);
         }
