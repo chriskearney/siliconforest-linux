@@ -16,6 +16,11 @@
 //! enclave's request, the same way a read-only gigalocker does: Touch ID may
 //! then be unavailable, but no other OS's record changes.
 //!
+//! The parameter's default, -1, takes the platform profile's level: 1 on the
+//! M1 and M2 Macs, whose enclave Linux shares with a macOS install, and 0 on
+//! the MacBook Neo, which already holds Linux records from before the list
+//! existed and would otherwise lose write access to them.
+//!
 //! The list entry is made durable before the enclave's write reaches the
 //! gigalocker. A crash between the two leaves an entry for a record that was
 //! never written, which is harmless. It can never leave a Linux record that
@@ -61,6 +66,17 @@ pub(crate) fn decide(level: u8, key: &Key, existed: bool, owned: bool) -> Verdic
         Verdict::Refuse
     } else {
         Verdict::Adopt
+    }
+}
+
+/// The guard level for `xart_guard=param` on a platform whose profile
+/// defaults to `platform`, or `None` for no guard. A negative value takes the
+/// platform's level; a level above 2 is treated as 2, the strictest.
+pub(crate) fn level(param: i8, platform: u8) -> Option<u8> {
+    let level = u8::try_from(param).unwrap_or(platform);
+    match level {
+        0 => None,
+        level => Some(level.min(2)),
     }
 }
 
@@ -433,5 +449,27 @@ mod tests {
         assert_eq!(guard.check(&session(6), false), Ok(()));
         assert_eq!(guard.check(&Key::root(1), true), Ok(()));
         Ok(())
+    }
+
+    #[test]
+    fn the_default_follows_the_platform() {
+        use crate::profile;
+
+        // On where Linux shares the enclave with macOS.
+        assert_eq!(level(-1, profile::T8103.xart_guard), Some(1));
+        assert_eq!(level(-1, profile::T6000.xart_guard), Some(1));
+        assert_eq!(level(-1, profile::T6020.xart_guard), Some(1));
+        assert_eq!(level(-1, profile::T8112.xart_guard), Some(1));
+        // Off on the Neo, whose Linux records predate the list.
+        assert_eq!(level(-1, profile::T8140.xart_guard), None);
+        assert_eq!(level(i8::MIN, 1), Some(1));
+    }
+
+    #[test]
+    fn an_explicit_level_overrides_the_platform() {
+        assert_eq!(level(0, 1), None);
+        assert_eq!(level(1, 0), Some(1));
+        assert_eq!(level(2, 1), Some(2));
+        assert_eq!(level(i8::MAX, 0), Some(2));
     }
 }
