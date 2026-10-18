@@ -123,7 +123,7 @@ pub(crate) mod glue {
         unsafe { asahi_g15_ram_disjoint(start, size) }
     }
 
-    /// The physical range lies entirely in System RAM.
+    /// Every page is valid System RAM and remains reserved from the allocator.
     pub(crate) fn ram_within(start: u64, size: u64) -> bool {
         // SAFETY: Only queries the resource tree.
         unsafe { asahi_g15_ram_within(start, size) }

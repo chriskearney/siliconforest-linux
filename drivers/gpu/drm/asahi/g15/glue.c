@@ -12,6 +12,9 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/overflow.h>
+#include <linux/page-flags.h>
+#include <linux/pfn.h>
 #include <linux/pm_runtime.h>
 #include <linux/soc/apple/pmp-display.h>
 
@@ -108,11 +111,25 @@ bool asahi_g15_dma_coherent(struct device *dev)
 	return dev_is_dma_coherent(dev);
 }
 
-/* The range lies entirely in System RAM (a reserved-memory region the kernel maps). */
+/*
+ * Every page must be valid, System RAM and still reserved from the allocator.
+ * REGION_INTERSECTS alone also accepts RAM mixed with undefined memory holes.
+ */
 bool asahi_g15_ram_within(u64 start, u64 size)
 {
-	return region_intersects(start, size, IORESOURCE_SYSTEM_RAM, IORES_DESC_NONE) ==
-	       REGION_INTERSECTS;
+	u64 end, pa;
+
+	if (!size || !IS_ALIGNED(start, PAGE_SIZE) ||
+	    !IS_ALIGNED(size, PAGE_SIZE) || check_add_overflow(start, size, &end))
+		return false;
+	for (pa = start; pa < end; pa += PAGE_SIZE) {
+		unsigned long pfn = PHYS_PFN(pa);
+
+		if (!pfn_valid(pfn) || !page_is_ram(pfn) ||
+		    !PageReserved(pfn_to_page(pfn)))
+			return false;
+	}
+	return true;
 }
 
 /* The inherited RTKit buffer inside firmware DATA. */

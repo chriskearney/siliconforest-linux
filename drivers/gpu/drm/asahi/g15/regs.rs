@@ -126,6 +126,9 @@ impl Mapping {
             return Err(EINVAL);
         }
         if !super::boot::glue::ram_within(phys, size as u64) {
+            if !super::boot::glue::ram_disjoint(phys, size as u64) {
+                return Err(EINVAL);
+            }
             return Self::write_combined(phys, size);
         }
         // SAFETY: memremap() of System RAM with MEMREMAP_WB returns its existing mapping; the
