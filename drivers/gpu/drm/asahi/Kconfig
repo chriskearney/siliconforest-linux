@@ -33,7 +33,7 @@ config DRM_ASAHI_G15
 	select RUST_FW_LOADER_ABSTRACTIONS
 	help
 	  Support for the G15S GPU of the T6030 MacBook Pros (J514S, J516S)
-	  and the G15C GPU of the T6031 MacBook Pros (J514C, J516C), whose
+	  and the G15C GPU of the T6031 MacBook Pro J516C, whose
 	  firmware (RTKit 2419) the boot loader leaves loaded. Only the
 	  qualified firmware builds are admitted. The T6031 board images are
 	  a firmware file (asahi/t6031-j516c-board.bin), to be built in with
@@ -44,7 +44,9 @@ config DRM_ASAHI_G15
 	  native display is up. The firmware session is retained until
 	  reboot; the module cannot be unloaded once the GPU has started.
 
-	  Say N unless you are bringing up the M3 Pro.
+	  Other T6031 boards require their own measured board profile.
+
+	  Say N unless you are bringing up the M3 Pro or J516C M3 Max.
 
 config DRM_ASAHI_DEBUG_ALLOCATOR
 	bool "Use debug allocator"

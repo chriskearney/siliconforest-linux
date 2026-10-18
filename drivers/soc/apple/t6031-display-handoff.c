@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
 /*
- * T6031 (M3 Max: J514C, J516C) internal display handoff.
+ * T6031 (M3 Max) internal display handoff, admitted on J516C only.
  *
  * The boot loader leaves the internal DCP running with the panel lit. On
  * these boards it describes that state in the device tree without enabling
@@ -261,6 +261,11 @@ static int __init t6031_display_handoff(void)
 
 	if (!apple_pmp_t6031_board())
 		return 0;
+	if (!of_machine_is_compatible("apple,j516c")) {
+		if (t6031_display_enable)
+			pr_warn("native display profile is J516C-only; keeping the boot framebuffer\n");
+		return 0;
+	}
 
 	dcp = t6031_unique("apple,t6031-dcp");
 	display = t6031_unique("apple,t6031-display-subsystem");

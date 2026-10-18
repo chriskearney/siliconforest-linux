@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
 
-//! T6031 (M3 Max, G15C: J514C, J516C) configuration.
+//! T6031 (M3 Max, G15C) configuration, admitted on J516C only.
 //!
 //! One die, four clusters of ten core slots. The firmware is the same RTKit 2419 generation as
 //! the T6030's and the initdata graph keeps the T6030 canonical VAs; what differs is the SoC
@@ -148,7 +148,9 @@ pub(crate) const CONFIG: Config = Config {
             ],
         },
     ],
-    machine: kernel::c_str!("apple,t6031"),
+    // The pinned board images and measured layout belong to the J516C, not
+    // every T6031 board (in particular, not the 14-inch J514C).
+    machine: kernel::c_str!("apple,j516c"),
     platform: super::Platform::DeviceTree,
     layout: &LAYOUT,
     board: super::Board::Blob {
