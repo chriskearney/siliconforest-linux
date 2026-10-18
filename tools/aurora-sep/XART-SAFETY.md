@@ -10,6 +10,39 @@ identity if missing and recover an existing identity without replacing it.
 The historical evidence below records the earlier opt-in deployments and
 does not establish qualification on every supported Mac or APFS layout.
 
+## Other OSes' records: `xart_guard`
+
+The gigalocker is shared by every OS on the Mac, and nothing in a session
+record says which OS wrote it. With `xart_guard=1` the driver lists every
+session record the enclave creates while Linux runs, in
+`/var/lib/aurora-sep-xart-owned.bin`, before the record is written. It then
+refuses to rewrite or delete any session record that was already in the
+gigalocker and is not on that list. `xart_guard=2` also refuses writes to the
+two shared root records. A refused write fails the enclave's request the way
+a read-only gigalocker does: Touch ID may then be unavailable, but no other
+OS's record changes.
+
+The default, `xart_guard=-1`, takes the platform's level:
+
+| Platform | Default |
+| --- | --- |
+| M1 (T8103), M1 Pro/Max (T6000/T6001) | 1 |
+| M2 (T8112), M2 Pro/Max (T6020/T6021) | 1 |
+| MacBook Neo (T8140) | 0 |
+
+The Neo stays at 0 because it already holds Linux records from before the
+list existed, and a guarded boot would treat those as another OS's.
+
+Two cases need a decision on an M1 or M2 Mac:
+
+- On a cold-boot M1-family Mac, creating the identity keybag also rewrites a
+  record from before Linux. The guard refuses that, so Linux
+  cannot create its keybag there unless `options apple_sep xart_guard=0` is
+  set. Set it only once the rewrite has been accepted for that Mac.
+- Records Linux created while the guard was off are not on the list, so a
+  guarded boot refuses them too. A Mac that already used Touch ID with the
+  guard off needs `xart_guard=0` to keep using those records.
+
 ## Earlier deployment policy
 
 The XART `.gl` file occupies APFS-managed storage. Writes require the explicit
