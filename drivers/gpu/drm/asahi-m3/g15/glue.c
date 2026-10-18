@@ -17,6 +17,7 @@
 #include <linux/pfn.h>
 #include <linux/pm_runtime.h>
 #include <linux/soc/apple/pmp-display.h>
+#include <linux/soc/apple/pmp.h>
 
 void asahi_g15_sha256(const u8 *data, size_t len, u8 *out);
 bool asahi_g15_board(void);
@@ -29,6 +30,37 @@ bool asahi_g15_ram_within(u64 start, u64 size);
 unsigned int asahi_g15_memory_mode(u64 start, u64 size);
 void __iomem *asahi_g15_ioremap_wc(u64 start, size_t size);
 bool asahi_g15_dma_coherent(struct device *dev);
+int asahi_g15_pmp_prepare(struct device *dev);
+int asahi_g15_pmp_get(struct device *dev);
+
+/*
+ * Keep a single PMP RTKit owner. The maintained bridge serializes requests,
+ * waits for supplier readiness and acknowledgement, and latches lost replies.
+ * The GPU retains both its module and supplier dependency until reboot.
+ */
+int asahi_g15_pmp_prepare(struct device *dev)
+{
+	if (!asahi_g15_board() || !dev->of_node ||
+	    !of_device_is_compatible(dev->of_node, "apple,agx-t6030"))
+		return -ENODEV;
+#ifdef CONFIG_SILICONFOREST_NATIVE_GPU
+	return apple_pmp_link_device(dev);
+#else
+	return apple_pmp_j514s_gpu_prepare(dev);
+#endif
+}
+
+int asahi_g15_pmp_get(struct device *dev)
+{
+	if (!asahi_g15_board() || !dev->of_node ||
+	    !of_device_is_compatible(dev->of_node, "apple,agx-t6030"))
+		return -ENODEV;
+#ifdef CONFIG_SILICONFOREST_NATIVE_GPU
+	return apple_pmp_set_device_power(0x0f, 5, 1);
+#else
+	return apple_pmp_j514s_gpu_get(dev);
+#endif
+}
 
 /* SHA-256 of the firmware TEXT and the board templates. */
 void asahi_g15_sha256(const u8 *data, size_t len, u8 *out)

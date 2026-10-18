@@ -67,6 +67,8 @@ pub(crate) mod glue {
         fn asahi_g15_memory_mode(start: u64, size: u64) -> u32;
         fn asahi_g15_ioremap_wc(start: u64, size: usize) -> *mut core::ffi::c_void;
         fn asahi_g15_dma_coherent(dev: *mut core::ffi::c_void) -> bool;
+        pub(crate) fn asahi_g15_pmp_prepare(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
+        pub(crate) fn asahi_g15_pmp_get(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
     }
 
     /// SHA-256 (`sha256()`).
@@ -433,7 +435,7 @@ pub(crate) fn admit(
         }
         // Retain the PMP supplier (and its AGX bridge) before any vote.
         // SAFETY: `dev` is the bound GPU device.
-        let ret = unsafe { bindings::apple_pmp_j514s_gpu_prepare(dev.as_raw()) };
+        let ret = unsafe { glue::asahi_g15_pmp_prepare(dev.as_raw().cast()) };
         if ret != 0 {
             let err = Error::from_errno(ret);
             if err != EPROBE_DEFER {
@@ -568,7 +570,7 @@ pub(crate) fn start(
     let d: ARef<device::Device> = shared.dev.clone();
     if cfg.platform == hw::Platform::AdtWithPmp {
         // SAFETY: `d` is the bound GPU device.
-        let ret = unsafe { bindings::apple_pmp_j514s_gpu_get(d.as_raw()) };
+        let ret = unsafe { glue::asahi_g15_pmp_get(d.as_raw().cast()) };
         if ret != 0 {
             dev_err!(d, "PMP AGX vote failed: {}\n", ret);
             return Err(Error::from_errno(ret));

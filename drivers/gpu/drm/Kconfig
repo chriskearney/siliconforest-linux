@@ -304,10 +304,10 @@ source "drivers/gpu/drm/apple/Kconfig"
 endif
 source "drivers/gpu/drm/arm/Kconfig"
 source "drivers/gpu/drm/armada/Kconfig"
-if SILICONFOREST_M3
+if SILICONFOREST_M3 || SILICONFOREST_NATIVE_GPU
 source "drivers/gpu/drm/asahi-m3/Kconfig"
 endif
-if !SILICONFOREST_M3
+if !SILICONFOREST_M3 && !SILICONFOREST_NATIVE_GPU
 source "drivers/gpu/drm/asahi/Kconfig"
 endif
 source "drivers/gpu/drm/aspeed/Kconfig"

@@ -189,15 +189,30 @@ def main():
                         "-o", str(temp / "memory")], check=True)
         memory = subprocess.run([str(temp / "memory")]).returncode
 
+        pmp = []
+        for name in ["prepare", "get"]:
+            start = glue.index("int asahi_g15_pmp_" + name + "(struct device *dev)\n{")
+            end = glue.index("\n}", start) + 2
+            pmp.append(glue[start:end])
+        (temp / "pmp-production.h").write_text("\n".join(pmp))
+        for profile, flags in [("full-stack", []),
+                               ("maintained-pmp", ["-DCONFIG_SILICONFOREST_NATIVE_GPU"])]:
+            output = temp / ("pmp-" + profile)
+            subprocess.run([os.environ.get("HOSTCC", "cc"), "-std=c11", "-Wall", "-Wextra",
+                            "-Werror", "-Wno-unused-function", *flags, "-I", str(temp),
+                            str(Path(__file__).with_name("pmp-bridge.c")), "-o", str(output)], check=True)
+            subprocess.run([str(output)], check=True)
+
         # Exercise the actual UAPI binding selector in both build profiles. Empty
         # __user is the userspace spelling of the raw header's kernel annotation.
         helper = (ROOT / "rust/uapi/uapi_helper.h").read_text()
-        start = helper.index("#ifdef CONFIG_SILICONFOREST_M3")
+        start = helper.index("#if defined(CONFIG_SILICONFOREST_M3)")
         end = helper.index("#endif", start) + len("#endif")
         (temp / "asahi-selector.h").write_text(helper[start:end])
-        for profile in ["maintained", "m3"]:
+        for profile in ["maintained", "m3", "native-gpu"]:
             output = temp / ("uapi-" + profile)
-            flags = ["-DCONFIG_SILICONFOREST_M3"] if profile == "m3" else []
+            flags = {"maintained": [], "m3": ["-DCONFIG_SILICONFOREST_M3"],
+                     "native-gpu": ["-DCONFIG_SILICONFOREST_NATIVE_GPU"]}[profile]
             subprocess.run([os.environ.get("HOSTCC", "cc"), "-std=c11", "-Wall", "-Wextra",
                             "-Werror", "-D__EXPORTED_HEADERS__", "-D__user=", *flags,
                             "-I", str(ROOT / "include/uapi"), "-I", str(ROOT / "include"),

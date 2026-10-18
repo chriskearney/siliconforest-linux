@@ -220,7 +220,7 @@ obj-y			+= tiny/
 obj-$(CONFIG_DRM_PL111) += pl111/
 obj-$(CONFIG_DRM_TVE200) += tve200/
 obj-$(CONFIG_DRM_ADP) += adp/
-ifeq ($(CONFIG_SILICONFOREST_M3),y)
+ifneq ($(filter y,$(CONFIG_SILICONFOREST_M3) $(CONFIG_SILICONFOREST_NATIVE_GPU)),)
 obj-$(CONFIG_DRM_ASAHI) += asahi-m3/
 else
 obj-$(CONFIG_DRM_ASAHI) += asahi/
