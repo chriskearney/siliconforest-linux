@@ -89,11 +89,37 @@ pub(crate) fn decode(entry: &[u8]) -> Option<Key> {
     Some(Key::new(entry[4], uuid))
 }
 
-pub(crate) struct Guard {
+/// The file that holds Linux's list: the host file, or memory in the tests.
+pub(crate) trait ListFile {
+    fn size(&self) -> Result<u64>;
+    fn read_exact(&self, off: u64, buf: &mut [u8]) -> Result<()>;
+    fn write_all(&self, off: u64, buf: &[u8]) -> Result<()>;
+    fn sync(&self) -> Result<()>;
+}
+
+impl ListFile for StoreFile {
+    fn size(&self) -> Result<u64> {
+        StoreFile::size(self)
+    }
+
+    fn read_exact(&self, off: u64, buf: &mut [u8]) -> Result<()> {
+        StoreFile::read_exact(self, off, buf)
+    }
+
+    fn write_all(&self, off: u64, buf: &[u8]) -> Result<()> {
+        StoreFile::write_all(self, off, buf)
+    }
+
+    fn sync(&self) -> Result<()> {
+        StoreFile::sync(self)
+    }
+}
+
+pub(crate) struct Guard<F: ListFile = StoreFile> {
     level: u8,
     /// `None` when the list could not be opened: nothing can be adopted, so
     /// every session write that is not already listed is refused.
-    file: Option<StoreFile>,
+    file: Option<F>,
     /// Byte offset of the next entry.
     end: u64,
     owned: KVec<Key>,
@@ -102,9 +128,21 @@ pub(crate) struct Guard {
 }
 
 impl Guard {
-    /// Opens Linux's list and records which keys `existing` holds now. Never
-    /// fails: a list that cannot be read protects every existing record.
+    /// Opens Linux's list in the host file and records which keys `existing`
+    /// holds now. Never fails: a list that cannot be read protects every
+    /// existing record.
     pub(crate) fn open(level: u8, existing: KVec<Key>) -> Guard {
+        Guard::with_file(
+            level,
+            existing,
+            StoreFile::open_host(OWNED_PATH).map(|(file, _created)| file),
+        )
+    }
+}
+
+impl<F: ListFile> Guard<F> {
+    /// As [`Guard::open`], with the list in `file`.
+    pub(crate) fn with_file(level: u8, existing: KVec<Key>, file: Result<F>) -> Guard<F> {
         let mut guard = Guard {
             level,
             file: None,
@@ -113,8 +151,8 @@ impl Guard {
             existed: existing,
             refused: 0,
         };
-        match StoreFile::open_host(OWNED_PATH) {
-            Ok((file, _created)) => {
+        match file {
+            Ok(file) => {
                 if let Err(e) = guard.load(&file) {
                     pr_warn!(
                         "xART guard: the list of Linux's records is unreadable ({:?}); every existing session record is protected and none can be adopted\n",
@@ -151,7 +189,7 @@ impl Guard {
         guard
     }
 
-    fn load(&mut self, file: &StoreFile) -> Result<()> {
+    fn load(&mut self, file: &F) -> Result<()> {
         let size = file.size()?;
         let whole = (size as usize / ENTRY_SIZE).min(MAX_ENTRIES + 1);
         if whole > MAX_ENTRIES {
@@ -221,6 +259,7 @@ impl Guard {
 #[kernel::macros::kunit_tests(apple_sep_xart_guard)]
 mod tests {
     use super::*;
+    use core::cell::RefCell;
 
     fn session(byte: u8) -> Key {
         Key::new(4, [byte; 16])
@@ -268,5 +307,131 @@ mod tests {
         root[24..28].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(decode(&root), None);
         assert_eq!(decode(&encode(&key)[..31]), None);
+    }
+
+    /// A list file in memory, kept across the guards of successive boots.
+    struct MemFile<'a>(&'a RefCell<KVec<u8>>);
+
+    impl ListFile for MemFile<'_> {
+        fn size(&self) -> Result<u64> {
+            Ok(self.0.borrow().len() as u64)
+        }
+
+        fn read_exact(&self, off: u64, buf: &mut [u8]) -> Result<()> {
+            let bytes = self.0.borrow();
+            let off = usize::try_from(off).map_err(|_| EINVAL)?;
+            let end = off.checked_add(buf.len()).ok_or(EINVAL)?;
+            buf.copy_from_slice(bytes.get(off..end).ok_or(EIO)?);
+            Ok(())
+        }
+
+        fn write_all(&self, off: u64, buf: &[u8]) -> Result<()> {
+            let mut bytes = self.0.borrow_mut();
+            let off = usize::try_from(off).map_err(|_| EINVAL)?;
+            let end = off.checked_add(buf.len()).ok_or(EINVAL)?;
+            while bytes.len() < end {
+                bytes.push(0, GFP_KERNEL)?;
+            }
+            bytes[off..end].copy_from_slice(buf);
+            Ok(())
+        }
+
+        fn sync(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn keys(list: &[Key]) -> Result<KVec<Key>> {
+        let mut keys = KVec::new();
+        for key in list {
+            keys.push(*key, GFP_KERNEL)?;
+        }
+        Ok(keys)
+    }
+
+    fn listed(bytes: &RefCell<KVec<u8>>) -> KVec<Option<Key>> {
+        let mut entries = KVec::new();
+        for entry in bytes.borrow().chunks(ENTRY_SIZE) {
+            if entries.push(decode(entry), GFP_KERNEL).is_err() {
+                break;
+            }
+        }
+        entries
+    }
+
+    #[test]
+    fn a_guard_refuses_another_os_record() -> Result<()> {
+        let bytes = RefCell::new(KVec::new());
+        let foreign = session(1);
+        let mut guard = Guard::with_file(1, keys(&[foreign])?, Ok(MemFile(&bytes)));
+        assert_eq!(guard.check(&foreign, true), Err(EPERM));
+        assert_eq!(guard.check(&foreign, false), Err(EPERM));
+        // A refusal lists nothing.
+        assert_eq!(bytes.borrow().len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_guard_allows_a_listed_record() -> Result<()> {
+        let own = session(2);
+        let mut list = KVec::new();
+        list.extend_from_slice(&encode(&own), GFP_KERNEL)?;
+        let bytes = RefCell::new(list);
+        let mut guard = Guard::with_file(1, keys(&[own])?, Ok(MemFile(&bytes)));
+        assert_eq!(guard.check(&own, true), Ok(()));
+        assert_eq!(guard.check(&own, false), Ok(()));
+        // An entry that is already listed is not written again.
+        assert_eq!(bytes.borrow().len(), ENTRY_SIZE);
+        Ok(())
+    }
+
+    #[test]
+    fn the_owned_list_survives_a_reboot() -> Result<()> {
+        let bytes = RefCell::new(KVec::new());
+        let foreign = session(1);
+        let created = session(3);
+
+        // First boot: the enclave creates a record, which is listed first.
+        let mut guard = Guard::with_file(1, keys(&[foreign])?, Ok(MemFile(&bytes)));
+        assert_eq!(guard.check(&created, true), Ok(()));
+        assert_eq!(listed(&bytes).as_slice(), &[Some(created)]);
+        drop(guard);
+
+        // Next boot: both records predate the guard; only Linux's is writable.
+        let mut guard = Guard::with_file(1, keys(&[foreign, created])?, Ok(MemFile(&bytes)));
+        assert_eq!(guard.check(&created, true), Ok(()));
+        assert_eq!(guard.check(&created, false), Ok(()));
+        assert_eq!(guard.check(&foreign, true), Err(EPERM));
+        assert_eq!(listed(&bytes).as_slice(), &[Some(created)]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_torn_tail_entry_is_overwritten() -> Result<()> {
+        let first = session(4);
+        let second = session(5);
+        let mut list = KVec::new();
+        list.extend_from_slice(&encode(&first), GFP_KERNEL)?;
+        // A crash during the next append left part of an entry behind.
+        list.extend_from_slice(&encode(&second)[..10], GFP_KERNEL)?;
+        let bytes = RefCell::new(list);
+
+        let mut guard = Guard::with_file(1, keys(&[first])?, Ok(MemFile(&bytes)));
+        assert_eq!(guard.check(&first, true), Ok(()));
+        assert_eq!(guard.check(&second, true), Ok(()));
+        assert_eq!(listed(&bytes).as_slice(), &[Some(first), Some(second)]);
+        Ok(())
+    }
+
+    #[test]
+    fn without_the_list_nothing_is_adopted() -> Result<()> {
+        let foreign = session(1);
+        let mut guard = Guard::<MemFile<'_>>::with_file(1, keys(&[foreign])?, Err(ENOENT));
+        assert_eq!(guard.check(&foreign, true), Err(EPERM));
+        assert!(guard.check(&session(6), true).is_err());
+        // Deleting a record that does not exist changes nothing.
+        assert_eq!(guard.check(&session(6), false), Ok(()));
+        assert_eq!(guard.check(&Key::root(1), true), Ok(()));
+        Ok(())
     }
 }
