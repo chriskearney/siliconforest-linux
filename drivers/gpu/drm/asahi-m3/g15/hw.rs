@@ -20,6 +20,8 @@ pub(crate) struct HwId {
 /// A qualified GPU firmware build, identified by its loaded TEXT.
 pub(crate) struct FirmwareBuild {
     pub(crate) name: &'static str,
+    /// Optional board restriction in addition to the SoC admission.
+    pub(crate) machine: Option<&'static kernel::str::CStr>,
     pub(crate) text_size: u64,
     pub(crate) data_size: u64,
     /// Offset of the GKTS marker in TEXT; the 8 entropy bytes after it are zeroed before hashing.
@@ -120,8 +122,10 @@ pub(crate) mod t6030 {
             version: 0x07031100,
             counts: 0x00110209,
         }],
-        firmware: &[FirmwareBuild {
+        firmware: &[
+          FirmwareBuild {
             name: "macOS 14.7-14.8.x stub firmware (iBoot-10151.140.19.700.2)",
+            machine: None,
             text_size: 0x5c000,
             data_size: 0x114000,
             marker: 0x58e88,
@@ -130,7 +134,26 @@ pub(crate) mod t6030 {
                 0xa3, 0xa8, 0x77, 0x55, 0x86, 0xd6, 0xb1, 0xe3, 0xaa, 0xe8, 0xa6, 0xa4, 0x64, 0xa7,
                 0x80, 0x02, 0x93, 0xd5,
             ],
-        }],
+          },
+          // The maintained J516S runtime already identifies this B0 image by
+          // UUID dbf37c40-ead5-3760-9441-995018782955 and uses the same
+          // 0x0c08e21e83800490 InitData ABI. Pin its complete measured TEXT
+          // digest here, rather than enabling the bring-up prefix override.
+          #[cfg(CONFIG_SILICONFOREST_NATIVE_GPU)]
+          FirmwareBuild {
+            name: "J516S B0 RTKit-2419.140.12 (maintained 14.x handoff)",
+            machine: Some(kernel::c_str!("apple,j516s")),
+            text_size: 0x5c000,
+            data_size: 0x114000,
+            marker: 0x58e88,
+            text_sha256: [
+                0xda, 0x26, 0xec, 0xca, 0xb1, 0xf8, 0x59, 0x8d,
+                0xa8, 0x0c, 0x85, 0x5e, 0xca, 0x91, 0x65, 0x20,
+                0x40, 0x6d, 0x1d, 0x06, 0x70, 0xf1, 0xd4, 0x70,
+                0xe7, 0x9b, 0xb9, 0xb0, 0x22, 0x09, 0xdb, 0x53,
+            ],
+          },
+        ],
         machine: kernel::c_str!("apple,t6030"),
         platform: super::Platform::AdtWithPmp,
         layout: &LAYOUT,

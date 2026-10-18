@@ -232,6 +232,7 @@ def main():
         harness = RUST_PREFIX + f'\n#[path = "{G15 / "gate.rs"}"] mod gate;\n'
         harness += f'#[path = "{G15 / "recovery/logic.rs"}"] mod recovery;\n'
         harness += f'#[path = "{G15 / "power/idle.rs"}"] mod idle;\n'
+        harness += f'#[path = "{G15 / "identity/matching.rs"}"] mod firmware_identity;\n'
         harness += ("mod g15 { pub mod fw {\n" +
                     f'#[path = "{G15 / "fw/channels.rs"}"] pub mod channels;\n' +
                     f'#[path = "{G15 / "fw/buffer.rs"}"] pub mod buffer;\n' +

@@ -127,6 +127,7 @@ pub(crate) const CONFIG: Config = Config {
     firmware: &[
         FirmwareBuild {
             name: "macOS 14.7 stub firmware (iBoot-10151.140.19.700.2), J516C",
+            machine: None,
             text_size: 0x64000,
             data_size: 0x140000,
             marker: 0x5cf28,
@@ -138,6 +139,7 @@ pub(crate) const CONFIG: Config = Config {
         },
         FirmwareBuild {
             name: "macOS 14.8 stub firmware, J516C",
+            machine: None,
             text_size: 0x64000,
             data_size: 0x140000,
             marker: 0x5cf28,
