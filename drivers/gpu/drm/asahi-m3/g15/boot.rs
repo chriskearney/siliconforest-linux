@@ -69,6 +69,7 @@ pub(crate) mod glue {
         fn asahi_g15_dma_coherent(dev: *mut core::ffi::c_void) -> bool;
         pub(crate) fn asahi_g15_pmp_prepare(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
         pub(crate) fn asahi_g15_pmp_get(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
+        fn asahi_g15_reserved_uat(index: u32, start: u64, size: u64) -> bool;
     }
 
     /// SHA-256 (`sha256()`).
@@ -83,6 +84,12 @@ pub(crate) mod glue {
     pub(crate) fn board() -> bool {
         // SAFETY: Reads the machine compatible strings only.
         unsafe { asahi_g15_board() }
+    }
+
+    /// Exact enabled UAT reservation from the maintained boot-loader handoff.
+    pub(crate) fn reserved_uat(index: u32, start: u64, size: u64) -> bool {
+        // SAFETY: Queries and releases OF nodes; no physical memory is accessed.
+        unsafe { asahi_g15_reserved_uat(index, start, size) }
     }
 
     /// Whether the machine carries `compatible` (`of_machine_is_compatible()`).

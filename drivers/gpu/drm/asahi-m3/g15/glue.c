@@ -32,6 +32,36 @@ void __iomem *asahi_g15_ioremap_wc(u64 start, size_t size);
 bool asahi_g15_dma_coherent(struct device *dev);
 int asahi_g15_pmp_prepare(struct device *dev);
 int asahi_g15_pmp_get(struct device *dev);
+bool asahi_g15_reserved_uat(u32 index, u64 start, u64 size);
+
+/*
+ * The maintained m1n1 handoff keeps these four UAT regions in the linear map.
+ * Require the exact enabled reserved-memory owner, in addition to the ADT
+ * bounds/size/disjointness and per-page PageReserved checks in admission.
+ */
+bool asahi_g15_reserved_uat(u32 index, u64 start, u64 size)
+{
+	static const char *const paths[] = {
+		"/reserved-memory/uat-ttbs",
+		"/reserved-memory/uat-pagetables",
+		"/reserved-memory/uat-handoff",
+		"/reserved-memory/uat-pagetables-l2",
+	};
+	struct device_node *np;
+	struct resource res;
+	bool match;
+
+	if (index >= ARRAY_SIZE(paths))
+		return false;
+	np = of_find_node_by_path(paths[index]);
+	match = np && of_device_is_available(np) &&
+		!of_property_read_bool(np, "reusable") &&
+		!of_get_address(np, 1, NULL, NULL) &&
+		!of_address_to_resource(np, 0, &res) &&
+		res.start == start && resource_size(&res) == size;
+	of_node_put(np);
+	return match;
+}
 
 /*
  * Keep a single PMP RTKit owner. The maintained bridge serializes requests,

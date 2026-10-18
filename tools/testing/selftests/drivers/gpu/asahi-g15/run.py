@@ -189,6 +189,15 @@ def main():
                         "-o", str(temp / "memory")], check=True)
         memory = subprocess.run([str(temp / "memory")]).returncode
 
+        start = glue.index("bool asahi_g15_reserved_uat(u32 index, u64 start, u64 size)\n{")
+        end = glue.index("\n}", start) + 2
+        (temp / "uat-production.h").write_text(glue[start:end])
+        subprocess.run([os.environ.get("HOSTCC", "cc"), "-std=c11", "-Wall", "-Wextra",
+                        "-Werror", "-I", str(temp),
+                        str(Path(__file__).with_name("uat-owner.c")),
+                        "-o", str(temp / "uat-owner")], check=True)
+        subprocess.run([str(temp / "uat-owner")], check=True)
+
         pmp = []
         for name in ["prepare", "get"]:
             start = glue.index("int asahi_g15_pmp_" + name + "(struct device *dev)\n{")
