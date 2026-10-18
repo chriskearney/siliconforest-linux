@@ -585,3 +585,36 @@ pub(crate) fn detect() -> Result<&'static PlatformProfile> {
     }
     Err(ENODEV)
 }
+
+#[kernel::macros::kunit_tests(apple_sep_dart_window)]
+mod dart_window_tests {
+    use super::*;
+
+    /// The 64-bit value of `apple,dma-offset`.
+    fn offset(window: &DartWindow) -> u64 {
+        (u64::from(window.offset[0]) << 32) | u64::from(window.offset[1])
+    }
+
+    /// `apple,dma-range` as the IOVAs it starts and ends at.
+    fn range(window: &DartWindow) -> (u64, u64) {
+        let start = (u64::from(window.range[0]) << 32) | u64::from(window.range[1]);
+        let size = (u64::from(window.range[2]) << 32) | u64::from(window.range[3]);
+        (start, start + size)
+    }
+
+    #[test]
+    fn t8112_has_no_offset_and_stays_below_4_gib() {
+        assert_eq!(offset(T8112.dart_window), 0);
+        assert_eq!(range(T8112.dart_window), (0x4000, 0x4000 + 0xffff_0000));
+        // The whole window fits the 32-bit DART input aperture.
+        assert!(range(T8112.dart_window).1 <= 1 << 32);
+    }
+
+    #[test]
+    fn the_other_profiles_keep_the_bit40_window() {
+        for profile in [&T8103, &T6000, &T6020, &T8140] {
+            assert_eq!(offset(profile.dart_window), 1 << 40);
+            assert_eq!(range(profile.dart_window), (0, 1 << 32));
+        }
+    }
+}
