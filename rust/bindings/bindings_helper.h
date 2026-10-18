@@ -101,6 +101,9 @@
 #include <linux/security.h>
 #include <linux/slab.h>
 #include <linux/soc/apple/mailbox.h>
+#ifdef CONFIG_SILICONFOREST_M3
+#include <linux/soc/apple/pmp-display.h>
+#endif
 #include <linux/soc/apple/rtkit.h>
 #include <linux/sys_soc.h>
 #include <linux/task_work.h>

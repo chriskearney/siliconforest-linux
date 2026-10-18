@@ -43,7 +43,13 @@ apple-sep-y := sep.o hwrng_shim.o store_shim.o bio_shim.o sha_shim.o \
 		pm_shim.o diag_shim.o
 
 obj-$(CONFIG_APPLE_PMP) += apple-pmp.o
+ifeq ($(CONFIG_SILICONFOREST_M3),y)
+apple-pmp-y := m3/pmp-core.o m3/pmp-display.o
+obj-$(if $(CONFIG_APPLE_PMP),$(CONFIG_OF_DYNAMIC)) += m3/j514s-pmp-handoff.o
+obj-$(CONFIG_DRM_APPLE_DCP_T6031) += m3/t6031-display-handoff.o
+else
 apple-pmp-y := pmp.o pmp-export.o
+endif
 
 obj-$(CONFIG_APPLE_MCC) += apple-mcc.o
 apple-mcc-y := mcc.o

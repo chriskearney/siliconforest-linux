@@ -1,3 +1,7 @@
+if SILICONFOREST_M3
+source "drivers/phy/apple/m3/Kconfig"
+endif
+if !SILICONFOREST_M3
 # SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
 config PHY_APPLE_ATC
 	tristate "Apple Type-C PHY"
@@ -35,3 +39,5 @@ config PHY_APPLE_ATC_KUNIT_TEST
 
 	  A second suite checks the T8122 DisplayPort link rate table, the
 	  drive level presets and the DP lane to lane-pair mapping.
+
+endif

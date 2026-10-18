@@ -1,0 +1,405 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple MacBook Pro (14-inch, M3 Pro) J514S: external display controllers
+ * DCPEXT1 with the USB-C DisplayPort routes, and DCPEXT0 with the HDMI port.
+ *
+ * DCPEXT1 drives the three USB-C ports through the DisplayPort alternate
+ * mode. The Type-C port controller enters the mode and reports pin
+ * assignment and HPD to the mode switches linked to its connector: the
+ * port's ATC PHY (lanes, orientation) and one route of DCPEXT1 (port@3 of
+ * the connector). Each route names the port's DP PHY, its display crossbar
+ * (ATC core + 0x4c000), DCPEXT1's crossbar source selector (2) and the
+ * DPTX target index of the port's ATC (CONNECT target 0x8000 | ATC << 4).
+ *
+ * The controller's firmware (the panel's DCP firmware 14.7.0 image) must be
+ * reserved by the boot loader before Linux may start it: the loader
+ * publishes apple,firmware-version, -compat and -uuid and the memory-region
+ * of the firmware segments, then enables dcpext1 and its routes together.
+ * A route available without its controller would hold the connector's
+ * port controller in deferred probe.
+ *
+ * The DISPEXT1 power chain hangs from the PMP device-state request of
+ * DISPEXT1, so the PMP acknowledges the controller before any of its
+ * domains is powered; the DARTs and the mailbox, which power the chain on
+ * probe, are enabled here, as are the crossbars, each powered through its
+ * ATC's common domain while a controller is connected to it.
+ *
+ * DCPEXT0 drives the built-in HDMI port: ATC3 is wired as a fixed four-lane
+ * DisplayPort transmitter (no Type-C) into a DP-to-HDMI converter, whose
+ * port and converter power are SMC GPIOs and whose HPD line is an AOP GPIO.
+ * DCPEXT0 reaches ATC3 through its crossbar with selector 0, DPTX target
+ * 0x8030 (ATC3). The loader enables dcpext0 like dcpext1; its PHY takes the
+ * calibration the loader copies from ATC3's ADT node.
+ *
+ * The HDMI port's audio is DCPEXT0's audio service with DPA1, the
+ * DisplayPort audio interface its port@0 links (no AP-side registers): SIO
+ * channel 0x66 carries the samples, as on the M1 Pro/Max HDMI port. The
+ * loader reserves the SIO firmware and enables the SIO with its parameters.
+ *
+ * Copyright The Asahi Linux Contributors
+ */
+
+/ {
+	aliases {
+		atcphy3 = &atcphy3;
+		dcpext0 = &dcpext0;
+		dcpext1 = &dcpext1;
+		sio = &sio;
+	};
+
+	/* DISPEXT0 clock ID 353 (ADT dispext0 clock-ids, frequency index 97). */
+	clk_dispext0: clock-dispext0 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <935000000>;
+		clock-output-names = "clk_dispext0";
+	};
+
+	/* DISPEXT1 clock ID 356 (ADT dispext1 clock-ids, frequency index 100). */
+	clk_dispext1: clock-dispext1 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <935000000>;
+		clock-output-names = "clk_dispext1";
+	};
+};
+
+&soc {
+	/* DCPEXT0 coprocessor DART: SID5. */
+	dcpext0_dart: iommu@2d130c000 {
+		compatible = "apple,t6030-dart", "apple,t8110-dart";
+		reg = <0x2 0xd130c000 0x0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 651 IRQ_TYPE_LEVEL_HIGH>;
+		#iommu-cells = <1>;
+		apple,dma-range = <0x100 0x0 0x10 0x0>;
+		power-domains = <&ps_dispext0_cpu>;
+	};
+
+	/* DISPEXT0 display frontend DART: SID0 scanout, SID4 PIODMA. */
+	dispext0_dart: iommu@2d1304000 {
+		compatible = "apple,t6030-dart", "apple,t8110-dart";
+		reg = <0x2 0xd1304000 0x0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 651 IRQ_TYPE_LEVEL_HIGH>;
+		#iommu-cells = <1>;
+		apple,dma-range = <0x100 0x0 0x10 0x0>;
+		power-domains = <&ps_dispext0_cpu>;
+	};
+
+	dcpext0_mbox: mailbox@2d2c08000 {
+		compatible = "apple,t6030-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <0x2 0xd2c08000 0x0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 634 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 635 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 636 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 637 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "send-empty", "send-not-empty",
+				  "recv-empty", "recv-not-empty";
+		power-domains = <&ps_dispext0_cpu>;
+		#mbox-cells = <0>;
+	};
+
+	/* ATC3: the HDMI port's fixed four-lane DisplayPort PHY. */
+	atcphy3: phy@1303000000 {
+		compatible = "apple,t6030-atcphy-dp";
+		reg = <0x13 0x03000000 0x0 0x4c000>;
+		reg-names = "core";
+		#phy-cells = <1>;
+		power-domains = <&ps_atc3_common>;
+	};
+
+	atcphy3_xbar: mux@130304c000 {
+		compatible = "apple,t6030-display-crossbar";
+		reg = <0x13 0x0304c000 0x0 0x4000>;
+		#mux-control-cells = <1>;
+		power-domains = <&ps_atc3_common>;
+	};
+
+	/* DCPEXT1 coprocessor DART: SID5. */
+	dcpext1_dart: iommu@2d530c000 {
+		compatible = "apple,t6030-dart", "apple,t8110-dart";
+		reg = <0x2 0xd530c000 0x0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 689 IRQ_TYPE_LEVEL_HIGH>;
+		#iommu-cells = <1>;
+		apple,dma-range = <0x100 0x0 0x10 0x0>;
+		power-domains = <&ps_dispext1_cpu>;
+	};
+
+	/* DISPEXT1 display frontend DART: SID0 scanout, SID4 PIODMA. */
+	dispext1_dart: iommu@2d5304000 {
+		compatible = "apple,t6030-dart", "apple,t8110-dart";
+		reg = <0x2 0xd5304000 0x0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 689 IRQ_TYPE_LEVEL_HIGH>;
+		#iommu-cells = <1>;
+		apple,dma-range = <0x100 0x0 0x10 0x0>;
+		power-domains = <&ps_dispext1_cpu>;
+	};
+
+	dcpext1_mbox: mailbox@2d6c08000 {
+		compatible = "apple,t6030-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <0x2 0xd6c08000 0x0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 672 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 673 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 674 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 675 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "send-empty", "send-not-empty",
+				  "recv-empty", "recv-not-empty";
+		power-domains = <&ps_dispext1_cpu>;
+		#mbox-cells = <0>;
+	};
+
+	/* Display crossbars of the three USB-C ATCs (core + 0x4c000). */
+	atcphy0_xbar: mux@70304c000 {
+		compatible = "apple,t6030-display-crossbar";
+		reg = <0x7 0x0304c000 0x0 0x4000>;
+		#mux-control-cells = <1>;
+		power-domains = <&ps_atc0_common>;
+	};
+
+	atcphy1_xbar: mux@b0304c000 {
+		compatible = "apple,t6030-display-crossbar";
+		reg = <0xb 0x0304c000 0x0 0x4000>;
+		#mux-control-cells = <1>;
+		power-domains = <&ps_atc1_common>;
+	};
+
+	atcphy2_xbar: mux@f0304c000 {
+		compatible = "apple,t6030-display-crossbar";
+		reg = <0xf 0x0304c000 0x0 0x4000>;
+		#mux-control-cells = <1>;
+		power-domains = <&ps_atc2_common>;
+	};
+
+	dcpext0: dcp@2d2c00000 {
+		compatible = "apple,t6030-dcpext";
+		/*
+		 * ADT dcpext0 reg[0] (first 16K) and reg[1], with dispext0's six
+		 * display ranges as disp-0..5 in their ADT order; disp-5 is the
+		 * PMP device-state aperture all display controllers share.
+		 */
+		reg = <0x2 0xd2c00000 0x0 0x4000>,
+		      <0x2 0xd0000000 0x0 0x690000>,
+		      <0x2 0xd0800000 0x0 0x690000>,
+		      <0x2 0xd1320000 0x0 0x4000>,
+		      <0x2 0xd1344000 0x0 0x4000>,
+		      <0x2 0xd2800000 0x0 0x800000>,
+		      <0x3 0x503c0000 0x0 0x1000>,
+		      <0x2 0xd2850000 0x0 0x4000>;
+		reg-names = "coproc", "disp-0", "disp-1", "disp-2", "disp-3",
+			    "disp-4", "disp-5", "iop-vbar";
+		mboxes = <&dcpext0_mbox>;
+		mbox-names = "mbox";
+		iommus = <&dcpext0_dart 5>;
+		power-domains = <&ps_dispext0_cpu>;
+		clocks = <&clk_dispext0>;
+		apple,dcp-index = <1>;
+		/* The HDMI port: ATC3 through crossbar selector 0, DPTX target 3. */
+		apple,connector-type = "HDMI-A";
+		phys = <&atcphy3 PHY_TYPE_DP>;
+		phy-names = "dp-phy";
+		mux-controls = <&atcphy3_xbar 0>;
+		mux-control-names = "dp-xbar";
+		mux-index = <0>;
+		apple,dptx-phy = <3>;
+		hdmi-hpd-gpios = <&pinctrl_aop 47 GPIO_ACTIVE_HIGH>;
+		hdmi-pwren-gpios = <&smc_gpio 15 GPIO_ACTIVE_HIGH>;
+		dp2hdmi-pwren-gpios = <&smc_gpio 26 GPIO_ACTIVE_HIGH>;
+		status = "disabled";	/* Enabled by the loader with its firmware. */
+
+		piodma {
+			iommus = <&dispext0_dart 4>;
+		};
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				dcpext0_audio: endpoint {
+					remote-endpoint = <&dpaudio1_dcpext0>;
+				};
+			};
+		};
+	};
+
+	/* DPA1: the HDMI port's DisplayPort audio, SIO channel 0x66. */
+	dpaudio1: audio-controller-1 {
+		compatible = "apple,t6030-dpaudio", "apple,dpaudio";
+		dmas = <&sio 0x66>;
+		dma-names = "tx";
+		power-domains = <&ps_dpa1>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				dpaudio1_dcpext0: endpoint {
+					remote-endpoint = <&dcpext0_audio>;
+				};
+			};
+		};
+	};
+
+	dcpext1: dcp@2d6c00000 {
+		compatible = "apple,t6030-dcpext";
+		/*
+		 * ADT dcpext1 reg[0] (first 16K) and reg[1], with dispext1's six
+		 * display ranges as disp-0..5 in their ADT order; disp-5 is the
+		 * PMP device-state aperture all display controllers share.
+		 */
+		reg = <0x2 0xd6c00000 0x0 0x4000>,
+		      <0x2 0xd4000000 0x0 0x690000>,
+		      <0x2 0xd4800000 0x0 0x690000>,
+		      <0x2 0xd5320000 0x0 0x4000>,
+		      <0x2 0xd5344000 0x0 0x4000>,
+		      <0x2 0xd6800000 0x0 0x800000>,
+		      <0x3 0x503c0000 0x0 0x1000>,
+		      <0x2 0xd6850000 0x0 0x4000>;
+		reg-names = "coproc", "disp-0", "disp-1", "disp-2", "disp-3",
+			    "disp-4", "disp-5", "iop-vbar";
+		mboxes = <&dcpext1_mbox>;
+		mbox-names = "mbox";
+		iommus = <&dcpext1_dart 5>;
+		power-domains = <&ps_dispext1_cpu>;
+		clocks = <&clk_dispext1>;
+		apple,dcp-index = <2>;
+		apple,connector-type = "USB-C";
+		phys = <&atcphy0 PHY_TYPE_DP>, <&atcphy1 PHY_TYPE_DP>,
+		       <&atcphy2 PHY_TYPE_DP>;
+		phy-names = "typec0", "typec1", "typec2";
+		mux-controls = <&atcphy0_xbar 0>, <&atcphy1_xbar 0>,
+			       <&atcphy2_xbar 0>;
+		mux-control-names = "typec0", "typec1", "typec2";
+		/* DCPEXT1's crossbar source selector on every port. */
+		apple,typec-mux-indices = <2 2 2>;
+		/* DPTX target index: the port's ATC. */
+		apple,typec-dptx-phys = <0 1 2>;
+		status = "disabled";	/* Enabled by the loader with its firmware. */
+
+		piodma {
+			iommus = <&dispext1_dart 4>;
+		};
+
+		typec-routes {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			route@0 {
+				reg = <0>;
+				mode-switch;
+				status = "disabled";
+
+				port {
+					dcpext1_typec0: endpoint {
+						remote-endpoint = <&typec0_dcpext1>;
+					};
+				};
+			};
+
+			route@1 {
+				reg = <1>;
+				mode-switch;
+				status = "disabled";
+
+				port {
+					dcpext1_typec1: endpoint {
+						remote-endpoint = <&typec1_dcpext1>;
+					};
+				};
+			};
+
+			route@2 {
+				reg = <2>;
+				mode-switch;
+				status = "disabled";
+
+				port {
+					dcpext1_typec2: endpoint {
+						remote-endpoint = <&typec2_dcpext1>;
+					};
+				};
+			};
+		};
+	};
+};
+
+/*
+ * The display subsystem's buffers are scanned out by every display
+ * controller: DCPEXT0/1 fetch through their frontend DARTs' stream 0.
+ */
+&display {
+	iommus = <&disp0_dart 0>, <&dispext0_dart 0>, <&dispext1_dart 0>;
+};
+
+/* The PMP acknowledges DISPEXT0/1 before their chains are powered. */
+&ps_dispext0_sys {
+	power-domains = <&ps_lw10>, <&pmp_ptd 8>;
+};
+
+&ps_dispext1_sys {
+	power-domains = <&ps_lw10>, <&pmp_ptd 9>;
+};
+
+/*
+ * Linux starts the DCPEXT coprocessors cold: their CPU domains must stay at
+ * the requested state, without automatic gating.
+ */
+&ps_dispext0_cpu {
+	apple,no-auto-pm;
+};
+
+&ps_dispext1_cpu {
+	apple,no-auto-pm;
+};
+
+/* Left back (SPMI 1-0c), ATC0. */
+&typec0 {
+	ports {
+		port@3 {
+			reg = <3>;
+
+			typec0_dcpext1: endpoint {
+				remote-endpoint = <&dcpext1_typec0>;
+			};
+		};
+	};
+};
+
+/* Left front (SPMI 1-0a), ATC1. */
+&typec1 {
+	ports {
+		port@3 {
+			reg = <3>;
+
+			typec1_dcpext1: endpoint {
+				remote-endpoint = <&dcpext1_typec1>;
+			};
+		};
+	};
+};
+
+/* Right (SPMI 2-08), ATC2. */
+&typec2 {
+	ports {
+		port@3 {
+			reg = <3>;
+
+			typec2_dcpext1: endpoint {
+				remote-endpoint = <&dcpext1_typec2>;
+			};
+		};
+	};
+};
+
+/* The SIO's mailbox; the boot loader enables the SIO with its firmware. */
+&sio_mbox {
+	status = "okay";
+};

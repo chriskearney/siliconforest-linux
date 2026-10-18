@@ -7,7 +7,11 @@
  */
 
 #include <uapi/asm-generic/ioctl.h>
+#ifdef CONFIG_SILICONFOREST_M3
+#include <uapi/drm/asahi_m3_drm.h>
+#else
 #include <uapi/drm/asahi_drm.h>
+#endif
 #include <uapi/drm/drm.h>
 #include <uapi/drm/nova_drm.h>
 #include <uapi/drm/panthor_drm.h>

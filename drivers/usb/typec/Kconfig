@@ -50,7 +50,12 @@ source "drivers/usb/typec/tcpm/Kconfig"
 
 source "drivers/usb/typec/ucsi/Kconfig"
 
+if SILICONFOREST_M3
+source "drivers/usb/typec/tipd-m3/Kconfig"
+endif
+if !SILICONFOREST_M3
 source "drivers/usb/typec/tipd/Kconfig"
+endif
 
 config TYPEC_ANX7411
 	tristate "Analogix ANX7411 Type-C DRP Port controller driver"
@@ -111,6 +116,7 @@ config TYPEC_WUSB3801
 	  module will be called wusb3801.ko.
 
 config TYPEC_MUX_KUNIT_TEST
+	depends on !SILICONFOREST_M3
 	tristate "KUnit tests for the Type-C mux lookup" if !KUNIT_ALL_TESTS
 	depends on KUNIT && OF
 	default KUNIT_ALL_TESTS

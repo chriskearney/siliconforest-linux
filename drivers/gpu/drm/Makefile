@@ -220,7 +220,11 @@ obj-y			+= tiny/
 obj-$(CONFIG_DRM_PL111) += pl111/
 obj-$(CONFIG_DRM_TVE200) += tve200/
 obj-$(CONFIG_DRM_ADP) += adp/
+ifeq ($(CONFIG_SILICONFOREST_M3),y)
+obj-$(CONFIG_DRM_ASAHI) += asahi-m3/
+else
 obj-$(CONFIG_DRM_ASAHI) += asahi/
+endif
 obj-$(CONFIG_DRM_XEN) += xen/
 obj-$(CONFIG_DRM_VBOXVIDEO) += vboxvideo/
 obj-$(CONFIG_DRM_LIMA)  += lima/
@@ -229,8 +233,16 @@ obj-$(CONFIG_DRM_PANTHOR) += panthor/
 obj-$(CONFIG_DRM_TYR) += tyr/
 obj-$(CONFIG_DRM_APPLE_FABRIC_CORE) += apple/dcp-fabric-core.o
 obj-$(CONFIG_DRM_APPLE_FABRIC_KUNIT_TEST) += apple/dcp-fabric-test.o
+ifeq ($(CONFIG_SILICONFOREST_M3),y)
+obj-$(CONFIG_DRM_APPLE) += apple-m3/
+else
 obj-$(CONFIG_DRM_APPLE) += apple/
+endif
+ifeq ($(CONFIG_SILICONFOREST_M3),y)
+obj-$(CONFIG_DRM_APPLE_KUNIT_TEST) += apple-m3/iomfb-state-test.o
+else
 obj-$(CONFIG_DRM_APPLE_KUNIT_TEST) += apple/iomfb-state-test.o
+endif
 obj-$(CONFIG_DRM_ASPEED_GFX) += aspeed/
 obj-$(CONFIG_DRM_MCDE) += mcde/
 obj-$(CONFIG_DRM_TIDSS) += tidss/

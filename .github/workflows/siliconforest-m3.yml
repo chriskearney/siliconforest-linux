@@ -1,0 +1,17 @@
+name: SiliconForest M3 host checks
+on:
+  push:
+    branches: [siliconforest/next, siliconforest/m3-g15-review-20261018]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup toolchain install 1.93.1 --profile minimal
+      - run: python3 tools/testing/selftests/drivers/gpu/asahi-g15/run.py
+        env:
+          RUSTUP_TOOLCHAIN: 1.93.1

@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: GPL-2.0-only OR MIT
+config DRM_APPLE
+	tristate "DRM Support for Apple display controllers"
+	depends on DRM && OF && ARM64
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on APPLE_RTKIT
+	depends on OF_ADDRESS
+	select APPLE_PMP_REPORT
+	select DRM_CLIENT_SELECTION
+	select DRM_KMS_HELPER
+	select DRM_KMS_DMA_HELPER
+	select DRM_GEM_DMA_HELPER
+	select VIDEOMODE_HELPERS
+	depends on BACKLIGHT_CLASS_DEVICE
+	select MULTIPLEXER
+	help
+	  Say Y if you have an Apple Silicon chipset.
+
+config DRM_APPLE_AUDIO
+	bool "DisplayPort/HDMI Audio support"
+	default y
+	depends on DRM_APPLE
+	depends on SND
+	select SND_PCM
+	select SND_DMAENGINE_PCM
+
+config DRM_APPLE_DCP_T6030
+	bool "MacBook Pro M3 Pro (J514S) internal panel"
+	depends on DRM_APPLE
+	depends on APPLE_PMP=y || APPLE_PMP=DRM_APPLE
+	help
+	  Lets the common Apple display driver match the J514S (T6030)
+	  internal display coprocessor, which the boot loader hands over
+	  running with DCP firmware 14.7.0, and its display subsystem. The
+	  14.7 firmware interface (iomfb_v14_7) is always built; this option
+	  adds the T6030 device-tree matches and the J514S session and
+	  presentation paths.
+
+	  The panel is adopted from a qualified boot loader handoff (no
+	  reset, no modeset) and keeps its firmware session until reboot:
+	  appledrm cannot be unloaded once it has bound it. The GPU starts
+	  after the display, so userspace should load appledrm explicitly
+	  and blacklist its alias autoload.
+
+config DRM_APPLE_DCP_T6031
+	bool "MacBook Pro M3 Max (J516C) internal panel"
+	depends on DRM_APPLE_DCP_T6030
+	depends on OF_DYNAMIC
+	help
+	  Lets the common Apple display driver adopt the J516C
+	  (T6031) internal display coprocessor, which the boot loader hands
+	  over running DCP firmware 14.7.0, with the J514S session and
+	  presentation paths at the T6031 addresses.
+
+	  The boot loader describes the display with every node disabled.
+	  The T6031 display handoff enables them, and adds this Mac's PMP
+	  from the values the boot loader passes, only when
+	  apple_t6031_display.enable=1 is on the kernel command line; the
+	  boot framebuffer stays otherwise.
+
+config DRM_APPLE_DCP_T6030_EXT
+	bool "MacBook Pro M3 Pro (J514S) external displays"
+	depends on DRM_APPLE_DCP_T6030
+	help
+	  Lets the common Apple display driver drive the J514S external
+	  display coprocessors (DCPEXT, DCP firmware 14.7.0 in its external
+	  role). They drive the USB-C ports through the Type-C DisplayPort
+	  alternate mode: the Type-C port controller reports the mode and
+	  HPD through the routes the device tree links to each connector,
+	  the ATC PHY carries AUX and the main link, and the per-port
+	  display crossbar connects the controller to the PHY.
+
+	  The boot loader publishes a controller only after reserving its
+	  firmware. Linux starts the controller when the first display is
+	  attached, or takes it over running when the boot loader started it
+	  for a display attached at power-on; it then keeps its firmware
+	  session until reboot. Each USB-C port is a DisplayPort connector;
+	  one primary plane per controller.
+
+config DRM_APPLE_DEBUG
+	bool "Enable additional driver debugging"
+	depends on DRM_APPLE
+	depends on EXPERT # only for developers
+
+config DRM_APPLE_KUNIT_TEST
+	tristate "KUnit tests for Apple display controller" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	select DRM_KUNIT_TEST_HELPERS if DRM_APPLE
+	default KUNIT_ALL_TESTS
+	help
+	  Build tests for the Apple display driver's AFK ring parser and
+	  backlight policy (takeover, DPMS, suspend, fades and present
+	  completion).
+	  The tests cover the header strides used by older firmware and
+	  larger rings, as well as malformed ring size combinations.
+	  This option is intended for developer test kernels.
+	  Also test the Type-C modeset, hotplug and service ownership state,
+	  the system resume of a CRTC whose mode is no longer admissible, and
+	  when an external display is ready to be reported to userspace.
+	  The J514S (DCP firmware 14.7) present encoding is checked byte for
+	  byte against reference requests.
+
+config DRM_APPLE_PARSER_KUNIT_TEST
+	bool "KUnit tests for Apple firmware message parsers" if !KUNIT_ALL_TESTS
+	depends on DRM_APPLE && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Build tests for AFKv2 lengths, DMA ownership and reply correlation,
+	  legacy EPIC replies, and H17P IOMFB callback envelopes and sizes.
+	  The tests use allocated buffers and fake devices and do not require
+	  an Apple display controller or any firmware.

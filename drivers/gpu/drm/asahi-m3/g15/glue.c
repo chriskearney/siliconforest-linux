@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
+/*
+ * G15 (T6030/T6031, M3 Pro/Max) helpers that have no Rust bindings: static inlines,
+ * macros and THIS_MODULE. Built only with CONFIG_DRM_ASAHI_G15.
+ */
+#include <crypto/sha2.h>
+#include <linux/device.h>
+#include <linux/dma-map-ops.h>
+#include <linux/io.h>
+#include <linux/ioport.h>
+#include <linux/mm.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/overflow.h>
+#include <linux/page-flags.h>
+#include <linux/pfn.h>
+#include <linux/pm_runtime.h>
+#include <linux/soc/apple/pmp-display.h>
+
+void asahi_g15_sha256(const u8 *data, size_t len, u8 *out);
+bool asahi_g15_board(void);
+bool asahi_g15_machine(const char *compatible);
+void asahi_g15_hold_power(struct device *dev);
+void asahi_g15_module_get(void);
+int asahi_g15_adt_phram(u64 *start, u64 *size);
+bool asahi_g15_ram_disjoint(u64 start, u64 size);
+bool asahi_g15_ram_within(u64 start, u64 size);
+unsigned int asahi_g15_memory_mode(u64 start, u64 size);
+void __iomem *asahi_g15_ioremap_wc(u64 start, size_t size);
+bool asahi_g15_dma_coherent(struct device *dev);
+
+/* SHA-256 of the firmware TEXT and the board templates. */
+void asahi_g15_sha256(const u8 *data, size_t len, u8 *out)
+{
+	sha256(data, len, out);
+}
+
+/* Whether this is a J514S/J516S T6030 board. */
+bool asahi_g15_board(void)
+{
+	return apple_pmp_t6030_board();
+}
+
+/* Whether the machine carries this compatible (of_machine_is_compatible()). */
+bool asahi_g15_machine(const char *compatible)
+{
+	return of_machine_is_compatible(compatible) > 0;
+}
+
+/*
+ * Keep the GFX domain powered for the whole (retained) session. Never released,
+ * like the firmware session itself.
+ */
+void asahi_g15_hold_power(struct device *dev)
+{
+	pm_runtime_get_noresume(dev);
+	pm_runtime_set_active(dev);
+	pm_runtime_enable(dev);
+}
+
+/* Pin this module until reboot. */
+void asahi_g15_module_get(void)
+{
+	__module_get(THIS_MODULE);
+}
+
+/*
+ * The boot loader's phram "adt" export: the first /reserved-memory child
+ * compatible with "phram" and labelled "adt".
+ */
+int asahi_g15_adt_phram(u64 *start, u64 *size)
+{
+	struct device_node *rmem, *np;
+	struct resource res;
+	int ret = -ENODEV;
+
+	rmem = of_find_node_by_path("/reserved-memory");
+	for_each_child_of_node(rmem, np) {
+		const char *label;
+
+		if (of_device_is_compatible(np, "phram") &&
+		    !of_property_read_string(np, "label", &label) && !strcmp(label, "adt") &&
+		    !of_address_to_resource(np, 0, &res)) {
+			of_node_put(np);
+			ret = 0;
+			break;
+		}
+	}
+	of_node_put(rmem);
+	if (ret)
+		return ret;
+	*start = res.start;
+	*size = resource_size(&res);
+	return 0;
+}
+
+/* The range is disjoint from System RAM (ADT region admission). */
+bool asahi_g15_ram_disjoint(u64 start, u64 size)
+{
+	return region_intersects(start, size, IORESOURCE_SYSTEM_RAM, IORES_DESC_NONE) ==
+	       REGION_DISJOINT;
+}
+
+/*
+ * Whether DMA mappings of the device skip cache maintenance. The G15 firmware
+ * objects rely on the DMA mapping cleaning their pages to the point of
+ * coherency, so the device must not be DMA-coherent.
+ */
+bool asahi_g15_dma_coherent(struct device *dev)
+{
+	return dev_is_dma_coherent(dev);
+}
+
+/*
+ * Every page must be valid, System RAM and still reserved from the allocator.
+ * REGION_INTERSECTS alone also accepts RAM mixed with undefined memory holes.
+ */
+bool asahi_g15_ram_within(u64 start, u64 size)
+{
+	u64 end, pa;
+
+	if (!size || !IS_ALIGNED(start, PAGE_SIZE) ||
+	    !IS_ALIGNED(size, PAGE_SIZE) || check_add_overflow(start, size, &end))
+		return false;
+	for (pa = start; pa < end; pa += PAGE_SIZE) {
+		unsigned long pfn = PHYS_PFN(pa);
+
+		if (!pfn_valid(pfn) || !page_is_ram(pfn) ||
+		    !PageReserved(pfn_to_page(pfn)))
+			return false;
+	}
+	return true;
+}
+
+/* One classification for every adopted-UAT and firmware-region CPU mapping. */
+unsigned int asahi_g15_memory_mode(u64 start, u64 size)
+{
+	u64 end;
+
+	if (!size || !IS_ALIGNED(start, PAGE_SIZE) ||
+	    !IS_ALIGNED(size, PAGE_SIZE) || check_add_overflow(start, size, &end))
+		return 0;
+	if (asahi_g15_ram_within(start, size))
+		return MEMREMAP_WB;
+	if (asahi_g15_ram_disjoint(start, size))
+		return MEMREMAP_WC;
+	return 0;
+}
+
+/* The inherited RTKit buffer inside firmware DATA. */
+void __iomem *asahi_g15_ioremap_wc(u64 start, size_t size)
+{
+	return ioremap_wc(start, size);
+}

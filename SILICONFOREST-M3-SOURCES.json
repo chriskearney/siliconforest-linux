@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "project": "SiliconForest",
+  "maintained_base": "5d570a78a4ab29ac383ec8988be2356dfc6c8a75",
+  "upstream_feature_base": "0daed2db47875fc705b4e7aea10b4d33e3514b06",
+  "upstream_prs": [
+    {
+      "author": "Eryk Wieliczko",
+      "url": "https://github.com/aurora-silicon/linux/pull/358",
+      "head": "79d6375f4b03c70b71ac2fa3c27e5695a559516f"
+    },
+    {
+      "author": "Naeem Malik",
+      "url": "https://github.com/aurora-silicon/linux/pull/363",
+      "head": "e30d702e3722aba6114c67ee86505cea0ce76117"
+    }
+  ],
+  "import_seed_with_initial_review_fixes": "8a29680940cde36759e2061d3c8a8e7e9df70fa9",
+  "selection": "CONFIG_SILICONFOREST_M3=y; default off; excludes USB4",
+  "path_mappings": [
+    {
+      "from": "drivers/gpu/drm/asahi/",
+      "to": "drivers/gpu/drm/asahi-m3/"
+    },
+    {
+      "from": "drivers/gpu/drm/apple/",
+      "to": "drivers/gpu/drm/apple-m3/"
+    },
+    {
+      "from": "drivers/phy/apple/",
+      "to": "drivers/phy/apple/m3/"
+    },
+    {
+      "from": "drivers/mux/apple-display-crossbar.c",
+      "to": "drivers/mux/m3/apple-display-crossbar.c"
+    },
+    {
+      "from": "drivers/pmdomain/apple/",
+      "to": "drivers/pmdomain/apple/m3/"
+    },
+    {
+      "from": "drivers/soc/apple/",
+      "to": "drivers/soc/apple/m3/"
+    },
+    {
+      "from": "drivers/usb/typec/mux.c",
+      "to": "drivers/usb/typec/m3/mux.c"
+    },
+    {
+      "from": "drivers/usb/typec/mux.h",
+      "to": "drivers/usb/typec/m3/mux.h"
+    },
+    {
+      "from": "drivers/usb/typec/tipd/",
+      "to": "drivers/usb/typec/tipd-m3/"
+    },
+    {
+      "from": "include/linux/usb/typec_mux.h",
+      "to": "include/linux/usb/typec_mux_m3.h"
+    },
+    {
+      "from": "include/linux/soc/apple/dp-tunnel.h",
+      "to": "include/linux/soc/apple/dp-tunnel-m3.h"
+    },
+    {
+      "from": "include/linux/soc/apple/pmp-display.h",
+      "to": "include/linux/soc/apple/pmp-display.h"
+    },
+    {
+      "from": "include/uapi/drm/asahi_drm.h",
+      "to": "include/uapi/drm/asahi_m3_drm.h"
+    },
+    {
+      "from": "arch/arm64/boot/dts/apple/",
+      "to": "arch/arm64/boot/dts/apple/m3-g15/"
+    }
+  ],
+  "scope": "Directory mappings include only the files actually present at the destination. Local adaptations, retained baseline protections, and validation limits are documented in SILICONFOREST-M3-REVIEW.md. Original licenses and commit history are retained."
+}

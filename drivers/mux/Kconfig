@@ -55,6 +55,15 @@ config MUX_APPLE_DPXBAR
 	  To compile this driver as a module, chose M here: the module will be
 	  called mux-apple-display-crossbar.
 
+config MUX_APPLE_DPXBAR_T6030
+	depends on SILICONFOREST_M3
+	bool "Apple T6030 USB-C display crossbars"
+	depends on MUX_APPLE_DPXBAR
+	help
+	  Support the display crossbars of the USB-C ports of the T6030
+	  (M3 Pro), which route the external display controllers' streams
+	  to the DisplayPort alternate mode of each port.
+
 config MUX_GPIO
 	tristate "GPIO-controlled Multiplexer"
 	depends on GPIOLIB || COMPILE_TEST

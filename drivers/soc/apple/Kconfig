@@ -166,6 +166,7 @@ config APPLE_PMP
 	  Say 'y' here if you have an Apple SoC.
 
 config APPLE_J613_DISPLAY_GATE
+	depends on !SILICONFOREST_M3
 	bool "Apple J613 25G83 display boot gate"
 	depends on ARCH_APPLE && OF_DYNAMIC && OF_ADDRESS
 	select VIDEO
@@ -177,6 +178,7 @@ config APPLE_J613_DISPLAY_GATE
 	  Missing or invalid handoffs keep the boot framebuffer available.
 
 config APPLE_T6030_DISPLAY_GATE
+	depends on !SILICONFOREST_M3
 	bool "Apple T6030 internal display enable gate"
 	depends on ARCH_APPLE && OF_DYNAMIC && OF_OVERLAY
 	default ARCH_APPLE

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only OR MIT
+config SILICONFOREST_M3
+	bool "SiliconForest M3 retained-firmware stack (development only)"
+	depends on ARM64 && ARCH_APPLE && EXPERT
+	depends on !USB4
+	help
+	  Build the separately imported PR358/PR363 GPU, display, PHY and PMP
+	  stack instead of the maintained implementations. Default N. This
+	  is a source integration for J514S and J516C development, not a
+	  hardware-qualified release. Requires matching boot-loader handoffs
+	  and Mesa; J516C also needs its measured board-data firmware file.
+
+	  USB4 is excluded because the imported display stack predates the
+	  maintained tunnel ownership API. USB-C DP alternate mode is separate.
+	  Use the DTBs under apple/m3-g15/, not the maintained board DTBs.
+	  The retained coprocessor sessions have no safe unload/restart path.
+	  Say N for a normal SiliconForest kernel.
