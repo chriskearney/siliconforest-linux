@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
+#ifdef CONFIG_SILICONFOREST_M3
+#include <linux/usb/typec_mux_m3.h>
+#else
 
 #ifndef __USB_TYPEC_MUX
 #define __USB_TYPEC_MUX
@@ -315,3 +318,5 @@ typec_thunderbolt_switch_get(struct device *dev)
 }
 
 #endif /* __USB_TYPEC_MUX */
+
+#endif /* CONFIG_SILICONFOREST_M3 */

@@ -8,7 +8,11 @@ mux-adg792a-objs		:= adg792a.o
 mux-adgs1408-objs		:= adgs1408.o
 mux-gpio-objs			:= gpio.o
 mux-mmio-objs			:= mmio.o
-mux-apple-display-crossbar-objs	:= apple-display-crossbar.o
+ifeq ($(CONFIG_SILICONFOREST_M3),y)
+mux-apple-display-crossbar-objs := m3/apple-display-crossbar.o
+else
+mux-apple-display-crossbar-objs := apple-display-crossbar.o
+endif
 
 obj-$(CONFIG_MULTIPLEXER)	+= mux-core.o
 obj-$(CONFIG_MUX_ADG792A)	+= mux-adg792a.o

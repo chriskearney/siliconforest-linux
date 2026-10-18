@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/phy/apple,t6030-atcphy-dp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Apple T6030 ATC PHY as a fixed DisplayPort transmitter
+
+maintainers:
+  - Sven Peter <sven@kernel.org>
+
+description: >
+  An Apple Type-C PHY (ATC) of the T6030 (M3 Pro) that a board wires as a
+  fixed four-lane DisplayPort transmitter instead of a USB-C port, e.g. into
+  the DP-to-HDMI converter of the MacBook Pro's HDMI port. It has no Type-C,
+  USB or USB4 side: the only PHY it provides is the DisplayPort PHY, all four
+  lanes on both of its lane pairs, up to HBR3.
+
+  Powering the PHY up needs the device's calibration values, copied from
+  Apple's device tree by the bootloader m1n1.
+
+properties:
+  compatible:
+    const: apple,t6030-atcphy-dp
+
+  reg:
+    maxItems: 1
+
+  reg-names:
+    const: core
+
+  "#phy-cells":
+    const: 1
+    description: The PHY type; only PHY_TYPE_DP exists.
+
+  power-domains:
+    maxItems: 1
+
+  apple,tunable-dp-calibration:
+    $ref: /schemas/types.yaml#/definitions/uint32-matrix
+    items:
+      items:
+        - description: Register offset in the core region
+        - description: Mask to be applied to the register value
+        - description: Bits to be set after applying the mask
+    description: >
+      Calibration of the PHY's common block, PLL and AUX, in the order the
+      bootloader copied it from Apple's device tree. Applied at every
+      power-up while the PHY is held in reset.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - "#phy-cells"
+  - power-domains
+
+additionalProperties: false
+
+examples:
+  - |
+    phy@3000000 {
+      compatible = "apple,t6030-atcphy-dp";
+      reg = <0x03000000 0x4c000>;
+      reg-names = "core";
+      #phy-cells = <1>;
+      power-domains = <&ps_atc3_common>;
+    };

@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/apple,t6030-pmp-ptd.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Apple T6030 PMP device-state requests (PTD)
+
+maintainers:
+  - Eryk Wieliczko <eryk@wieliczko.ninja>
+
+description: |
+  On T6030 the power management coprocessor (PMP) keeps a device-state
+  table (PTD) in which the application processor requests SoC devices
+  on and the PMP acknowledges them. A device whose PMGR power chain may
+  only be powered after the PMP has acknowledged it, such as an external
+  display coprocessor (DISPEXT0/1), lists this provider as a parent of
+  the first domain of that chain. The specifier cell is the device's bit
+  in the display request word (8 for DISPEXT0, 9 for DISPEXT1); powering
+  it on requests that device together with DISP and ANS and waits for
+  the acknowledgement. The request is retained once acknowledged.
+
+allOf:
+  - $ref: power-domain.yaml#
+
+properties:
+  compatible:
+    const: apple,t6030-pmp-ptd
+
+  reg:
+    maxItems: 1
+
+  "#power-domain-cells":
+    const: 1
+
+required:
+  - compatible
+  - reg
+  - "#power-domain-cells"
+
+additionalProperties: false
+
+examples:
+  - |
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        power-controller@3503c0000 {
+            compatible = "apple,t6030-pmp-ptd";
+            reg = <0x3 0x503c0000 0x0 0x14000>;
+            #power-domain-cells = <1>;
+        };
+    };

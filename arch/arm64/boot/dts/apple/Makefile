@@ -114,3 +114,6 @@ dtb-$(CONFIG_ARCH_APPLE) += t8122-j615.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8122-j615-25g83.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8140-j700.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8142-j813.dtb
+
+# Retained-firmware development DTBs; normal board outputs stay unchanged.
+subdir-$(CONFIG_SILICONFOREST_M3) += m3-g15

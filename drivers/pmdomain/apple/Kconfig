@@ -20,6 +20,22 @@ config APPLE_PMP_REPORT
 	depends on PM
 	select PM_GENERIC_DOMAINS
 
+config APPLE_PMP_T6030_PTD
+	depends on SILICONFOREST_M3
+	tristate "Apple T6030 PMP device-state power domains"
+	depends on OF
+	depends on PM
+	depends on APPLE_PMP
+	select PM_GENERIC_DOMAINS
+	help
+	  On T6030 (M3 Pro) the power management coprocessor (PMP) keeps a
+	  device-state table in which the external display controllers must
+	  be requested, and acknowledged, before their power domains are
+	  powered. This provides that request as the parent power domain of
+	  their power chains.
+
+	  If built as a module, it is called pmp-ptd and cannot be unloaded.
+
 config APPLE_PMC
 	bool "Apple PMC voter interface"
 	depends on OF
