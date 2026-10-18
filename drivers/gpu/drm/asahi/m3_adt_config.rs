@@ -184,8 +184,14 @@ impl PstatePolicy {
 
     /// Clamp the `asahi.m3_max_pstate` and `asahi.m3_boot_pstate` settings to the published table
     /// of `hwdata` (the generated HwData object image), and to `ceiling` when given (the T8122
-    /// start experiment's `asahi.t8122_pstate_cap`).
-    fn new(dev: &device::Device, hwdata: &[u8], ceiling: Option<u32>) -> Result<Self> {
+    /// or T6031 start experiment's `pstate_cap`). `t8122` is set for the T8122 experiment only,
+    /// whose thermal fallback stays at its default cap.
+    fn new(
+        dev: &device::Device,
+        hwdata: &[u8],
+        ceiling: Option<u32>,
+        t8122: bool,
+    ) -> Result<Self> {
         let hwb_max = offset_of!(raw::HwDataBG15V14_8_3, max_pstate);
         let hwb_freq = offset_of!(raw::HwDataBG15V14_8_3, frequencies);
         let table_max = read_u32(hwdata, hwb_max)?;
@@ -238,7 +244,7 @@ impl PstatePolicy {
             ThermalMode::Off => max,
             ThermalMode::Hold | ThermalMode::On => crate::m3_thermal_policy::safe_cap(
                 max,
-                ceiling.is_some(),
+                t8122,
                 ADT_MAX_PSTATE_LIMIT,
             ),
         };
@@ -328,6 +334,7 @@ impl Contents {
             dev,
             hwdata,
             experiment.map(|e| e.pstate_cap()).or_else(|| t6031.map(|e| e.pstate_cap())),
+            experiment.is_some(),
         )?;
         let table = match soc.pstates {
             PstateTable::Fixed { states, top_mhz } => (states, top_mhz),
