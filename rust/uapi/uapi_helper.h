@@ -7,7 +7,7 @@
  */
 
 #include <uapi/asm-generic/ioctl.h>
-#ifdef CONFIG_SILICONFOREST_M3
+#if defined(CONFIG_SILICONFOREST_M3) || defined(CONFIG_SILICONFOREST_NATIVE_GPU)
 #include <uapi/drm/asahi_m3_drm.h>
 #else
 #include <uapi/drm/asahi_drm.h>

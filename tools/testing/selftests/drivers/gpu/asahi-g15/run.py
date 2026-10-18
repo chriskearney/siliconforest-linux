@@ -189,15 +189,51 @@ def main():
                         "-o", str(temp / "memory")], check=True)
         memory = subprocess.run([str(temp / "memory")]).returncode
 
+        start = glue.index("bool asahi_g15_reserved_uat(u32 index, u64 start, u64 size)\n{")
+        end = glue.index("\n}", start) + 2
+        (temp / "uat-production.h").write_text(glue[start:end])
+        subprocess.run([os.environ.get("HOSTCC", "cc"), "-std=c11", "-Wall", "-Wextra",
+                        "-Werror", "-I", str(temp),
+                        str(Path(__file__).with_name("uat-owner.c")),
+                        "-o", str(temp / "uat-owner")], check=True)
+        subprocess.run([str(temp / "uat-owner")], check=True)
+
+        pmp = []
+        for name in ["prepare", "get"]:
+            start = glue.index("int asahi_g15_pmp_" + name + "(struct device *dev)\n{")
+            end = glue.index("\n}", start) + 2
+            pmp.append(glue[start:end])
+        (temp / "pmp-production.h").write_text("\n".join(pmp))
+        for profile, flags in [("full-stack", []),
+                               ("maintained-pmp", ["-DCONFIG_SILICONFOREST_NATIVE_GPU"])]:
+            output = temp / ("pmp-" + profile)
+            subprocess.run([os.environ.get("HOSTCC", "cc"), "-std=c11", "-Wall", "-Wextra",
+                            "-Werror", "-Wno-unused-function", *flags, "-I", str(temp),
+                            str(Path(__file__).with_name("pmp-bridge.c")), "-o", str(output)], check=True)
+            subprocess.run([str(output)], check=True)
+
+        report = (ROOT / "drivers/pmdomain/apple/pmp-report.c").read_text()
+        start = report.index("static int apple_pmp_report_wait_current14(")
+        end = report.index("\n}", start) + 2
+        (temp / "pmp-ready-production.h").write_text(report[start:end])
+        for native in [0, 1]:
+            output = temp / ("pmp-ready-" + str(native))
+            subprocess.run([os.environ.get("HOSTCC", "cc"), "-std=c11", "-Wall", "-Wextra",
+                            "-Werror", "-DCONFIG_SILICONFOREST_NATIVE_GPU=" + str(native),
+                            "-I", str(temp), str(Path(__file__).with_name("pmp-ready.c")),
+                            "-o", str(output)], check=True)
+            subprocess.run([str(output)], check=True)
+
         # Exercise the actual UAPI binding selector in both build profiles. Empty
         # __user is the userspace spelling of the raw header's kernel annotation.
         helper = (ROOT / "rust/uapi/uapi_helper.h").read_text()
-        start = helper.index("#ifdef CONFIG_SILICONFOREST_M3")
+        start = helper.index("#if defined(CONFIG_SILICONFOREST_M3)")
         end = helper.index("#endif", start) + len("#endif")
         (temp / "asahi-selector.h").write_text(helper[start:end])
-        for profile in ["maintained", "m3"]:
+        for profile in ["maintained", "m3", "native-gpu"]:
             output = temp / ("uapi-" + profile)
-            flags = ["-DCONFIG_SILICONFOREST_M3"] if profile == "m3" else []
+            flags = {"maintained": [], "m3": ["-DCONFIG_SILICONFOREST_M3"],
+                     "native-gpu": ["-DCONFIG_SILICONFOREST_NATIVE_GPU"]}[profile]
             subprocess.run([os.environ.get("HOSTCC", "cc"), "-std=c11", "-Wall", "-Wextra",
                             "-Werror", "-D__EXPORTED_HEADERS__", "-D__user=", *flags,
                             "-I", str(ROOT / "include/uapi"), "-I", str(ROOT / "include"),
@@ -208,6 +244,7 @@ def main():
         harness = RUST_PREFIX + f'\n#[path = "{G15 / "gate.rs"}"] mod gate;\n'
         harness += f'#[path = "{G15 / "recovery/logic.rs"}"] mod recovery;\n'
         harness += f'#[path = "{G15 / "power/idle.rs"}"] mod idle;\n'
+        harness += f'#[path = "{G15 / "identity/matching.rs"}"] mod firmware_identity;\n'
         harness += ("mod g15 { pub mod fw {\n" +
                     f'#[path = "{G15 / "fw/channels.rs"}"] pub mod channels;\n' +
                     f'#[path = "{G15 / "fw/buffer.rs"}"] pub mod buffer;\n' +

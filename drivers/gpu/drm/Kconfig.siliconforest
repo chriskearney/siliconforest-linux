@@ -1,4 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0-only OR MIT
+config SILICONFOREST_NATIVE_GPU
+	bool "SiliconForest native AGX GPU with maintained display stack"
+	depends on ARM64 && ARCH_APPLE && EXPERT
+	depends on !SILICONFOREST_M3
+	help
+	  Select the imported native AGX GPU driver and its matching userspace
+	  ABI while retaining the maintained display, USB4, PHY and PMP drivers.
+	  On T6030 the existing display gate links the GPU to this machine's PMP;
+	  the native GPU obtains its AGX vote through that PMP's serialized bridge.
+	  Requires native Mesa. Do not mix this ABI with compatibility Mesa.
+	  Firmware, board, memory and command-stream admission remain enforced.
+	  Default N until the complete pair has been qualified on the target.
+
 config SILICONFOREST_M3
 	bool "SiliconForest M3 retained-firmware stack (development only)"
 	depends on ARM64 && ARCH_APPLE && EXPERT

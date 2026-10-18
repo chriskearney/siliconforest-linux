@@ -67,6 +67,9 @@ pub(crate) mod glue {
         fn asahi_g15_memory_mode(start: u64, size: u64) -> u32;
         fn asahi_g15_ioremap_wc(start: u64, size: usize) -> *mut core::ffi::c_void;
         fn asahi_g15_dma_coherent(dev: *mut core::ffi::c_void) -> bool;
+        pub(crate) fn asahi_g15_pmp_prepare(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
+        pub(crate) fn asahi_g15_pmp_get(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
+        fn asahi_g15_reserved_uat(index: u32, start: u64, size: u64) -> bool;
     }
 
     /// SHA-256 (`sha256()`).
@@ -81,6 +84,12 @@ pub(crate) mod glue {
     pub(crate) fn board() -> bool {
         // SAFETY: Reads the machine compatible strings only.
         unsafe { asahi_g15_board() }
+    }
+
+    /// Exact enabled UAT reservation from the maintained boot-loader handoff.
+    pub(crate) fn reserved_uat(index: u32, start: u64, size: u64) -> bool {
+        // SAFETY: Queries and releases OF nodes; no physical memory is accessed.
+        unsafe { asahi_g15_reserved_uat(index, start, size) }
     }
 
     /// Whether the machine carries `compatible` (`of_machine_is_compatible()`).
@@ -433,7 +442,7 @@ pub(crate) fn admit(
         }
         // Retain the PMP supplier (and its AGX bridge) before any vote.
         // SAFETY: `dev` is the bound GPU device.
-        let ret = unsafe { bindings::apple_pmp_j514s_gpu_prepare(dev.as_raw()) };
+        let ret = unsafe { glue::asahi_g15_pmp_prepare(dev.as_raw().cast()) };
         if ret != 0 {
             let err = Error::from_errno(ret);
             if err != EPROBE_DEFER {
@@ -568,7 +577,7 @@ pub(crate) fn start(
     let d: ARef<device::Device> = shared.dev.clone();
     if cfg.platform == hw::Platform::AdtWithPmp {
         // SAFETY: `d` is the bound GPU device.
-        let ret = unsafe { bindings::apple_pmp_j514s_gpu_get(d.as_raw()) };
+        let ret = unsafe { glue::asahi_g15_pmp_get(d.as_raw().cast()) };
         if ret != 0 {
             dev_err!(d, "PMP AGX vote failed: {}\n", ret);
             return Err(Error::from_errno(ret));
@@ -639,9 +648,14 @@ pub(crate) fn start(
 
     // From here on the firmware is touched: nothing it can reach is freed.
     glue::retain_module();
-    let rtkit = match Rtkit::new(&d, shared, cfg.platform == hw::Platform::AdtWithPmp) {
+    // Full-stack T6030 synthesizes a named mailbox. The maintained T6030
+    // DT instead has one unnamed mailbox, like the other device-tree GPUs.
+    let named_mailbox = cfg.platform == hw::Platform::AdtWithPmp
+        && !cfg!(CONFIG_SILICONFOREST_NATIVE_GPU);
+    let rtkit = match Rtkit::new(&d, shared, named_mailbox) {
         Ok(rtkit) => rtkit,
         Err(e) => {
+            dev_err!(d, "G15: RTKit mailbox initialization failed: {:?}\n", e);
             core::mem::forget(objects);
             return Err(e);
         }

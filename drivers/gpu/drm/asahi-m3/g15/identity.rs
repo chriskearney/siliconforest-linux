@@ -18,6 +18,8 @@ use kernel::{bindings, device, fmt, prelude::*};
 use super::boot::glue;
 use super::hw::FirmwareBuild;
 
+mod matching;
+
 /// Lowercase hex of a byte string, as `%*phN` prints it.
 pub(crate) struct Hex<'a>(pub(crate) &'a [u8]);
 
@@ -84,11 +86,11 @@ pub(crate) fn firmware(
     copy[at + 8..at + 16].fill(0);
     let digest = glue::sha256(&copy);
     for build in builds {
-        if build.text_size == size as u64
-            && build.data_size == data_size
-            && build.marker as usize == at
-            && build.text_sha256 == digest
-        {
+        if matching::exact(
+            (build.text_size, build.data_size), (size as u64, data_size),
+            build.marker, at, &build.text_sha256, &digest,
+            build.machine.map_or(true, glue::machine),
+        ) {
             dev_info!(dev, "GPU firmware build: {}\n", build.name);
             return Ok(Some(build));
         }

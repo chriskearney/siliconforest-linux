@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include "asahi-selector.h"
 
-#ifdef CONFIG_SILICONFOREST_M3
+#if defined(CONFIG_SILICONFOREST_M3) || defined(CONFIG_SILICONFOREST_NATIVE_GPU)
 _Static_assert(DRM_ASAHI_FEATURE_PER_COMMAND_INPUT_SYNCS == 8, "M3 feature bits");
 _Static_assert(sizeof(struct drm_asahi_cmd_render) == 384, "M3 render size");
 _Static_assert(offsetof(struct drm_asahi_cmd_render, prior_vdm) == 256, "M3 render prior");
@@ -21,7 +21,7 @@ _Static_assert(sizeof(struct drm_asahi_vm_create) == 24, "VM ioctl size");
 
 int main(void)
 {
-#ifdef CONFIG_SILICONFOREST_M3
+#if defined(CONFIG_SILICONFOREST_M3) || defined(CONFIG_SILICONFOREST_NATIVE_GPU)
 	puts("M3 UAPI selection and layout: PASS");
 #else
 	puts("maintained UAPI selection and layout: PASS");
