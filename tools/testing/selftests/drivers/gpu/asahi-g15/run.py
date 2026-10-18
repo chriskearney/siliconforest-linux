@@ -212,6 +212,18 @@ def main():
                             str(Path(__file__).with_name("pmp-bridge.c")), "-o", str(output)], check=True)
             subprocess.run([str(output)], check=True)
 
+        report = (ROOT / "drivers/pmdomain/apple/pmp-report.c").read_text()
+        start = report.index("static int apple_pmp_report_wait_current14(")
+        end = report.index("\n}", start) + 2
+        (temp / "pmp-ready-production.h").write_text(report[start:end])
+        for native in [0, 1]:
+            output = temp / ("pmp-ready-" + str(native))
+            subprocess.run([os.environ.get("HOSTCC", "cc"), "-std=c11", "-Wall", "-Wextra",
+                            "-Werror", "-DCONFIG_SILICONFOREST_NATIVE_GPU=" + str(native),
+                            "-I", str(temp), str(Path(__file__).with_name("pmp-ready.c")),
+                            "-o", str(output)], check=True)
+            subprocess.run([str(output)], check=True)
+
         # Exercise the actual UAPI binding selector in both build profiles. Empty
         # __user is the userspace spelling of the raw header's kernel annotation.
         helper = (ROOT / "rust/uapi/uapi_helper.h").read_text()

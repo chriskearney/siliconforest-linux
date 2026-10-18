@@ -65,7 +65,7 @@ int apple_pmp_set_device_power(u8 command, u16 device_id, u32 enabled)
 	guard(mutex)(&pmp_lock);
 	if (!pmp_data)
 		return -ENODEV;
-	/* The 25G83 PTD readiness is required, with no elapsed-time fallback. */
+	/* Require the supplier PTD and display request, with no timed fallback. */
 	ret = apple_pmp_report_wait_supplier_ready(pmp_device, 5000);
 	if (ret)
 		return ret;
