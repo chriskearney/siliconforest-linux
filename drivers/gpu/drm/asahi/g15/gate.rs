@@ -3,8 +3,8 @@
 //! Stream admission gates (safety nets for userspace encoders).
 //!
 //! VDM: the root stream's first word is 0x21000960. CDM walk from `cdm_ctrl_stream_base` through
-//! links until TERMINATE (0x40000000), at most 8192 records and 64 links (a longer stream is
-//! admitted unchecked past the bound): barriers 0x60000160, 0x60001560, 0x600215fe, 0x600201fe;
+//! links until TERMINATE (0x40000000), at most 8192 records and 64 links (a longer or cyclic
+//! stream is rejected): barriers 0x60000160, 0x60001560, 0x600215fe, 0x600201fe;
 //! link 0x2000XXXX; direct launch (40 B, the G15 layout), indirect launches 36 B
 //! (`w0 & 0xff7fffff == 0x08080000`) and 24 B (0x10080000); every program VA inside the queue's
 //! 4 GiB USC window, 64-aligned, first 64 bytes readable. Client memory is read through the VM's
@@ -140,13 +140,13 @@ pub(crate) fn cdm(vm: &mmu::Vm, usc: u64, base: u64) -> Result {
             continue;
         }
         if w[0] == CDM_TERMINATE {
-            break;
+            return Ok(());
         }
         if w[0] & 0xffff0000 == CDM_LINK {
             let w = window.words(vm, va, 2)?;
             links += 1;
             if links > CDM_MAX_LINKS {
-                break;
+                return Err(reject("CDM link budget", va, &w));
             }
             va = (u64::from(w[0] & 0xffff) << 32) | u64::from(w[1]);
             if va & 3 != 0 {
@@ -192,5 +192,5 @@ pub(crate) fn cdm(vm: &mmu::Vm, usc: u64, base: u64) -> Result {
         }
         return Err(reject("CDM", va, &w));
     }
-    Ok(())
+    Err(reject("CDM record budget", va, &[]))
 }
