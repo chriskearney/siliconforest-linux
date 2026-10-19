@@ -35,6 +35,7 @@ appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += external-hold-test.o
 appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += v14-board-test.o
 appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += typec-routes-test.o typec-routes-test.dtbo.o
 appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += iomfb_v14_7_present-test.o
+appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += dcp-catalog-test.o
 
 obj-$(CONFIG_DRM_APPLE_KUNIT_TEST) += afk-service-test.o
 obj-$(CONFIG_DRM_APPLE_KUNIT_TEST) += afk_test.o
