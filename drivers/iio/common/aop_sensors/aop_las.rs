@@ -36,10 +36,14 @@ kernel::of_device_table!(
 
 impl platform::Driver for IIOAopLasDriver {
     type IdInfo = ();
+    type Data<'bound> = Self;
 
     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
 
-    fn probe(pdev: &platform::Device<Core>, _info: Option<&()>) -> impl PinInit<Self, Error> {
+    fn probe<'bound>(
+        pdev: &'bound platform::Device<Core<'_>>,
+        _info: Option<&'bound ()>,
+    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         let dev = pdev.as_ref();
         // SAFETY: This driver binds only to the service devices the AOP core
         // registers, and `pdev` is being probed.
@@ -65,7 +69,10 @@ impl platform::Driver for IIOAopLasDriver {
         })
     }
 
-    fn unbind(_dev: &platform::Device<Core>, this: Pin<&Self>) {
+    fn unbind<'bound>(
+        _dev: &'bound platform::Device<Core<'_>>,
+        this: Pin<&Self::Data<'bound>>,
+    ) {
         this.listener.unregister();
     }
 }
