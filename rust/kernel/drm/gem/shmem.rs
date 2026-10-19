@@ -210,17 +210,27 @@ impl<T: DriverObject, C: DeviceContext> Object<T, C> {
     /// Creates a new handle for this object on `file`, or returns the existing one.
     ///
     /// Unlike [`BaseObject::create_handle`], this accepts an object of any device context. A
-    /// [`drm::File`](crate::drm::File) exists only for a registered device, so the file itself
-    /// shows that the device can hand out handles, whatever context the object was created in.
+    /// [`drm::File`](crate::drm::File) exists only for a registered device, so a file opened
+    /// on this object's own device shows that the device can hand out handles, whatever context
+    /// the object was created in. A file of another device of the same driver proves nothing
+    /// about this one, so such a file is refused with `EINVAL`.
     pub fn create_handle<F>(&self, file: &crate::drm::File<F>) -> Result<u32>
     where
         F: crate::drm::file::DriverFile<Driver = T::Driver>,
     {
+        let raw_file = file.as_raw();
+        // SAFETY: `raw_file` is a valid open `struct drm_file`. Its `minor`, and that minor's
+        // `dev`, stay valid while the file is open.
+        let file_dev = unsafe { (*(*raw_file).minor).dev };
+        if file_dev != self.dev().as_raw() {
+            return Err(EINVAL);
+        }
+
         let mut handle: u32 = 0;
-        // SAFETY: `file` and `self` are valid by their type invariants, and both belong to
-        // `T::Driver`.
+        // SAFETY: `raw_file` and `self` are valid by their type invariants, and the file was
+        // opened on the device that owns this object.
         to_result(unsafe {
-            bindings::drm_gem_handle_create(file.as_raw().cast(), self.as_raw(), &mut handle)
+            bindings::drm_gem_handle_create(raw_file.cast(), self.as_raw(), &mut handle)
         })?;
         Ok(handle)
     }
