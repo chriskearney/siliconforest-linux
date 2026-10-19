@@ -3177,6 +3177,11 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 	dcp->external = of_device_is_compatible(dev->of_node, "apple,t6030-dcpext");
 	dcp->external_native = dcp->external && dcp_t6030_ext_native(dev->of_node);
 	INIT_WORK(&dcp->external_audio_work, dcp_external_audio_work);
+	/*
+	 * A native external pipe's bind enables it (its first EDID queues
+	 * it, through the connector); unbind and suspend disable it again.
+	 */
+	disable_work(&dcp->external_audio_work);
 	dcp->dev = dev;
 	/*
 	 * Type-C and Thunderbolt routes can be activated as soon as they are
