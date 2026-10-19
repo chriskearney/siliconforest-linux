@@ -170,7 +170,7 @@ void unregister_trusted_key_source(struct trusted_key_source *src)
 	mutex_lock(&trusted_key_source_lock);
 
 	/* Only the source that registered may withdraw itself. */
-	if (!trusted_key_source_active || src != trusted_key_source_registered) {
+	if (!src || !trusted_key_source_active || src != trusted_key_source_registered) {
 		mutex_unlock(&trusted_key_source_lock);
 		return;
 	}
