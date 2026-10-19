@@ -559,10 +559,10 @@ impl<T: DriverGpuVm> GpuVm<T> {
         self.gpuvm.get()
     }
 
-    pub fn new<E>(
+    pub fn new<E, C: drm::DeviceContext>(
         name: &'static CStr,
         flags: bindings::drm_gpuvm_flags,
-        dev: &device::Device<T::Driver>,
+        dev: &device::Device<T::Driver, C>,
         r_obj: ARef<Object<T>>,
         range: Range<u64>,
         reserve_range: Range<u64>,
@@ -580,10 +580,10 @@ impl<T: DriverGpuVm> GpuVm<T> {
     /// `drm_gpuvm_bo_put_deferred()` and then drains the VM's deferred list, instead of
     /// putting it synchronously under the GEM's GPUVA lock. The GEM GPUVA mutex is
     /// released before final GEM destruction.
-    pub fn new_deferred_bo_put<E>(
+    pub fn new_deferred_bo_put<E, C: drm::DeviceContext>(
         name: &'static CStr,
         flags: bindings::drm_gpuvm_flags,
-        dev: &device::Device<T::Driver>,
+        dev: &device::Device<T::Driver, C>,
         r_obj: ARef<Object<T>>,
         range: Range<u64>,
         reserve_range: Range<u64>,
@@ -599,10 +599,10 @@ impl<T: DriverGpuVm> GpuVm<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn new_inner<E>(
+    fn new_inner<E, C: drm::DeviceContext>(
         name: &'static CStr,
         flags: bindings::drm_gpuvm_flags,
-        dev: &device::Device<T::Driver>,
+        dev: &device::Device<T::Driver, C>,
         r_obj: ARef<Object<T>>,
         range: Range<u64>,
         reserve_range: Range<u64>,
