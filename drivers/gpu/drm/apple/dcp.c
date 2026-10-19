@@ -1365,6 +1365,8 @@ static int dcp_dptx_release_locked(struct apple_dcp *dcp, u32 port)
 		dcp_hdmi_sink_held(dcp, false);
 	/* A released sink is no longer inactive: the next one starts afresh. */
 	WRITE_ONCE(dcp->dptxport[port].sink_inactive, false);
+	if (!port && dcp->fw_compat == DCP_FIRMWARE_V_14_7)
+		iomfb_v14_7_external_sink_released(dcp);
 	/*
 	 * T6030: the firmware takes a direct crossbar output down when it
 	 * stops the link. Make sure of it for a display released here, also

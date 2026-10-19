@@ -71,6 +71,8 @@ bool iomfb_v14_7_external_showing(struct apple_dcp *dcp,
 void dcp_v14_external_hotplug(struct apple_dcp *dcp, bool connected);
 /* The firmware reported the attached sink inactive, or active again. */
 void iomfb_v14_7_external_sink_active(struct apple_dcp *dcp, bool active);
+/* The sink was released: a display kept on only for it is powered down. */
+void iomfb_v14_7_external_sink_released(struct apple_dcp *dcp);
 void iomfb_v14_7_external_withdrawn(struct apple_dcp *dcp);
 bool iomfb_v14_7_external_release(struct apple_dcp *dcp);
 bool iomfb_v14_7_external_holding(struct apple_dcp *dcp);
