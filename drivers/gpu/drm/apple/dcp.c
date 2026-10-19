@@ -3762,6 +3762,9 @@ static int dcp_platform_suspend(struct device *dev)
 	 * shutdown properly yet.
 	 */
 	device_set_wakeup_path(dev);
+	/* Last: the 14.7 panel's messages wait in the mailbox until resume. */
+	if (dcp->fw_compat == DCP_FIRMWARE_V_14_7 && !dcp->external)
+		iomfb_v14_7_hold_rx(dcp);
 
 	return 0;
 }
@@ -3774,6 +3777,9 @@ static int dcp_platform_resume(struct device *dev)
 		return dcp_platform_resume_h17p(dev);
 	if (READ_ONCE(dcp->ext_dead))
 		return 0;
+	/* First: deliver what the 14.7 panel's firmware sent during sleep. */
+	if (dcp->fw_compat == DCP_FIRMWARE_V_14_7 && !dcp->external)
+		iomfb_v14_7_release_rx(dcp);
 	iomfb_v14_7_backlight_resume(dcp);
 
 	dcp_enable_typec_work(dcp);

@@ -206,6 +206,12 @@ struct apple_dcp_v14 {
 	bool failed;
 	bool started;
 	/*
+	 * Panel, under the lock: the mailbox holds the firmware's messages
+	 * through system sleep (iomfb_v14_7_hold_rx()). No call is sent then:
+	 * its reply could not arrive until resume.
+	 */
+	bool rx_held;
+	/*
 	 * J613 internal pipe with a Type-C route (iomfb_v14_7_clamshell_start()):
 	 * the lid state IOMFB was told (A475: 1 open, 2 closed, 0 not yet), the
 	 * panel's CRTC is off (panel_blank), and the panel was powered off
@@ -401,6 +407,47 @@ void iomfb_v14_7_backlight_suspend(struct apple_dcp *dcp)
 		dcp_v14_bl_shut(dcp->v14, false);
 }
 
+/*
+ * System sleep of the panel, as dcp_platform_suspend()'s last step. The panel
+ * keeps scanning out through sleep and its firmware keeps publishing to the
+ * AP; each message would wake a CPU out of suspend-to-idle. Once no call is
+ * in flight (calls and notifications run under the lock), hold its messages
+ * in the mailbox until iomfb_v14_7_release_rx(). The brightness work is
+ * already shut (iomfb_v14_7_backlight_suspend()). Not for an external
+ * processor, whose display refuses sleep, nor for the J613 internal pipe
+ * while it drives a Type-C display.
+ */
+void iomfb_v14_7_hold_rx(struct apple_dcp *dcp)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+
+	if (dcp->external || !v14 || v14->external || !v14->rtk || !v14->started)
+		return;
+	mutex_lock(&v14->lock);
+	if (!v14->failed && !READ_ONCE(v14->typec) && !v14->rx_held) {
+		apple_rtkit_hold_rx(v14->rtk);
+		v14->rx_held = true;
+	}
+	mutex_unlock(&v14->lock);
+}
+
+/* Resume: the held messages are delivered, and calls may go out again. */
+void iomfb_v14_7_release_rx(struct apple_dcp *dcp)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+	bool held;
+
+	if (!v14)
+		return;
+	mutex_lock(&v14->lock);
+	held = v14->rx_held;
+	v14->rx_held = false;
+	mutex_unlock(&v14->lock);
+	/* Outside the lock: the held messages' callbacks take it. */
+	if (held)
+		apple_rtkit_resume_rx(v14->rtk);
+}
+
 void iomfb_v14_7_backlight_resume(struct apple_dcp *dcp)
 {
 	struct apple_dcp_v14 *v14 = dcp->v14;
@@ -452,6 +499,11 @@ static int dcp_v14_call_guarded(struct apple_dcp_v14 *v14, u32 tag, const void *
 
 	if (v14->failed)
 		return -EIO;
+	/* Not a link failure: the session goes on after resume. */
+	if (v14->rx_held) {
+		dev_warn_ratelimited(v14->dev, "DCP call %#x during system sleep refused\n", tag);
+		return -EAGAIN;
+	}
 	dev_dbg(v14->dev, "call %#x in %u out %u\n", tag, in_size, out_size);
 	ret = dcp_v14_link_call_guarded(&v14->link, tag, in, in_size, out, out_size, completion,
 				dcp_v14_callback, v14, admit, admit_cookie, &vetoed);
@@ -2867,7 +2919,7 @@ static int dcp_v14_swap(struct apple_dcp_v14 *v14, const u8 *surface, u64 iova,
 	 * firmware takes no swap for the panel now, and one it swallows never
 	 * completes. Nothing is sent; the caller drops the frame.
 	 */
-	if (dcp_v14_panel_dark(v14)) {
+	if (dcp_v14_panel_dark(v14) || v14->rx_held) {
 		mutex_unlock(&v14->lock);
 		kfree(swap);
 		return -EAGAIN;

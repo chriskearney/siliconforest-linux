@@ -35,6 +35,12 @@ bool iomfb_v14_7_panel_nits(struct apple_dcp *dcp);
  */
 void iomfb_v14_7_backlight_suspend(struct apple_dcp *dcp);
 void iomfb_v14_7_backlight_resume(struct apple_dcp *dcp);
+/*
+ * System sleep of an internal panel: its firmware's messages wait in the
+ * mailbox from _hold_rx() until _release_rx().
+ */
+void iomfb_v14_7_hold_rx(struct apple_dcp *dcp);
+void iomfb_v14_7_release_rx(struct apple_dcp *dcp);
 /* Component bind: the running DCP's RTKit session. */
 int iomfb_v14_7_bind(struct apple_dcp *dcp);
 int iomfb_v14_7_external_start(struct apple_dcp *dcp);
