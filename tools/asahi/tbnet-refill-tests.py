@@ -29,6 +29,13 @@ def extract(name,text=source):
  return text[a:b]
 nhi=subprocess.check_output(['git','show',ref+':drivers/thunderbolt/nhi.c'],cwd=wt,text=True) if ref!='WORKTREE' else (wt/'drivers/thunderbolt/nhi.c').read_text();core=subprocess.check_output(['git','show',ref+':net/core/page_pool.c'],cwd=wt,text=True) if ref!='WORKTREE' else (wt/'net/core/page_pool.c').read_text()
 bodies={'__ring_interrupt':extract('__ring_interrupt',nhi),'page_pool_napi_local':extract('page_pool_napi_local',core)}
+# 7.2 replaced tbnet_frame_size() with tb_ring_frame_size() in thunderbolt.h (5140737c592d).
+tbh=subprocess.check_output(['git','show',ref+':include/linux/thunderbolt.h'],cwd=wt,text=True) if ref!='WORKTREE' else (wt/'include/linux/thunderbolt.h').read_text()
+if re.search(r'^static[^;\n]*\btb_ring_frame_size\(',tbh,re.M):
+ bodies['tb_ring_frame_size']=extract('tb_ring_frame_size',tbh);names=[n for n in names if n!='tbnet_frame_size']
+# 7.2's teardown path calls a lock-held helper from tbnet_connected_work().
+if re.search(r'^static[^;\n]*\btbnet_connect_failed_locked\(',source,re.M):
+ names.insert(names.index('tbnet_connected_work'),'tbnet_connect_failed_locked')
 bodies.update({n:extract(n) for n in names})
 original_bodies = dict(bodies)
 if args.mutant == 'refill-count':

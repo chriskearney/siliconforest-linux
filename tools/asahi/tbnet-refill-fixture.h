@@ -11,6 +11,7 @@
 #include <unistd.h>
 #define TBNET_RING_SIZE 256
 #define TBNET_FRAME_SIZE 4096
+#define TB_MAX_FRAME_SIZE 4096
 #define TBNET_RX_PAGE_ORDER (PAGE_SIZE==4096?1:0)
 #define TBNET_RX_PAGE_SIZE (PAGE_SIZE<<TBNET_RX_PAGE_ORDER)
 #define MAX_SKB_FRAGS 17
@@ -97,6 +98,7 @@ static struct page *find_page(void *mem){for(int i=0;i<npages;i++)if(pages[i]->m
 static void pause_poll(int where){pthread_mutex_lock(&gate);if(pause_at==where){paused=where;pthread_cond_broadcast(&cv);while(!resume_poll)pthread_cond_wait(&cv,&gate);}pthread_mutex_unlock(&gate);}
 static void mutex_lock(pthread_mutex_t *m){assert(!pthread_mutex_lock(m));heldmutex++;}
 static void mutex_unlock(pthread_mutex_t *m){assert(heldmutex>0);heldmutex--;assert(!pthread_mutex_unlock(m));}
+#define lockdep_assert_held(l) ((void)(l), assert(heldmutex>0))
 static void spin_lock(spinlock_t *m){mutex_lock(m);}static void spin_unlock(spinlock_t *m){mutex_unlock(m);}
 static void spin_lock_bh(spinlock_t *m){mutex_lock(m);}static void spin_unlock_bh(spinlock_t *m){mutex_unlock(m);}
 static struct tbnet *netdev_priv(struct net_device *d){return d->priv;}
