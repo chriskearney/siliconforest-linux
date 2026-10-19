@@ -4889,10 +4889,10 @@ static const struct dcp_v14_7_board dcp_v14_7_j514s = {
 };
 
 /*
- * MacBook Pro 16" M3 Max (J516C): the J516 panel,
- * 3456x2234 with 74 notch rows above the 3456x2160 boot framebuffer at 4
- * bytes per pixel. The image is the one this Mac's ADT and the boot
- * loader's apple,firmware-uuid name.
+ * MacBook Pro 16" M3 Max (J516C): the J516 panel, 3456x2234 with 74 notch
+ * rows above the 3456x2160 boot framebuffer at 4 bytes per pixel. The image
+ * is the one this Mac's ADT and the boot loader's apple,firmware-uuid name.
+ * The 14" M3 Max (J514C) has another panel and needs its own profile.
  */
 static const struct dcp_v14_7_board dcp_v14_7_t6031 = {
 	.name = "J516C",
@@ -5616,7 +5616,7 @@ static const struct apple_dcp_hw_data apple_dcp_hw_t6030 = {
 
 #if IS_ENABLED(CONFIG_DRM_APPLE_DCP_T6031)
 /*
- * MacBook Pro M3 Max (J516C/J514C, T6031) internal panel: the J514S session
+ * MacBook Pro 16" M3 Max (J516C, T6031) internal panel: the J514S session
  * at the T6031 addresses. The panel's size and brightness come from the
  * panel child the T6031 device tree carries; the hardware data are the
  * same mini-LED facts in case it is missing.
