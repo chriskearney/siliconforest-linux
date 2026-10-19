@@ -183,3 +183,35 @@ fn unrelated_power_payload_words_do_not_change_decoding() {
     assert_eq!(s.snapshot().unwrap().current(), Some([0; 4]));
     assert_eq!(s.snapshot().unwrap().invalid, 0);
 }
+
+#[test]
+fn residency_durations_do_not_fabricate_timestamped_power_transitions() {
+    let s = Load::new();
+    let busy = [10, 70, 20, 80];
+    s.record(0, 1, &util(100, busy));
+    s.record(1, 2, &record(0x12, 48_000_000));
+    s.record(1, 3, &record(0x11, 24_000_000));
+    let r = s.snapshot().unwrap();
+    assert!(!r.power_known);
+    assert_eq!(r.power_ticks, 0);
+    assert_eq!(r.on_ticks, 0);
+    assert_eq!(r.powered_ticks, 48_000_000);
+    assert_eq!(r.unpowered_ticks, 24_000_000);
+    assert_eq!(r.current(), Some(busy));
+
+    // A duration must not turn a known-on state into an off witness either.
+    s.record(1, 4, &power(50, false));
+    s.record(1, 5, &record(0x12, 24_000_000));
+    let r = s.snapshot().unwrap();
+    assert!(r.power_known && r.powered);
+    assert_eq!(r.power_ticks, 50);
+    assert_eq!(r.powered_ticks, 72_000_000);
+    assert_eq!(r.current(), Some(busy));
+
+    // Only a sufficiently new timestamped POWER_STATE off record clears it.
+    s.record(1, 6, &power(90, true));
+    assert_eq!(s.snapshot().unwrap().current(), Some(busy));
+    s.record(1, 7, &power(110, true));
+    assert_eq!(s.snapshot().unwrap().power_ticks, 110);
+    assert_eq!(s.snapshot().unwrap().current(), Some([0; 4]));
+}

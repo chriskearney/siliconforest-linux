@@ -37,6 +37,8 @@ MODULE_IMPORT_NS("DMA_BUF");
  * Count page-cache pages even after the device has released its page array.
  * The object's backing file remains alive throughout the fdinfo walk. An
  * imported object retains its DMA mapping instead of a private shmem file.
+ * Its RSS is the mapped attachment extent, not unique physical RAM usage;
+ * multiple imported objects or clients may describe the same physical backing.
  */
 size_t drm_gem_shmem_object_rss(struct drm_gem_object *obj)
 {
