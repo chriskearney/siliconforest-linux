@@ -379,7 +379,7 @@ def main():
     p.add_argument('--mutations', action='store_true', help='Also require every mutation to fail')
     a = p.parse_args()
     import tempfile
-    out = a.output or Path(tempfile.mkdtemp(prefix='g15-stats-drain-'))
+    out = (a.output or Path(tempfile.mkdtemp(prefix='g15-stats-drain-'))).resolve()
     out.mkdir(parents=True, exist_ok=True)
 
     def read(path, ref=None):
