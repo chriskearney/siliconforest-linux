@@ -160,10 +160,11 @@ fn templates(
 /// HardwareDataA word holding the system counter at initdata creation.
 const HWDATA_A_INIT_TIMESTAMP: usize = 0x424c;
 
-/// Board images from the SoC's firmware file. The file is this machine's own: its DVFS tables
-/// are kept, and checked for the top frequency of the device tree's operating points; its
-/// IOMapping records must name the layout's physical addresses. Returns the images and the
-/// top operating-point frequency in kHz.
+/// Board images of a SoC with a firmware file. The hardware record ([`board::hardware_record`]),
+/// Globals and Power ([`board::device_tree`]) are built from the device tree; the file, this
+/// machine's own, supplies the record's words the device tree does not carry and is otherwise
+/// a cross-check: admission ([`prepare_board`], before any firmware is touched) is refused at
+/// the first differing word. Returns the images and the top operating-point frequency in kHz.
 fn blob(
     dev: &device::Device,
     cfg: &Config,
@@ -178,17 +179,22 @@ fn blob(
         sha256,
         [layout.hwdata_size, globals::SIZE, power::SIZE],
     )?;
-    let hw_img = images.hardware;
-    for map in layout.iomaps.iter() {
-        let at = hwdata::IOMAPS + hwdata::IOMAP_STRIDE * map.slot as usize;
-        let pa = u64::from(get32(&hw_img, at)?) | u64::from(get32(&hw_img, at + 4)?) << 32;
-        if pa != map.pa + map.delta {
+    let hw_img = board::hardware_record(dev, cfg, adt, &images.hardware)?;
+    let (glob, pwr, max_power_mw) = board::device_tree(dev, &hw_img)?;
+    for (what, built, file) in [
+        ("hardware record", &hw_img, &images.hardware),
+        ("Globals", &glob, &images.globals),
+        ("Power", &pwr, &images.power),
+    ] {
+        if let Some((at, b, f)) = board::words::first_difference(built, file) {
             dev_err!(
                 dev,
-                "board images: IOMapping slot {} is at {:#x}, the layout maps {:#x}\n",
-                map.slot,
-                pa,
-                map.pa + map.delta
+                "board data: device-tree {} differs from {} at +{:#x}: built {:#x}, file {:#x}\n",
+                what,
+                name,
+                at,
+                b,
+                f
             );
             return Err(EINVAL);
         }
@@ -196,11 +202,18 @@ fn blob(
     let max_mhz = adt.perf_mhz.iter().copied().max().unwrap_or(0);
     dev_info!(
         dev,
-        "board data: {} images, {} MHz top operating point\n",
+        "board data: {} images from the device tree match {} ({} record words from the file), {} mW maximum power, {} MHz top operating point\n",
         cfg.name,
+        name,
+        board::record::FROM_FILE.len(),
+        max_power_mw,
         max_mhz
     );
-    Ok((hw_img, images.globals, images.power, max_mhz * 1000))
+    let max_khz = max_mhz.checked_mul(1000).ok_or_else(|| {
+        dev_err!(dev, "board data: top operating point {} MHz does not fit in kHz\n", max_mhz);
+        EINVAL
+    })?;
+    Ok((hw_img, glob, pwr, max_khz))
 }
 
 /// Verified board bytes, prepared before any GPU firmware is started.
@@ -223,7 +236,7 @@ pub(crate) fn prepare_board(
 /// Builds the initdata graph. Returns it with its channels and the top DVFS frequency in kHz.
 /// Nothing is published here.
 pub(crate) fn build(
-    _dev: &device::Device,
+    dev: &device::Device,
     cfg: &Config,
     adt: &GpuAdt,
     objects: &mut Objects,
@@ -299,11 +312,47 @@ pub(crate) fn build(
     }
     put64(&mut hw_img, hwdata::TIMESTAMPS, va::TIMESTAMPS)?;
     put32(&mut glob, globals::UNK_980, 100)?;
-    put32(
-        &mut glob,
-        globals::IDLE_STANDBY_US,
-        super::params::idle_standby_us(),
-    )?;
+    // The device tree's standby time (a machine with a firmware file; the templates' machine
+    // has none).
+    let dt_standby = match cfg.board {
+        hw::Board::Blob { .. } => {
+            let prop = board::words::PROPS[board::words::STANDBY_TIMER];
+            match dev
+                .of_node()
+                .ok_or(ENODEV)
+                .and_then(|n| n.get_property::<u32>(prop))
+            {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    dev_warn!(
+                        dev,
+                        "GPU node has no u32 {}, using the tuned idle standby\n",
+                        prop
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let (standby_us, standby_src, dt_rejected) = super::power::standby(
+        super::params::idle_standby_override_us(),
+        dt_standby,
+        hw::tuning::IDLE_STANDBY_US,
+    );
+    if dt_rejected {
+        dev_warn!(
+            dev,
+            "apple,idleoff-standby-timer is outside 100..100000 us, ignored\n"
+        );
+    }
+    dev_info!(
+        dev,
+        "idle standby {} us from {}\n",
+        standby_us,
+        standby_src.name()
+    );
+    put32(&mut glob, globals::IDLE_STANDBY_US, standby_us)?;
     put32(
         &mut glob,
         globals::IDLE_MIN_CONF,

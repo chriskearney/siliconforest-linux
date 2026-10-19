@@ -15,3 +15,20 @@ jobs:
       - run: python3 tools/testing/selftests/drivers/gpu/asahi-g15/run.py
         env:
           RUSTUP_TOOLCHAIN: 1.93.1
+      - name: USB3 handoff failure and retry controls
+        run: python3 tools/asahi/atc-usb3-tests.py --mutations
+      - name: GPU accounting and telemetry host controls
+        env:
+          RUSTUP_TOOLCHAIN: 1.93.1
+        run: |
+          test_output=$(mktemp -d)
+          trap 'rm -rf "$test_output"' EXIT
+          for suite in g17-load g17-statistics gpu-memory; do
+            rustc --edition=2021 --test "tools/asahi/$suite-tests.rs" -o "$test_output/$suite"
+            "$test_output/$suite" --test-threads=1
+          done
+          python3 tools/asahi/gpu-load-tests.py
+          python3 tools/asahi/gpu-memory-report-tests.py
+          python3 tools/asahi/gpu-fdinfo-tests.py --output "$test_output/fdinfo"
+          python3 tools/asahi/gpu-telemetry-lifetime-tests.py --output "$test_output/lifetime"
+          python3 tools/asahi/neo-auxiliary-tests.py --output "$test_output/generation"

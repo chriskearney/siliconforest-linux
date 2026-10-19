@@ -46,7 +46,11 @@ pub(crate) enum Platform {
 pub(crate) enum Board {
     /// The hash-checked T6030 templates ([`super::board`]).
     Templates,
-    /// The three images as one firmware file ([`super::board::blob`]), pinned by its SHA-256.
+    /// The three images built from the device tree ([`super::board::record`],
+    /// [`super::board::device_tree`]) and cross-checked against a firmware file holding the
+    /// machine's own ([`super::board::blob`], pinned by its SHA-256), which also supplies the
+    /// record's words the device tree does not carry ([`super::board::record::FROM_FILE`]); a
+    /// difference refuses admission, before any firmware is touched.
     Blob {
         name: &'static kernel::str::CStr,
         sha256: [u8; 32],
@@ -68,6 +72,11 @@ pub(crate) struct Layout {
     pub(crate) hwdata_view: usize,
     /// HardwareDataB IOMapping records.
     pub(crate) iomaps: &'static [IoMap],
+    /// For a record built from the device tree ([`super::board::record`]): per IOMapping
+    /// record, in `iomaps` order, the mapped bytes, the element bytes and whether the firmware
+    /// may write the window; and the unmapped slots whose flag word is nevertheless 1.
+    pub(crate) record_slots: &'static [(u32, u32, bool)],
+    pub(crate) record_empty_writable: &'static [u8],
 }
 
 /// Compute command register values that scale with the cluster count.
@@ -98,6 +107,8 @@ pub(crate) mod t6030 {
         hwdata_cached: Some(super::super::fw::initdata::hwdata::CACHED),
         hwdata_view: super::super::fw::initdata::hwdata::FAULT_INFO,
         iomaps: &super::IOMAPS,
+        record_slots: &[],
+        record_empty_writable: &[],
     };
 
     /// The two-cluster compute register values.
@@ -526,6 +537,9 @@ pub(crate) mod engine {
 /// Tuned policy. Every value was chosen by measurement on hardware; only the ones in
 /// `params.rs` are tunable.
 pub(crate) mod tuning {
+    /// Firmware idle standby time, us, of a machine whose device tree does not provide one (the
+    /// T6030): with the template's 700 us the GPU powers down between works ~100 us apart.
+    pub(crate) const IDLE_STANDBY_US: u32 = 2500;
     /// Command objects (work images, microsequences, barriers, queue info, scheduling contexts,
     /// job lists, FW-only queue scratch) map ASC-cached (AttrIndex 0).
     pub(crate) const FW_CACHED: bool = true;

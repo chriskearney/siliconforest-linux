@@ -66,6 +66,9 @@ unsafe impl Send for KernelObject {}
 unsafe impl Sync for KernelObject {}
 
 impl KernelObject {
+    pub(crate) fn classify_memory(&self, category: crate::agx_memory_stats::KernelCategory) {
+        self.obj.gem.classify_memory(category);
+    }
     /// Allocates a zeroed object of `size` bytes and maps it into `vm`.
     pub(crate) fn new(
         dev: &AsahiDevice,
@@ -194,12 +197,6 @@ impl KernelObject {
     /// Returns a reference-counted kernel mapping of the object.
     pub(crate) fn kernel_map(&self) -> Result<shmem::VMap<gem::AsahiObject, u8, kernel::drm::Uninit>> {
         self.obj.gem.owned_vmap()
-    }
-
-    /// Transfers an unpublished object's GPU mapping to a longer-lived owner.
-    /// The CPU view remains valid; gpu_va returns zero after this transfer.
-    pub(crate) fn take_mapping(&mut self) -> Result<mmu::KernelMapping> {
-        self.mapping.take().ok_or(EINVAL)
     }
 
     /// Returns the GPU address of the object.
@@ -478,6 +475,13 @@ impl Pool {
             });
         }
         let object = alloc.kernel(size, mmu::UAT_PGSZ as u64, prot, cpu)?;
+        use crate::agx_memory_stats::KernelCategory;
+        object.classify_memory(match family {
+            Family::Descriptor => KernelCategory::Descriptor,
+            Family::WorkState => KernelCategory::WorkState,
+            Family::QueueState => KernelCategory::QueueState,
+            Family::QueueConfig => KernelCategory::QueueConfig,
+        });
         let reserved = {
             let mut inner = self.inner.lock();
             if inner.stopped {

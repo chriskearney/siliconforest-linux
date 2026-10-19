@@ -12,11 +12,49 @@
     {
       "author": "Naeem Malik",
       "url": "https://github.com/aurora-silicon/linux/pull/363",
-      "head": "e30d702e3722aba6114c67ee86505cea0ce76117"
+      "head": "e30d702e3722aba6114c67ee86505cea0ce76117",
+      "followup_imports": [
+        {
+          "reviewed_head": "2e21853a16c66dd1287f0914d05a58905a1e55f0",
+          "siliconforest_base": "95335f13bc054c6abe8869794b9038601e241ec5",
+          "selected_upstream_commits": [
+            "65cd19c07213457901a4a9c419f5084a6eb1db2c",
+            "fd3c8adf43eb464a847225fcaf7f4e8343c3d36b",
+            "87ab56de539bda8866db3c9b5d09f63ca6935bc2",
+            "e3dad1b5762359bceba6592a38cb6b1cfee023f0",
+            "46588efc313f38304bd18c9eca8f48ce79a1dd7d",
+            "b78b7585c21704d42d16534c60da68c3c15cc2b6",
+            "b3fb1bb88f6b6646ae484530cdf3706d618d856f",
+            "6c6a27058ed94e946caebdca9e4866fbabe70144",
+            "2e21853a16c66dd1287f0914d05a58905a1e55f0"
+          ],
+          "held_upstream_commits": [
+            {
+              "commit": "5131caff77ac9157e08114d9673c890b69b5bce3",
+              "reason": "Retain the copied record words, including sensor readings, while the board file remains mandatory; sustained-load thermal qualification is absent."
+            },
+            {
+              "commit": "7c26fe10a201a2be169c62f3345068c2d9ab53f3",
+              "reason": "Defer performance-state debugfs and the shared statistics-ring drain change to a separately reviewed series."
+            }
+          ],
+          "scope": "Keep J516C-only opt-in admission. Build and cross-check board records before firmware start. EDID and constant swap timestamps require the admitted J516C internal-panel profile. T6030 template bytes and the default 2500 us standby are retained.",
+          "review_fixes": [
+            "Checked DT-derived arithmetic and frequency conversions return errors on overflow.",
+            "The shared T6031 display row is limited to J516C; J514C is not admitted by this port."
+          ],
+          "validation_limits": [
+            "No M3 Max hardware qualification; existing reported compute and tessellation hangs are unresolved.",
+            "Private J516C DT/board fixtures are not included or consumed.",
+            "This selection retains 74 file-sourced record words; the reviewed upstream tip retains 32 after the held zeroing change."
+          ],
+          "provenance": "Original carry commits retain authorship and supplied sign-offs; local review fixes are separate commits."
+        }
+      ]
     }
   ],
   "import_seed_with_initial_review_fixes": "8a29680940cde36759e2061d3c8a8e7e9df70fa9",
-  "selection": "CONFIG_SILICONFOREST_M3=y; default off; excludes USB4",
+  "selection": "Original full import: CONFIG_SILICONFOREST_M3=y (default off, excludes USB4). CONFIG_SILICONFOREST_NATIVE_GPU also reuses the isolated asahi-m3 G15 driver; the two display-driver profiles remain separate.",
   "path_mappings": [
     {
       "from": "drivers/gpu/drm/asahi/",

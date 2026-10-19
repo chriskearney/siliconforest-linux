@@ -413,6 +413,67 @@ static void v14_7_policy_test(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, READ_ONCE(dcp->crashed));
 }
 
+/* Slots 0, 1 and 6 of a prepared present hold @expect; the others stay zero. */
+static void v14_7_expect_timestamps(struct kunit *test, struct apple_dcp *dcp, u64 expect)
+{
+	struct dcp_swap_submit_req_v14_7 *req;
+	unsigned int i;
+
+	req = kunit_kzalloc(test, SWAP_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, req);
+	iomfb_v14_7_encode_present(req, &v14_7_frames[1]);
+	KUNIT_ASSERT_TRUE(test, v14_7_prepare(dcp, NULL, req, 9));
+	for (i = 0; i < ARRAY_SIZE(dcp->swap_v14_7.swap.timestamp); i++)
+		KUNIT_EXPECT_EQ_MSG(test, dcp->swap_v14_7.swap.timestamp[i],
+				    (i == 0 || i == 1 || i == 6) ? expect : 0, "slot %u", i);
+}
+
+/*
+ * The J516C panel session's own settings (the base EDID and the constant swap
+ * timestamps) reach the J516C's panel and nothing else: not the J514S panel,
+ * not another T6031 board admitted through the same row, not an external
+ * DCP, and not a J516C DCP that is not the main display.
+ */
+static void v14_7_j516c_scope_test(struct kunit *test)
+{
+	struct apple_dcp *dcp = v14_7_dcp(test);
+
+	KUNIT_ASSERT_EQ(test, dcp_panel_id_from_compatible(&dcp->panel.id, "apple,panel-j516"), 0);
+	dcp->main_display = true;
+
+	/* J514S: its hardware data never carry the settings. */
+	KUNIT_EXPECT_FALSE(test, dcp->hw.panel_base_edid);
+	KUNIT_EXPECT_FALSE(test, dcp->hw.v14_7_swap_timestamps);
+	KUNIT_EXPECT_FALSE(test, dcp_panel_base_edid(dcp));
+	v14_7_expect_timestamps(test, dcp, 0);
+
+	/* J516C: the J516C row on an "apple,j516c" machine. */
+	dcp_v14_7_j516c_panel(dcp, true);
+	KUNIT_EXPECT_TRUE(test, dcp_panel_base_edid(dcp));
+	v14_7_expect_timestamps(test, dcp, 120);
+
+	/* The role is still required: a J516C DCP that is not the main display. */
+	dcp->main_display = false;
+	v14_7_expect_timestamps(test, dcp, 0);
+	dcp->main_display = true;
+
+	/* J514C or any other T6031 board: the row without the machine. */
+	dcp_v14_7_j516c_panel(dcp, false);
+	KUNIT_EXPECT_FALSE(test, dcp->hw.panel_base_edid);
+	KUNIT_EXPECT_FALSE(test, dcp->hw.v14_7_swap_timestamps);
+	KUNIT_EXPECT_FALSE(test, dcp_panel_base_edid(dcp));
+	v14_7_expect_timestamps(test, dcp, 0);
+
+	/* An external DCP never takes them, even on a J516C. */
+	dcp->hw.v14_7_external = true;
+	dcp->main_display = false;
+	dcp_v14_7_j516c_panel(dcp, true);
+	KUNIT_EXPECT_FALSE(test, dcp->hw.panel_base_edid);
+	KUNIT_EXPECT_FALSE(test, dcp->hw.v14_7_swap_timestamps);
+	KUNIT_EXPECT_FALSE(test, dcp_panel_base_edid(dcp));
+	v14_7_expect_timestamps(test, dcp, 0);
+}
+
 static struct kunit_case v14_7_present_cases[] = {
 	KUNIT_CASE_PARAM(v14_7_present_encoding_test, v14_7_case_gen_params),
 	KUNIT_CASE(v14_7_layout_test),
@@ -420,6 +481,7 @@ static struct kunit_case v14_7_present_cases[] = {
 	KUNIT_CASE(v14_7_frame_check_test),
 	KUNIT_CASE(v14_7_single_surface_test),
 	KUNIT_CASE(v14_7_policy_test),
+	KUNIT_CASE(v14_7_j516c_scope_test),
 	{}
 };
 
