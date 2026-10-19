@@ -275,8 +275,9 @@ static struct v14_bl_fixture v14_bl_fixture(struct kunit *test,
 	snprintf(name, sizeof(name), "dcp-v14-bl.%d", atomic_inc_return(&serial));
 	dev = kunit_device_register(test, name);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, dev);
-	f.dcp = kunit_kzalloc(test, sizeof(*f.dcp), GFP_KERNEL);
-	f.v14 = kunit_kzalloc(test, sizeof(*f.v14), GFP_KERNEL);
+	/* The device's backlight cleanup must run before these objects are freed. */
+	f.dcp = devm_kzalloc(dev, sizeof(*f.dcp), GFP_KERNEL);
+	f.v14 = devm_kzalloc(dev, sizeof(*f.v14), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, f.dcp);
 	KUNIT_ASSERT_NOT_NULL(test, f.v14);
 	f.dcp->dev = dev;
