@@ -96,6 +96,17 @@ properties:
       domain on and never changes its power target, automatic gating or reset.
     type: boolean
 
+  apple,inherited-on:
+    description: |
+      The boot loader leaves this domain powered, with the coprocessor it
+      feeds running (the internal display chain of the T6030, T6031 and
+      T8122 MacBook Pros: DISP_SYS, DISP_FE and DISP_CPU). The power state
+      driver treats it as any domain found on; the display handoff requires
+      the marker before it adds the PMP and sets apple,min-state on the
+      chain, so the PMP cannot power the running display coprocessor down.
+      Unlike apple,firmware-owned, the domain's register is still written.
+    type: boolean
+
   apple,min-state:
     description:
       Specifies the minimum power state for auto-PM.
