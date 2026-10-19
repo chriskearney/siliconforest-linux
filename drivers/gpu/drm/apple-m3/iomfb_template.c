@@ -2558,7 +2558,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	return 0;
 }
 
-void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, struct drm_atomic_state *state)
+void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct drm_plane *plane;
 	struct drm_plane_state *new_state, *old_state;
@@ -3065,7 +3065,7 @@ static void iomfb_present_start_v14_7(struct apple_dcp *dcp)
  */
 struct iomfb_scanout_v14_7 *iomfb_present_atomic_v14_7(struct apple_dcp *dcp,
 							struct drm_crtc *crtc,
-							struct drm_atomic_state *state)
+							struct drm_atomic_commit *state)
 {
 	struct dcp_swap_submit_req_v14_7 *req = &DCP_FW_SWAP(dcp);
 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);

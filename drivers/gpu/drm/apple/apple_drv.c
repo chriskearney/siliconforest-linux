@@ -151,7 +151,7 @@ static void apple_connector_oob_hotplug(struct drm_connector *connector,
 }
 
 static void apple_crtc_atomic_enable(struct drm_crtc *crtc,
-				     struct drm_atomic_state *state)
+				     struct drm_atomic_commit *state)
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	struct apple_dcp *dcp = platform_get_drvdata(apple_crtc->dcp);
@@ -208,7 +208,7 @@ failed:
 }
 
 static void apple_crtc_atomic_disable(struct drm_crtc *crtc,
-				      struct drm_atomic_state *state)
+				      struct drm_atomic_commit *state)
 {
 	struct drm_crtc_state *crtc_state;
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
@@ -233,7 +233,7 @@ static void apple_crtc_atomic_disable(struct drm_crtc *crtc,
 }
 
 static void apple_crtc_atomic_begin(struct drm_crtc *crtc,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	unsigned long flags;
@@ -318,28 +318,28 @@ static const struct drm_crtc_funcs apple_crtc_funcs = {
 
 };
 
-static struct drm_atomic_state *apple_atomic_state_alloc(struct drm_device *dev)
+static struct drm_atomic_commit *apple_atomic_state_alloc(struct drm_device *dev)
 {
 	struct apple_atomic_state *state = kzalloc_obj(*state);
 
 	if (!state)
 		return NULL;
-	if (drm_atomic_state_init(dev, &state->base)) {
+	if (drm_atomic_commit_init(dev, &state->base)) {
 		kfree(state);
 		return NULL;
 	}
 	return &state->base;
 }
 
-static void apple_atomic_state_clear(struct drm_atomic_state *state)
+static void apple_atomic_state_clear(struct drm_atomic_commit *state)
 {
-	drm_atomic_state_default_clear(state);
+	drm_atomic_commit_default_clear(state);
 	to_apple_atomic_state(state)->failed_routes = 0;
 }
 
-static void apple_atomic_state_free(struct drm_atomic_state *state)
+static void apple_atomic_state_free(struct drm_atomic_commit *state)
 {
-	drm_atomic_state_default_release(state);
+	drm_atomic_commit_default_release(state);
 	kfree(to_apple_atomic_state(state));
 }
 
@@ -352,7 +352,7 @@ static const struct drm_mode_config_funcs apple_mode_config_funcs = {
 	.fb_create		= drm_gem_fb_create,
 };
 
-static void apple_atomic_commit_tail(struct drm_atomic_state *state)
+static void apple_atomic_commit_tail(struct drm_atomic_commit *state)
 {
 	struct drm_plane *plane;
 	struct drm_plane_state *old, *new;
@@ -425,7 +425,7 @@ static const struct drm_connector_funcs apple_connector_funcs = {
  */
 static struct drm_encoder *
 apple_connector_atomic_best_encoder(struct drm_connector *conn,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	struct apple_connector *apple_connector = to_apple_connector(conn);
 	struct drm_connector_state *conn_state;

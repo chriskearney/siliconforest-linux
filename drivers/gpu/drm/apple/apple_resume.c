@@ -29,7 +29,7 @@
  *
  * Returns true if a CRTC is to be resumed disabled.
  */
-bool apple_drm_drop_stale_crtcs(struct drm_atomic_state *state)
+bool apple_drm_drop_stale_crtcs(struct drm_atomic_commit *state)
 {
 	const struct drm_crtc_helper_funcs *funcs;
 	struct drm_connector_state *conn_state;

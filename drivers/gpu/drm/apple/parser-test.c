@@ -760,7 +760,7 @@ static void parser_route_programming_guard(struct kunit *test)
 	struct drm_crtc_state crtc_state = {};
 	struct __drm_crtcs_state crtcs[1] = { { .new_state = &crtc_state } };
 	struct __drm_connnectors_state connections[1] = {};
-	struct drm_atomic_state state = {
+	struct drm_atomic_commit state = {
 		.connectors = connections, .num_connector = 1, .crtcs = crtcs,
 	};
 	struct drm_encoder encoder = {};
@@ -866,7 +866,7 @@ static void parser_route_invalid_own_mode(struct kunit *test)
 	struct platform_device *pdev = kunit_kzalloc(test, sizeof(*pdev), GFP_KERNEL);
 	struct drm_crtc_state crtc_state = { .enable = true, .mode_changed = true };
 	struct __drm_crtcs_state crtcs[1] = { { .new_state = &crtc_state } };
-	struct drm_atomic_state state = { .crtcs = crtcs };
+	struct drm_atomic_commit state = { .crtcs = crtcs };
 
 	KUNIT_ASSERT_NOT_NULL(test, dcp);
 	KUNIT_ASSERT_NOT_NULL(test, crtc);
@@ -1207,7 +1207,7 @@ static void parser_route_holder_snapshot(struct kunit *test)
 	struct drm_connector_state live = { .crtc = target };
 	struct drm_connector_state reserved = {};
 	struct __drm_connnectors_state conns[1] = {};
-	struct drm_atomic_state state = { .connectors = conns, .num_connector = 1 };
+	struct drm_atomic_commit state = { .connectors = conns, .num_connector = 1 };
 
 	KUNIT_ASSERT_NOT_NULL(test, back);
 	KUNIT_ASSERT_NOT_NULL(test, holder);

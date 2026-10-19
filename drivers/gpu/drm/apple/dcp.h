@@ -14,7 +14,7 @@
 #include "parser.h"
 
 struct apple_atomic_state {
-	struct drm_atomic_state base;
+	struct drm_atomic_commit base;
 	/* Failed route transactions suppress both CRTC enables in this commit. */
 	u32 failed_routes;
 };
@@ -49,7 +49,7 @@ int dcp_typec_prepare_route(struct apple_dcp *dcp);
 void dcp_poweron(struct platform_device *pdev);
 void dcp_external_recover(struct platform_device *pdev);
 int dcp_set_crc(struct drm_crtc *crtc, bool enabled);
-int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state);
+int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state);
 int dcp_get_connector_type(struct platform_device *pdev);
 bool dcp_fw_compat_is_12_x(struct platform_device *pdev);
 bool dcp_fw_compat_is_14_7(struct platform_device *pdev);
@@ -59,7 +59,7 @@ bool dcp_clamshell_hold_connector(struct apple_connector *connector);
 unsigned long* dcp_get_iomfb_surfaces(struct platform_device *pdev);
 int dcp_start(struct platform_device *pdev);
 int dcp_wait_ready(struct platform_device *pdev, u64 timeout);
-void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state);
+void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_commit *state);
 void dcp_retain_framebuffer(struct platform_device *pdev,
 			    struct dcp_fb_reference *entry);
 void dcp_arm_retained_framebuffers(struct apple_dcp *dcp, u32 swap_id);
@@ -73,10 +73,10 @@ int dcp_get_modes(struct drm_connector *connector);
 enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 				    const struct drm_display_mode *mode);
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
-			    struct drm_atomic_state *state);
+			    struct drm_atomic_commit *state);
 bool dcp_crtc_can_retrain(struct drm_crtc *crtc, struct apple_connector *connector);
 bool dcp_crtc_needs_route_start(struct apple_dcp *dcp);
-bool dcp_crtc_route_ready(struct drm_crtc *crtc, struct drm_atomic_state *state,
+bool dcp_crtc_route_ready(struct drm_crtc *crtc, struct drm_atomic_commit *state,
 			  bool fresh);
 bool dcp_has_mode(struct apple_dcp *dcp, const struct drm_display_mode *mode);
 bool dcp_crtc_mode_fixup(struct drm_crtc *crtc,

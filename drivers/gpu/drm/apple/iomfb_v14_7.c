@@ -3349,7 +3349,7 @@ static void dcp_v14_cancel_event(struct apple_dcp *dcp)
 
 /* Only the layout the firmware was qualified with: one full-mode linear plane. */
 int iomfb_v14_7_atomic_check(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			     struct drm_atomic_state *state)
+			     struct drm_atomic_commit *state)
 {
 	struct apple_dcp_v14 *v14 = dcp->v14;
 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
@@ -3788,7 +3788,7 @@ int iomfb_v14_7_modeset(struct apple_dcp *dcp, struct drm_crtc_state *crtc_state
 }
 
 void iomfb_v14_7_flush(struct apple_dcp *dcp, struct drm_crtc *crtc,
-		       struct drm_atomic_state *state)
+		       struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *p = drm_atomic_get_new_plane_state(state, crtc->primary);
 	struct drm_crtc_state *cs = drm_atomic_get_new_crtc_state(state, crtc);

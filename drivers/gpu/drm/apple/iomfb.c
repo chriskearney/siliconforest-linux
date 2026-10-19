@@ -1905,7 +1905,7 @@ enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 
 /* H17P (T8140, T8142): aurora-wip's modeset admission. */
 static int dcp_crtc_atomic_modeset_h17p(struct drm_crtc *crtc,
-					struct drm_atomic_state *state)
+					struct drm_atomic_commit *state)
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	struct apple_dcp *dcp = platform_get_drvdata(apple_crtc->dcp);
@@ -1960,7 +1960,7 @@ static int dcp_crtc_atomic_modeset_h17p(struct drm_crtc *crtc,
 }
 
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
-			    struct drm_atomic_state *state)
+			    struct drm_atomic_commit *state)
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	struct apple_dcp *dcp = platform_get_drvdata(apple_crtc->dcp);
@@ -2025,7 +2025,7 @@ bool dcp_crtc_needs_route_start(struct apple_dcp *dcp)
 	       READ_ONCE(dcp->typec_follow_gen) == READ_ONCE(dcp->typec_generation);
 }
 
-bool dcp_crtc_route_ready(struct drm_crtc *crtc, struct drm_atomic_state *state,
+bool dcp_crtc_route_ready(struct drm_crtc *crtc, struct drm_atomic_commit *state,
 			  bool fresh)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(to_apple_crtc(crtc)->dcp);
@@ -2119,7 +2119,7 @@ static void iomfb_scanout_release_h17p(struct iomfb_scanout_h17p *scanout)
 
 static struct iomfb_scanout_h17p *
 iomfb_scanout_prepare_h17p(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			   struct drm_atomic_state *state)
+			   struct drm_atomic_commit *state)
 {
 	struct iomfb_scanout_h17p *scanout;
 	struct drm_plane *plane;
@@ -2326,7 +2326,7 @@ int iomfb_configure_backlight_h17p(struct apple_dcp *dcp, u32 maximum,
 
 struct iomfb_atomic_transaction {
 	struct iomfb_transaction transaction;
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 	struct drm_crtc *crtc;
 	struct apple_dcp *dcp;
 	struct iomfb_scanout_h17p *scanout;
@@ -2362,12 +2362,12 @@ static void iomfb_atomic_release(struct iomfb_transaction *transaction)
 			atomic->dcp->iomfb.next_scanout = NULL;
 		iomfb_scanout_release_h17p(atomic->scanout);
 	}
-	drm_atomic_state_put(atomic->state);
+	drm_atomic_commit_put(atomic->state);
 	kfree(atomic);
 }
 
 static void iomfb_queue_atomic(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			       struct drm_atomic_state *state)
+			       struct drm_atomic_commit *state)
 {
 	struct iomfb_atomic_transaction *atomic;
 	int ret;
@@ -2382,7 +2382,7 @@ static void iomfb_queue_atomic(struct apple_dcp *dcp, struct drm_crtc *crtc,
 	atomic->transaction.start = iomfb_atomic_start;
 	atomic->transaction.presentation = true;
 	atomic->transaction.release = iomfb_atomic_release;
-	atomic->state = drm_atomic_state_get(state);
+	atomic->state = drm_atomic_commit_get(state);
 	atomic->crtc = crtc;
 	atomic->dcp = dcp;
 	ret = iomfb_queue(dcp, &atomic->transaction);
@@ -2399,7 +2399,7 @@ failed:
 }
 
 /* H17P (T8140, T8142): aurora-wip's flush. */
-static void dcp_flush_h17p(struct drm_crtc *crtc, struct drm_atomic_state *state)
+static void dcp_flush_h17p(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
@@ -2455,7 +2455,7 @@ static void dcp_flush_h17p(struct drm_crtc *crtc, struct drm_atomic_state *state
 	}
 }
 
-void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
+void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);

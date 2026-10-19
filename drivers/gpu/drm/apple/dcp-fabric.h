@@ -10,7 +10,7 @@
 
 struct apple_connector;
 struct apple_crtc;
-struct drm_atomic_state;
+struct drm_atomic_commit;
 struct drm_crtc;
 struct drm_display_mode;
 struct device_node;
@@ -80,12 +80,12 @@ bool dcp_typec_dual_stream(void);
 void dcp_typec_reorder(void);
 bool dcp_typec_pipeline_changed(struct apple_dcp *dcp);
 bool dcp_typec_follows_crtc(struct apple_dcp *dcp);
-bool dcp_typec_follow_holder_off(struct drm_atomic_state *state, struct drm_crtc *crtc,
+bool dcp_typec_follow_holder_off(struct drm_atomic_commit *state, struct drm_crtc *crtc,
 				 struct apple_connector *connector, struct apple_dcp *back);
 int dcp_typec_follow_check(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			   struct drm_atomic_state *state,
+			   struct drm_atomic_commit *state,
 			   const struct drm_display_mode *mode);
-int dcp_typec_follow_crtc(struct drm_crtc *crtc, struct drm_atomic_state *state,
+int dcp_typec_follow_crtc(struct drm_crtc *crtc, struct drm_atomic_commit *state,
 			  bool *locked);
 void dcp_typec_follow_done(bool locked);
 bool dcp_is_typec_only(struct platform_device *pdev);

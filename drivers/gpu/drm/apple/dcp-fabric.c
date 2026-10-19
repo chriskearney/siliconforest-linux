@@ -2891,7 +2891,7 @@ static bool dcp_follow_split_fits(struct apple_dcp_typec_route *route)
 
 struct dcp_typec_follow_context {
 	struct dcp_typec_follow_slot slots[2];
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 };
 
 /*
@@ -2957,7 +2957,7 @@ dcp_typec_port_route(struct apple_dcp_typec_port *port, struct apple_dcp *dcp)
  * Is the display of @connector off in @state, or to be shown on @back's
  * pipeline, so that its route may give @crtc's pipeline up for that one?
  */
-bool dcp_typec_follow_holder_off(struct drm_atomic_state *state,
+bool dcp_typec_follow_holder_off(struct drm_atomic_commit *state,
 				 struct drm_crtc *crtc,
 				 struct apple_connector *connector,
 				 struct apple_dcp *back)
@@ -2985,7 +2985,7 @@ bool dcp_typec_follow_holder_off(struct drm_atomic_state *state,
 
 /* May @connector's route follow @crtc to @dcp's pipeline, and how? */
 static int dcp_typec_follow_decide(struct apple_dcp *dcp, struct drm_crtc *crtc,
-				   struct drm_atomic_state *state,
+				   struct drm_atomic_commit *state,
 				   struct apple_connector *connector,
 				   struct dcp_typec_follow *follow)
 {
@@ -3286,7 +3286,7 @@ static const struct dcp_fabric_follow_ops dcp_follow_ops = {
 };
 
 static int dcp_typec_follow_move(struct dcp_typec_follow *follow,
-				 struct drm_atomic_state *state)
+				 struct drm_atomic_commit *state)
 {
 	struct dcp_typec_follow_context ctx = {
 		.state = state,
@@ -3346,7 +3346,7 @@ static int dcp_typec_follow_move(struct dcp_typec_follow *follow,
  * commit revalidates the route before making any destructive changes.
  */
 int dcp_typec_follow_check(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			   struct drm_atomic_state *state,
+			   struct drm_atomic_commit *state,
 			   const struct drm_display_mode *mode)
 {
 	struct drm_connector_state *conn_state;
@@ -3411,7 +3411,7 @@ retry_holder:
 }
 
 static bool dcp_typec_direct_commit(struct drm_crtc *crtc,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	struct drm_connector_state *conn_state;
 	struct drm_connector *conn;
@@ -3439,7 +3439,7 @@ static bool dcp_typec_direct_commit(struct drm_crtc *crtc,
 	return false;
 }
 
-static void dcp_follow_fail_commit(struct drm_crtc *crtc, struct drm_atomic_state *state)
+static void dcp_follow_fail_commit(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct drm_connector_state *conn_state;
 	struct drm_connector *conn;
@@ -3461,7 +3461,7 @@ static void dcp_follow_fail_commit(struct drm_crtc *crtc, struct drm_atomic_stat
 }
 
 /* Hold route identity through power-on/modeset; caller releases on every exit. */
-int dcp_typec_follow_crtc(struct drm_crtc *crtc, struct drm_atomic_state *state,
+int dcp_typec_follow_crtc(struct drm_crtc *crtc, struct drm_atomic_commit *state,
 			  bool *locked)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;

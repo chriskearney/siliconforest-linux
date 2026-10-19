@@ -1670,7 +1670,7 @@ static void dcp_v26_cancel_event(struct apple_dcp *dcp)
 
 /* Only the layout the firmware was qualified with: one full-mode linear plane. */
 int iomfb_v26_6_atomic_check(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			     struct drm_atomic_state *state)
+			     struct drm_atomic_commit *state)
 {
 	struct apple_dcp_v26 *v26 = dcp->v26;
 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
@@ -1725,7 +1725,7 @@ int iomfb_v26_6_modeset(struct apple_dcp *dcp, struct drm_crtc_state *crtc_state
 }
 
 void iomfb_v26_6_flush(struct apple_dcp *dcp, struct drm_crtc *crtc,
-		       struct drm_atomic_state *state)
+		       struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *p = drm_atomic_get_new_plane_state(state, crtc->primary);
 	struct drm_framebuffer *fb;
@@ -1766,14 +1766,14 @@ static int dcp_v26_brightness_commit(struct apple_dcp_v26 *v26)
 	struct apple_dcp *dcp = READ_ONCE(v26->dcp);
 	struct drm_modeset_acquire_ctx ctx;
 	struct drm_crtc_state *crtc_state;
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 	struct drm_crtc *crtc;
 	int ret;
 
 	if (!dcp || !dcp->crtc)
 		return 0;
 	crtc = &dcp->crtc->base;
-	state = drm_atomic_state_alloc(crtc->dev);
+	state = drm_atomic_commit_alloc(crtc->dev);
 	if (!state)
 		return -ENOMEM;
 	drm_modeset_acquire_init(&ctx, DRM_MODESET_ACQUIRE_INTERRUPTIBLE);
@@ -1792,12 +1792,12 @@ retry:
 	ret = drm_atomic_commit(state);
 out:
 	if (ret == -EDEADLK) {
-		drm_atomic_state_clear(state);
+		drm_atomic_commit_clear(state);
 		ret = drm_modeset_backoff(&ctx);
 		if (!ret)
 			goto retry;
 	}
-	drm_atomic_state_put(state);
+	drm_atomic_commit_put(state);
 	drm_modeset_drop_locks(&ctx);
 	drm_modeset_acquire_fini(&ctx);
 	return ret;

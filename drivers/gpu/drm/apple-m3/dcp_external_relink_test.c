@@ -139,7 +139,7 @@ static void relink_test_push(struct apple_dcp *dcp, const struct dcp_method_entr
 	cb(dcp, modeset && t->no_reply ? NULL : &t->reply, cookie);
 }
 
-static void relink_test_crtc_enable(struct drm_crtc *crtc, struct drm_atomic_state *state)
+static void relink_test_crtc_enable(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct relink_test *t = to_relink_test(crtc->dev);
 	unsigned int action;
@@ -161,7 +161,7 @@ static void relink_test_crtc_enable(struct drm_crtc *crtc, struct drm_atomic_sta
 }
 
 /* As dcp_poweroff() for the external display. */
-static void relink_test_crtc_disable(struct drm_crtc *crtc, struct drm_atomic_state *state)
+static void relink_test_crtc_disable(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct relink_test *t = to_relink_test(crtc->dev);
 
@@ -185,7 +185,7 @@ static const struct drm_crtc_helper_funcs relink_test_crtc_helpers = {
 };
 
 /* Scanout itself is not under test; the plane helpers require an update. */
-static void relink_test_plane_update(struct drm_plane *plane, struct drm_atomic_state *state)
+static void relink_test_plane_update(struct drm_plane *plane, struct drm_atomic_commit *state)
 {
 }
 
@@ -233,12 +233,12 @@ static int relink_test_commit(struct relink_test *t, bool active, bool init)
 	struct drm_plane_state *plane_state;
 	struct drm_modeset_acquire_ctx ctx;
 	struct drm_crtc_state *crtc_state;
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 	int ret;
 
 	drm_modeset_acquire_init(&ctx, 0);
 retry:
-	state = drm_atomic_state_alloc(&t->drm);
+	state = drm_atomic_commit_alloc(&t->drm);
 	if (!state) {
 		ret = -ENOMEM;
 		goto out;
@@ -276,7 +276,7 @@ retry:
 	}
 	ret = drm_atomic_commit(state);
 put:
-	drm_atomic_state_put(state);
+	drm_atomic_commit_put(state);
 	if (ret == -EDEADLK) {
 		drm_modeset_backoff(&ctx);
 		goto retry;

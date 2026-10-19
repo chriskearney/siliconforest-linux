@@ -6,8 +6,8 @@
 
 #include <linux/types.h>
 
-struct drm_atomic_state;
+struct drm_atomic_commit;
 
-u32 apple_drm_drop_stale_crtcs(struct drm_atomic_state *state);
+u32 apple_drm_drop_stale_crtcs(struct drm_atomic_commit *state);
 
 #endif /* __APPLE_RESUME_H__ */
