@@ -4,7 +4,7 @@
 
 use super::statistics::Statistics;
 use core::ffi::{c_int, c_void};
-use kernel::{device::Device, prelude::*, sync::Arc};
+use kernel::{device::Device, prelude::*, sync::{aref::ARef, Arc}};
 
 /// Private callback contract shared with `asahi_telemetry.c`, not a userspace ABI.
 #[repr(C)]
@@ -68,21 +68,24 @@ unsafe extern "C" fn snapshot(data: *const c_void, out: *mut c_void) -> c_int {
 }
 
 pub(super) struct Telemetry {
-    dev: *mut c_void,
+    dev: ARef<Device>,
     handle: *mut c_void,
     _statistics: Arc<Statistics>,
 }
 
-// SAFETY: raw pointers are used only for attribute removal; readers access atomics.
+// SAFETY: the device has a retained reference; the handle is used only for removal.
 unsafe impl Send for Telemetry {}
 // SAFETY: registration state is immutable until its exclusive drop removes the attribute.
 unsafe impl Sync for Telemetry {}
 
 impl Telemetry {
     pub(super) fn new(dev: &Device, statistics: Arc<Statistics>) -> Result<Self> {
-        let raw = dev.as_raw().cast();
+        // The GPU may remain alive through open files after platform unbind.
+        // Keep the device alive until attribute removal has drained every reader.
+        let owned_dev: ARef<Device> = dev.into();
+        let raw = owned_dev.as_raw().cast();
         let mut handle = core::ptr::null_mut();
-        // SAFETY: the bound platform device outlives this registration; the Arc owns data.
+        // SAFETY: owned_dev retains the platform device and the Arc owns callback data.
         let ret = unsafe {
             asahi_telemetry_register(
                 raw,
@@ -93,7 +96,7 @@ impl Telemetry {
         };
         kernel::error::to_result(ret)?;
         Ok(Self {
-            dev: raw,
+            dev: owned_dev,
             handle,
             _statistics: statistics,
         })
@@ -103,6 +106,6 @@ impl Telemetry {
 impl Drop for Telemetry {
     fn drop(&mut self) {
         // SAFETY: removal drains callback users before the Arc and its allocation are dropped.
-        unsafe { asahi_telemetry_unregister(self.dev, self.handle) };
+        unsafe { asahi_telemetry_unregister(self.dev.as_raw().cast(), self.handle) };
     }
 }
