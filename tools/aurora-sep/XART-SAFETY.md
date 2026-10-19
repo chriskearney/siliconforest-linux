@@ -22,18 +22,53 @@ two shared root records. A refused write fails the enclave's request the way
 a read-only gigalocker does: Touch ID may then be unavailable, but no other
 OS's record changes.
 
-The default, `xart_guard=-1`, takes the platform's level:
+### SiliconForest: off unless you turn it on
+
+In SiliconForest the default, `xart_guard=-1`, is **off on every Mac**
+(`SILICONFOREST_DEFAULT` in `drivers/soc/apple/xart_guard.rs`). The kernel
+updates existing installs, and their Linux records were created with the
+guard off. A guarded boot would refuse them like another OS's records, and
+Touch ID would stop working. With the guard off nothing protects other OSes'
+session records, as before the guard existed: the driver says so at probe
+("xART guard off: the enclave may rewrite any session record").
+
+`options apple_sep xart_guard=1` (or `2`) in `/etc/modprobe.d/` turns it on.
+There is no migration for existing records yet. Know these limits first:
+
+- **A Mac that already used Linux Touch ID:** its records are not on the
+  list, so the guard refuses the enclave's writes to them and Touch ID stops
+  working. Turning the guard back off restores it. The guard cannot tell
+  those records from another OS's, so it will not delete them either.
+- **Cold-boot M1-family Macs (T8103, T6000, T6001, T6002):** creating the
+  identity keybag also rewrites a record from before Linux. With the guard
+  on, Linux cannot create its keybag there.
+- **Warm-attach M2 Macs (T8112, T6020, T6021):** upstream ran the guard from
+  Linux's first SEP boot on a J413 with no record refused. That is the case
+  the guard fits: a Mac that has not used Linux Touch ID yet. Not tested in
+  SiliconForest.
+- **M3 Air (T8122) and MacBook Neo (T8140):** both hold Linux records from
+  before the list existed; the guard has not been run on them.
+- **The list:** `/var/lib/aurora-sep-xart-owned.bin`. Deleting or restoring
+  an older copy makes Linux's newer records look like another OS's. It holds
+  at most 4096 entries; once full, new records are refused, and Touch ID
+  enrolment fails. Its directory entry is flushed at probe; if that fails,
+  nothing is added to the list that boot.
+
+Upstream's policy, kept in the platform profiles and applied when
+`SILICONFOREST_DEFAULT` is `None`:
 
 | Platform | Default |
 | --- | --- |
 | M1 (T8103), M1 Pro/Max (T6000/T6001) | 1 |
 | M2 (T8112), M2 Pro/Max (T6020/T6021) | 1 |
 | MacBook Neo (T8140) | 0 |
+| M3 Air (T8122, SiliconForest profile) | 0 |
 
-The Neo stays at 0 because it already holds Linux records from before the
-list existed, and a guarded boot would treat those as another OS's.
+The Neo and the M3 Air stay at 0 because they already hold Linux records from
+before the list existed, and a guarded boot would treat those as another
+OS's.
 
-Two cases need a decision on an M1 or M2 Mac:
+Under that policy, two cases need a decision on an M1 or M2 Mac:
 
 - On a cold-boot M1-family Mac, creating the identity keybag also rewrites a
   record from before Linux. The guard refuses that, so Linux
