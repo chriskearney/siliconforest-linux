@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only OR MIT
-"""Run the G15 PB growth answer's actual bodies against a firmware model.
+"""Run the G15 PB growth answer and its on-demand backing, actual bodies, against a model.
 
-The harness extracts Firmware::answer_growth(), Firmware::answer_request() and Pools::soft_max()
-from drivers/gpu/drm/asahi-m3/g15/pools.rs, pb_max_blocks() from params.rs, the PB sizes and
-tuning from hw.rs and the parameter's default from asahi_core.rs. It includes pools/growth.rs,
-fw/buffer.rs and fw/channels.rs whole. The bodies run against a model of the firmware objects
-that logs every block record, barrier, producer store, DEVCTL reply and log line in order. The
-model's DEVCTL wait may queue the firmware's next request, as the real wait drains the rings.
+The harness extracts from drivers/gpu/drm/asahi-m3/g15/pools.rs Firmware::answer_growth(),
+answer_request(), map_pb(), running_vm() and back_pb(), Pools::soft_max() and backed(),
+PbChunk and Pools::new's PB backing statements; pb_max_blocks() from params.rs; the PB sizes,
+tuning and PB leaf word from hw.rs; Prot::from_pte() and is_cached_noncoherent() from
+pgtable.rs; and the parameter's default from asahi_core.rs. It includes pools/growth.rs,
+fw/buffer.rs and fw/channels.rs whole. The bodies run against a model of the firmware objects,
+the GEM backing allocation, the shared layer's map_at() and append_driver_mappings(), and the
+DEVCTL wait, which logs every allocation, alias map, append, unmap, free, block record,
+barrier, producer store, reply and log line in order. Allocation, alias map and append
+failures can be injected. Source checks: publish_prefix_into() starts with the PB catch-up,
+and pools.rs asserts the PB leaf GPU-only at compile time.
 
 What it shows:
 - a poll pass answers only the requests queued when it starts, in order; one the reply's wait
@@ -20,17 +25,34 @@ What it shows:
 - the soft maximum is the parameter clamped to 64..=4095 and then to the ledger's
   initial..=max; growth answers above it are logged at info level, and the one that reaches it
   exactly is not;
-- invalid requests (type, slot, stale counter, epoch, no live render) get no reply;
+- invalid requests (type, slot, stale counter, epoch, no live render) get no reply, and requests
+  rejected so allocate nothing;
+- the backing: the initial blocks only when the GPU starts; chunks of at most 4 MiB, allocated
+  and held by the running VM before any record or producer names their blocks, never past the
+  maximum, at most growth::max_chunks(); a failed allocation, alias map or append posts and
+  answers nothing, leaves the request counter and the VM's count alone and drops what is not
+  held, and the next request is answered; a failed reply keeps everything;
+- a VM's count always equals the aliases it holds, contiguous from the heap's start; a VM that
+  runs after another grew the backing maps it first (at publication, and again before it grows);
+  a partial catch-up counts only held aliases;
+- the one-VM rule: a catch-up with a flight of another VM, or a count past the chunks, and a
+  grant with flights of two VMs, are refused (EPROTO) before anything is mapped or posted;
+- the ledger reset of Pools::init() re-posts from the backing without allocating;
+- the PB leaf decodes as GPU-only, not cached-noncoherent: dropping an alias is a plain unmap;
 - Ledger::new() is Ledger::new() as of dba2a110de00 (the carried upstream constructor), capped at
   4095, over every growth and fixed input in 0..=4200 and at the u32 extremes. The driver's
   values are unchanged.
 
 Not shown: kernel, firmware or GPU execution, timing, or what the firmware does with a reply, a
-refusal or an unanswered request. Recovery after an unanswered request is not modelled.
+refusal or an unanswered request. The model's VMs have no open/closed state: that a closed VM
+whose jobs still run keeps its aliases comes from the VM lifetime source (Job and VmJobGuard
+hold the VM), not from these tests. The ledger reset is not a recovery. The shared layer's
+mapping and its rollback are modelled, not run. Running only running_vm()'s or only map_pb()'s
+one-VM check on a grant is not distinguishable: each covers it.
 
 With --mutations, each mutation below must fail its intended test with the expected message, and
-the model-only control (a driver maximum of the whole 4096-block heap) must pass, held by the
-ledger's cap. This control bypasses pools.rs static assertions; it is not a supported kernel tuning.
+the control (a driver maximum of the whole 4096-block heap) must pass, held by the ledger's cap.
+A run that hangs (60 s) counts as no test failed.
 """
 import argparse
 import hashlib
@@ -50,6 +72,8 @@ INITDATA = f"{G15}/fw/initdata.rs"
 PARAMS = f"{G15}/params.rs"
 HW = f"{G15}/hw.rs"
 CORE = "drivers/gpu/drm/asahi-m3/asahi_core.rs"
+ENGINE = f"{G15}/engine.rs"
+PGTABLE = "drivers/gpu/drm/asahi-m3/pgtable.rs"
 OLD_REF = "dba2a110de00743eeecd41edf23e54ede4491d5e"
 
 # Ledger::new() at OLD_REF, the tip of the four PR363 carries (upstream 027bd7623f37), verbatim:
@@ -70,6 +94,11 @@ OLD_LEDGER_NEW = '''    pub(crate) const fn new(grow: bool, blocks: u32, max_blo
             refusals: 0,
         }
     }'''
+
+# Pools::new's PB backing, run verbatim by the model.
+POOLS_NEW_BACKING = ('        // Backing for the initial blocks; growth adds the rest.\n', '        chunks.push(')
+# The compile-time proof that a PB alias drop is a plain unmap.
+PB_LEAF_ASSERT = 'static_assert!(!mmu::Prot::from_pte(pte::LEAF_CACHED).is_cached_noncoherent());'
 
 # The two statements of Pools::init() that start a new ledger.
 LEDGER_RESET = ['self.ledger = Ledger::new(tuning::PB_GROW, tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS);',
@@ -109,6 +138,45 @@ MUTATIONS = {
                         'let nb = clamp(blocks, MIN_BLOCKS, MAX_BLOCKS);\n'
                         '            (nb, clamp(max_blocks, nb, MAX_BLOCKS))\n'
                         '        } else {\n            (MAX_BLOCKS, MAX_BLOCKS)'),
+    # Post blocks without backing them first.
+    'grant-without-backing': (POOLS, '        self.back_pb(end, ctx)?;\n        let (first, n) = self.pools.ledger.accept(request);',
+                              '        let (first, n) = self.pools.ledger.accept(request);'),
+    # Back the blocks only after the request is accepted.
+    'back-after-accept': (POOLS, '        self.back_pb(end, ctx)?;\n        let (first, n) = self.pools.ledger.accept(request);',
+                          '        let (first, n) = self.pools.ledger.accept(request);\n        self.back_pb(end, ctx)?;'),
+    # Count a catch-up alias before the VM holds it.
+    'catch-up-cursor-before-append': (POOLS, '            vm.vm.append_driver_mappings(aliases)?;\n            mapped += 1;\n'
+                                             '            vm.pb_chunks.store(mapped, Ordering::Relaxed);',
+                                      '            mapped += 1;\n            vm.pb_chunks.store(mapped, Ordering::Relaxed);\n'
+                                      '            vm.vm.append_driver_mappings(aliases)?;'),
+    # Count a growth chunk's alias before the VM holds it.
+    'growth-cursor-before-append': (POOLS, '            vm.vm.append_driver_mappings(aliases)?;\n            // Within the capacity checked above.',
+                                    '            vm.pb_chunks.store(self.pools.chunks.len() + 1, Ordering::Relaxed);\n'
+                                    '            vm.vm.append_driver_mappings(aliases)?;\n            // Within the capacity checked above.'),
+    # Keep a chunk whose alias the VM never held.
+    'keep-unappended-chunk': (POOLS, '            vm.vm.append_driver_mappings(aliases)?;\n            // Within the capacity checked above.\n'
+                                     '            self.pools\n                .chunks\n                .push_within_capacity(chunk)\n'
+                                     '                .map_err(|_| EIO)?;',
+                              '            // Within the capacity checked above.\n            self.pools\n                .chunks\n'
+                              '                .push_within_capacity(chunk)\n                .map_err(|_| EIO)?;\n'
+                              '            vm.vm.append_driver_mappings(aliases)?;'),
+    # Grow without catching the running VM up first.
+    'no-growth-catch-up': (POOLS, '        let vm = self.running_vm(ctx)?;\n        self.map_pb(&vm)?;\n',
+                           '        let vm = self.running_vm(ctx)?;\n'),
+    # Catch up without the one-VM check.
+    'no-activation-guard': (POOLS, '.any(|f| !core::ptr::eq(&*f.job.vm, vm))', '.any(|_| false)'),
+    # Neither the catch-up's nor the grant's one-VM check (each alone covers a grant).
+    'no-same-vm-checks': [(POOLS, '.any(|f| !core::ptr::eq(&*f.job.vm, vm))', '.any(|_| false)'),
+                          (POOLS, 'if vm.slot != ctx || flights.iter().any(|f| !Arc::ptr_eq(&f.job.vm, &vm)) {',
+                           'if vm.slot != ctx {')],
+    # Back the whole heap when the GPU starts.
+    'initial-backs-whole-heap': (POOLS, 'chunks.push(PbChunk::new(dev, 0, ledger.initial)?, GFP_KERNEL)?;',
+                                 'chunks.push(PbChunk::new(dev, 0, buffer::MAX_BLOCKS)?, GFP_KERNEL)?;'),
+    # Growth chunks of 8 MiB.
+    'chunks-above-4mib': (GROWTH, 'pub(crate) const CHUNK_BLOCKS: u32 = 32;', 'pub(crate) const CHUNK_BLOCKS: u32 = 64;'),
+    # A firmware-visible cached PB leaf (its drop would ask the firmware to flush).
+    'pb-leaf-fw-visible': (HW, 'pub(crate) const LEAF_CACHED: u64 = 0x00c0000000000c83;',
+                           'pub(crate) const LEAF_CACHED: u64 = 0x00c0000000000c03;'),
 }
 
 # The test each mutation must fail, and a piece of its failure message.
@@ -125,6 +193,17 @@ INTENDED = {
     'soft-boundary-inclusive': ('soft_max_boundaries', 'got Some(Log("info", "")), want Some(Log("dbg", ""))'),
     'soft-max-unclamped': ('soft_max_bounds', 'soft_max, param 0'),
     'uncapped-ledger': ('constructor_is_the_old_one_capped', 'new(true, '),
+    'grant-without-backing': ('growth_backs_before_posting', 'record of block'),
+    'back-after-accept': ('allocation_failure_posts_nothing', 'ledger after a backing failure'),
+    'catch-up-cursor-before-append': ('partial_catch_up_counts_only_held_aliases', 'count after a failed append'),
+    'growth-cursor-before-append': ('append_failure_posts_nothing', 'count differs from held aliases'),
+    'keep-unappended-chunk': ('append_failure_posts_nothing', 'chunks after a backing failure'),
+    'no-growth-catch-up': ('growth_catches_the_running_vm_up_first', 'running VM not caught up'),
+    'no-activation-guard': ('catch_up_refuses_flights_of_another_vm', 'catch-up with a flight of another VM'),
+    'no-same-vm-checks': ('grant_refuses_flights_of_two_vms', 'grant with flights of two VMs'),
+    'initial-backs-whole-heap': ('startup_backs_the_initial_blocks', 'startup allocation'),
+    'chunks-above-4mib': ('growth_backs_before_posting', 'a growth chunk above 4 MiB'),
+    'pb-leaf-fw-visible': ('pb_leaf_is_gpu_only', 'PB leaf not GPU-only'),
 }
 assert set(INTENDED) == set(MUTATIONS)
 
@@ -171,8 +250,46 @@ pub type Result<T = ()> = core::result::Result<T, Error>;
 pub const EINVAL: Error = Error(-22);
 pub const ENODEV: Error = Error(-19);
 pub const EIO: Error = Error(-5);
+pub const ENOMEM: Error = Error(-12);
+pub const ENOSPC: Error = Error(-28);
+pub const EBUSY: Error = Error(-16);
+pub const EPROTO: Error = Error(-71);
 pub mod prelude {
-    pub use crate::{static_assert, Error, Result, EINVAL, EIO, ENODEV};
+    pub use crate::{static_assert, Error, Result, EBUSY, EINVAL, EIO, ENODEV, ENOMEM, ENOSPC, KVec, GFP_KERNEL};
+}
+pub type ARef<T> = std::sync::Arc<T>;
+#[derive(Copy, Clone)]
+pub struct Flags;
+pub const GFP_KERNEL: Flags = Flags;
+/// A kernel vector: pushes past the reserved capacity fail only through push_within_capacity.
+pub struct KVec<T>(pub Vec<T>);
+impl<T> KVec<T> {
+    pub fn with_capacity(n: usize, _: Flags) -> Result<Self> {
+        Ok(KVec(Vec::with_capacity(n)))
+    }
+    pub fn push(&mut self, value: T, _: Flags) -> Result {
+        self.0.push(value);
+        Ok(())
+    }
+    pub fn push_within_capacity(&mut self, value: T) -> core::result::Result<(), T> {
+        if self.0.len() == self.0.capacity() {
+            return Err(value);
+        }
+        self.0.push(value);
+        Ok(())
+    }
+    pub fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn get(&self, i: usize) -> Option<&T> {
+        self.0.get(i)
+    }
+    pub fn last(&self) -> Option<&T> {
+        self.0.last()
+    }
 }
 #[macro_export]
 macro_rules! static_assert {
@@ -189,10 +306,34 @@ pub enum Ev {
     Producer(u32),
     Reply([u32; 14]),
     Log(&'static str, String),
+    /// Backing object `id` of this many bytes allocated, or freed (its last reference gone).
+    Alloc(u32, usize),
+    Free(u32),
+    /// A PB alias of object `id` at GVA in the VM with this context, made, held by the VM
+    /// (appended to its driver mappings), or unmapped.
+    Map(u32, u64, usize, u32),
+    Append(u32, u64),
+    Unmap(u32, u64),
 }
 thread_local! {
     pub static LOG: RefCell<Vec<Ev>> = RefCell::new(Vec::new());
     pub static PARAM: Cell<u32> = Cell::new(PARAM_DEFAULT);
+    /// Failures to inject: the next this many allocations, alias maps, appends fail.
+    pub static FAIL_ALLOC: Cell<u32> = Cell::new(0);
+    pub static FAIL_MAP: Cell<u32> = Cell::new(0);
+    pub static MAP_OK_BEFORE_FAIL: Cell<u32> = Cell::new(0);
+    pub static FAIL_APPEND: Cell<u32> = Cell::new(0);
+    pub static NEXT_ID: Cell<u32> = Cell::new(1);
+}
+/// Takes one injected failure of `which`.
+pub fn fail(which: &'static std::thread::LocalKey<Cell<u32>>) -> bool {
+    which.with(|c| {
+        let n = c.get();
+        if n != 0 {
+            c.set(n - 1);
+        }
+        n != 0
+    })
 }
 pub fn ev(e: Ev) {
     LOG.with(|l| l.borrow_mut().push(e));
@@ -227,6 +368,95 @@ pub mod module_parameters {
     }
     pub static g15_pb_max_blocks: Param = Param;
 }
+
+pub mod driver {
+    pub struct AsahiDevice;
+}
+
+/// GEM kernel objects: freed when the last reference (chunk or alias) goes.
+pub mod gem {
+    pub struct Object {
+        pub id: u32,
+        pub size: usize,
+    }
+    impl Drop for Object {
+        fn drop(&mut self) {
+            crate::ev(crate::Ev::Free(self.id));
+        }
+    }
+    pub struct ObjectRef {
+        pub gem: crate::ARef<Object>,
+    }
+}
+
+/// The shared layer's VM: kernel aliases at fixed addresses, held by the VM once appended.
+pub mod mmu {
+    use crate::prelude::*;
+    pub struct Prot(pub u64);
+    impl Prot {
+        pub const fn from_pte(pte: u64) -> Self {
+            Prot(pte)
+        }
+    }
+    pub struct KernelMapping {
+        pub slot: u32,
+        pub gva: u64,
+        pub size: usize,
+        pub prot: u64,
+        pub gem: crate::ARef<crate::gem::Object>,
+    }
+    impl Drop for KernelMapping {
+        fn drop(&mut self) {
+            crate::ev(crate::Ev::Unmap(self.slot, self.gva));
+        }
+    }
+    pub struct Vm {
+        pub slot: u32,
+        pub held: std::cell::RefCell<Vec<KernelMapping>>,
+    }
+    impl Vm {
+        pub fn new(slot: u32) -> Self {
+            Vm { slot, held: Default::default() }
+        }
+        pub fn map_at(
+            &self,
+            addr: u64,
+            size: usize,
+            gem: crate::ARef<crate::gem::Object>,
+            prot: Prot,
+            guard: bool,
+        ) -> Result<KernelMapping> {
+            assert!(!guard);
+            // The shared layer maps whatever size it is given: the whole object, exactly.
+            assert_eq!(size, gem.size, "alias size differs from its object");
+            let skip = crate::MAP_OK_BEFORE_FAIL.with(|c| {
+                let n = c.get();
+                c.set(n.saturating_sub(1));
+                n != 0
+            });
+            if !skip && crate::fail(&crate::FAIL_MAP) {
+                return Err(ENOMEM);
+            }
+            // Leaves already in use: EBUSY (prepare_map).
+            let end = addr + size as u64;
+            if self.held.borrow().iter().any(|m| m.gva < end && addr < m.gva + m.size as u64) {
+                return Err(EBUSY);
+            }
+            crate::ev(crate::Ev::Map(self.slot, addr, size, gem.id));
+            Ok(KernelMapping { slot: self.slot, gva: addr, size, prot: prot.0, gem })
+        }
+        pub fn append_driver_mappings(&self, mappings: KVec<KernelMapping>) -> Result {
+            if crate::fail(&crate::FAIL_APPEND) {
+                return Err(ENOMEM); // the mappings drop here
+            }
+            for m in mappings.0 {
+                crate::ev(crate::Ev::Append(self.slot, m.gva));
+                self.held.borrow_mut().push(m);
+            }
+            Ok(())
+        }
+    }
+}
 '''
 
 MODEL = r'''
@@ -247,11 +477,18 @@ MODEL = r'''
         pub struct Init {
             pub control: Option<std::sync::Arc<Ctl>>,
         }
-        pub struct Vm {
+        pub struct VmState {
             pub slot: u32,
+            pub vm: mmu::Vm,
+            pub pb_chunks: AtomicUsize,
+        }
+        impl VmState {
+            pub fn new(slot: u32) -> Arc<Self> {
+                Arc::new(VmState { slot, vm: mmu::Vm::new(slot), pb_chunks: AtomicUsize::new(0) })
+            }
         }
         pub struct Job {
-            pub vm: Vm,
+            pub vm: Arc<VmState>,
         }
         pub struct Flight {
             pub job: Job,
@@ -303,9 +540,18 @@ MODEL = r'''
             pub ledger: Ledger,
             pub exhausted_logged: bool,
             pub stats: PbStats,
-            pub pb_heap: FwObject,
             pub pb_blocks: FwObject,
             pub live: Live,
+            pub drm: ARef<AsahiDevice>,
+            pub chunks: KVec<PbChunk>,
+        }
+        impl Pools {
+            pub fn chunk_count(&self) -> usize {
+                self.chunks.len()
+            }
+            pub fn chunk_capacity(&self) -> usize {
+                self.chunks.capacity()
+            }
         }
         pub struct Queue(pub std::collections::VecDeque<[u32; 14]>);
         impl Queue {
@@ -356,14 +602,28 @@ MODEL = r'''
         }
         pub const HEAP: u64 = super::hw::client::PB_HEAP;
         impl Firmware {
+            /// The VM with context 5 runs: one flight, its PB backing mapped (map_pb, as at the
+            /// start of its prefix's publication).
             pub fn new() -> Self {
+                let vm = VmState::new(5);
+                let mut f = Self::without_flights();
+                f.engine.flights.push(Flight { job: Job { vm: vm.clone() } });
+                f.map_pb(&vm).unwrap();
+                crate::take();
+                f
+            }
+            /// Pools::new's PB backing: the initial chunk, room for every chunk the ledger needs.
+            pub fn without_flights() -> Self {
+                let drm = ARef::new(AsahiDevice);
+                let (ledger, chunks) = pools_new_backing(&drm).unwrap();
                 Firmware {
                     events: Events { grow: Queue(Default::default()) },
                     pools: Pools {
-                        ledger: Ledger::new(tuning::PB_GROW, tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS),
+                        ledger,
                         exhausted_logged: false,
                         stats: PbStats::default(),
-                        pb_heap: FwObject { gva: Some(HEAP), size: 0, failures: Cell::new(0) },
+                        drm,
+                        chunks,
                         pb_blocks: FwObject {
                             gva: Some(super::hw::client::PB_BLOCK_LIST),
                             size: buffer::BLOCK_LIST_SIZE,
@@ -374,7 +634,7 @@ MODEL = r'''
                         },
                     },
                     init: Init { control: Some(std::sync::Arc::new(Ctl { epoch: 0x1_0000_0003 })) },
-                    engine: Engine { flights: vec![Flight { job: Job { vm: Vm { slot: 5 } } }] },
+                    engine: Engine { flights: Vec::new() },
                     renders: vec![1],
                     fw: FwModel {
                         ctx: 5,
@@ -428,13 +688,20 @@ MODEL = r'''
 TESTS = r'''
 #[cfg(test)]
 mod pb_growth_tests {
-    use crate::g15::firmware::{Firmware, HEAP};
+    use crate::g15::firmware::{Firmware, VmState, Flight, Job, HEAP};
+    use crate::g15::hw::{client, pte};
+    use crate::g15::fw::buffer::{BLOCK_BYTES, MAX_BLOCKS};
+    use crate::g15::pools::growth::{max_chunks, CHUNK_BLOCKS};
+    use crate::g15::pgtable::Prot;
+    use crate::{EPROTO, FAIL_ALLOC, FAIL_APPEND, FAIL_MAP};
+    use core::sync::atomic::Ordering;
+    use std::sync::Arc;
     use crate::g15::fw::buffer::{self, grow_reply, BLOCK_LIST_RECORDS, GROW_STEP};
     use crate::g15::fw::channels::devctl;
     use crate::g15::hw::tuning;
     use crate::g15::pools::growth::Ledger;
     use crate::g15::{params, OldLedger};
-    use crate::{take, Ev, PARAM, PARAM_DEFAULT};
+    use crate::{take, Ev, ENOMEM, PARAM, PARAM_DEFAULT};
 
     const CAP: u32 = BLOCK_LIST_RECORDS - 1;
     /// Refusals answered at the maximum, as the commit states them.
@@ -470,6 +737,7 @@ mod pb_growth_tests {
         let (mut posted, mut refusals, mut logged_refusal) = (initial, 0, false);
         let mut counter = 0;
         loop {
+            assert!(counter < 10_000, "the expected trace does not end");
             if refusals >= REFUSALS {
                 out.push(Ev::Log("warn", String::new()));
                 break;
@@ -507,6 +775,7 @@ mod pb_growth_tests {
 
     fn levels_only(evs: Vec<Ev>) -> Vec<Ev> {
         evs.into_iter()
+            .filter(|e| !is_backing(e))
             .map(|e| match e {
                 Ev::Log(l, _) => Ev::Log(l, String::new()),
                 e => e,
@@ -726,6 +995,328 @@ mod pb_growth_tests {
         assert_eq!(f.pools.stats.bad, 6);
     }
 
+    fn is_backing(e: &Ev) -> bool {
+        matches!(e, Ev::Alloc(..) | Ev::Free(_) | Ev::Map(..) | Ev::Append(..) | Ev::Unmap(..))
+    }
+
+    /// A VM's PB aliases: its count, and the aliases it holds, from block 0 in order.
+    fn assert_cursor(vm: &VmState, chunks: usize) {
+        let held = vm.vm.held.borrow();
+        assert_eq!(vm.pb_chunks.load(Ordering::Relaxed), held.len(), "count differs from held aliases");
+        assert!(held.len() <= chunks);
+        let mut gva = client::PB_HEAP;
+        for m in held.iter() {
+            assert_eq!(m.gva, gva, "aliases not contiguous from the heap's start");
+            assert_eq!(m.prot, pte::LEAF_CACHED);
+            gva += m.size as u64;
+        }
+    }
+
+    /// In the order of `log`: no block record and no producer past the blocks the VM with
+    /// context `slot` holds aliases for at that point.
+    fn assert_posted_backed(log: &[Ev], slot: u32, start: u64) {
+        let mut mapped = start;
+        for e in log {
+            match e {
+                Ev::Append(s, gva) if *s == slot => {
+                    assert_eq!(*gva, client::PB_HEAP + mapped * BLOCK_BYTES, "append out of order");
+                }
+                Ev::Map(s, gva, size, _) if *s == slot && *gva == client::PB_HEAP + mapped * BLOCK_BYTES => {
+                    // Counted at its append.
+                    let _ = size;
+                }
+                _ => {}
+            }
+            if let Ev::Append(s, gva) = e {
+                if *s == slot {
+                    let size = log
+                        .iter()
+                        .find_map(|m| match m {
+                            Ev::Map(ms, mg, size, _) if ms == s && mg == gva => Some(*size as u64),
+                            _ => None,
+                        })
+                        .unwrap();
+                    mapped += size / BLOCK_BYTES;
+                }
+            }
+            if let Ev::Record(off, _) = e {
+                assert!((*off as u64 / 8) < mapped, "record of block {} with {} mapped", off / 8, mapped);
+            }
+            if let Ev::Producer(p) = e {
+                assert!(*p as u64 <= mapped, "producer {} with {} mapped", p, mapped);
+            }
+        }
+    }
+
+    fn count(log: &[Ev], f: impl Fn(&Ev) -> bool) -> usize {
+        log.iter().filter(|e| f(e)).count()
+    }
+
+    /// The firmware asks until the ledger reaches `target` posted blocks, one request a pass.
+    fn grow_to(f: &mut Firmware, target: u32) {
+        for _ in 0..1000 {
+            if f.pools.ledger.posted >= target {
+                return;
+            }
+            f.queue();
+            f.pass();
+        }
+        panic!("growth stopped at {} blocks", f.pools.ledger.posted);
+    }
+
+    #[test]
+    fn startup_backs_the_initial_blocks() {
+        let mut f = Firmware::without_flights();
+        let log = take();
+        let (initial, max) = (f.pools.ledger.initial, f.pools.ledger.max);
+        assert_eq!(log, vec![Ev::Alloc(1, initial as usize * BLOCK_BYTES as usize)], "startup allocation");
+        assert_eq!((f.pools.backed(), f.pools.chunk_count()), (initial, 1));
+        assert_eq!(f.pools.chunk_capacity(), max_chunks(initial, max));
+        assert_eq!(max_chunks(initial, max), 97);
+        // The first prefix of a VM maps the backing, nothing else.
+        let vm = VmState::new(7);
+        f.engine.flights.push(Flight { job: Job { vm: vm.clone() } });
+        f.map_pb(&vm).unwrap();
+        let size = initial as usize * BLOCK_BYTES as usize;
+        assert_eq!(take(), vec![Ev::Map(7, client::PB_HEAP, size, 1), Ev::Append(7, client::PB_HEAP)]);
+        assert_cursor(&vm, 1);
+        // Mapping again maps nothing.
+        f.map_pb(&vm).unwrap();
+        assert!(take().is_empty());
+    }
+
+    #[test]
+    fn pb_leaf_is_gpu_only() {
+        let prot = Prot::from_pte(pte::LEAF_CACHED);
+        assert!(prot.ap_is_gpu() && !prot.is_cached_noncoherent(), "PB leaf not GPU-only");
+    }
+
+    #[test]
+    fn growth_backs_before_posting() {
+        PARAM.with(|p| p.set(PARAM_DEFAULT));
+        let mut f = Firmware::new();
+        f.fw.ask_after_reply = true;
+        f.queue();
+        take();
+        let mut passes = 0;
+        while !f.events.grow.is_empty() {
+            f.pass();
+            passes += 1;
+            assert!(passes <= 1000, "growth did not end");
+        }
+        let log = take();
+        let (initial, max) = (f.pools.ledger.initial, f.pools.ledger.max);
+        assert_posted_backed(&log, 5, initial as u64);
+        // Chunks of at most 32 blocks, allocated only as needed: up to the maximum, no further.
+        let allocs: Vec<usize> = log
+            .iter()
+            .filter_map(|e| if let Ev::Alloc(_, b) = e { Some(*b) } else { None })
+            .collect();
+        assert_eq!(allocs.len() + 1, max_chunks(initial, max));
+        assert!(allocs.iter().all(|b| *b <= 4 << 20), "a growth chunk above 4 MiB");
+        assert_eq!(CHUNK_BLOCKS as u64 * BLOCK_BYTES, 4 << 20);
+        assert_eq!(f.pools.backed(), max);
+        assert_eq!(count(&log, |e| matches!(e, Ev::Free(_) | Ev::Unmap(..))), 0);
+        assert_cursor(&f.engine.flights[0].job.vm, f.pools.chunk_count());
+    }
+
+    /// A failure while backing posts nothing and answers nothing; the request counter and the
+    /// VM's count stay; the next request is answered.
+    fn failure_posts_nothing(which: &'static std::thread::LocalKey<std::cell::Cell<u32>>) -> Vec<Ev> {
+        let mut f = Firmware::new();
+        which.with(|c| c.set(1));
+        f.queue();
+        f.pass();
+        let log = take();
+        assert_eq!(count(&log, |e| matches!(e, Ev::Record(..) | Ev::Producer(_) | Ev::Reply(_) | Ev::Sync)), 0,
+                   "posted after a backing failure: {log:?}");
+        assert_eq!((f.pools.ledger.posted, f.pools.ledger.next_request), (1024, 0), "ledger after a backing failure");
+        assert_eq!((f.pools.stats.bad, f.pools.chunk_count()), (1, 1), "chunks after a backing failure");
+        assert_cursor(&f.engine.flights[0].job.vm, 1);
+        assert!(log.iter().any(|e| matches!(e, Ev::Log("err", m) if m.contains("not answered: -12"))));
+        f.queue();
+        f.pass();
+        let retry = take();
+        assert!(retry.contains(&Ev::Producer(1034)));
+        assert_eq!(f.pools.chunk_count(), 2);
+        assert_cursor(&f.engine.flights[0].job.vm, 2);
+        log
+    }
+
+    #[test]
+    fn allocation_failure_posts_nothing() {
+        let log = failure_posts_nothing(&FAIL_ALLOC);
+        assert_eq!(count(&log, is_backing), 0);
+    }
+
+    #[test]
+    fn map_failure_posts_nothing() {
+        let log = failure_posts_nothing(&FAIL_MAP);
+        let backing: Vec<&Ev> = log.iter().filter(|e| is_backing(e)).collect();
+        assert!(matches!(backing[..], [Ev::Alloc(2, _), Ev::Free(2)]), "{backing:?}");
+    }
+
+    #[test]
+    fn append_failure_posts_nothing() {
+        let log = failure_posts_nothing(&FAIL_APPEND);
+        let backing: Vec<&Ev> = log.iter().filter(|e| is_backing(e)).collect();
+        assert!(
+            matches!(backing[..], [Ev::Alloc(2, _), Ev::Map(5, _, _, 2), Ev::Unmap(5, _), Ev::Free(2)]),
+            "{backing:?}"
+        );
+    }
+
+    #[test]
+    fn transport_failure_keeps_everything() {
+        let mut f = Firmware::new();
+        f.fw.reply_fails = true;
+        f.queue();
+        f.pass();
+        let log = take();
+        assert!(log.contains(&Ev::Producer(1034)));
+        assert_eq!((f.pools.ledger.posted, f.pools.chunk_count()), (1034, 2));
+        assert_cursor(&f.engine.flights[0].job.vm, 2);
+        assert_eq!(count(&log, |e| matches!(e, Ev::Free(_) | Ev::Unmap(..))), 0);
+    }
+
+    #[test]
+    fn other_vms_catch_up_before_they_run() {
+        let mut f = Firmware::new();
+        let a = f.engine.flights[0].job.vm.clone();
+        grow_to(&mut f, 1100);
+        take();
+        assert_eq!(f.pools.chunk_count(), 4);
+        // A's work retires; a new VM runs next: it maps every chunk first.
+        f.engine.flights.clear();
+        let b = VmState::new(6);
+        f.engine.flights.push(Flight { job: Job { vm: b.clone() } });
+        f.fw.ctx = 6;
+        f.map_pb(&b).unwrap();
+        let log = take();
+        assert_eq!(count(&log, |e| matches!(e, Ev::Append(6, _))), 4);
+        assert_eq!(count(&log, |e| matches!(e, Ev::Alloc(..))), 0);
+        assert_cursor(&b, 4);
+        // B grows the backing; A, behind, catches up when it runs again.
+        grow_to(&mut f, 1200);
+        let log = take();
+        assert_posted_backed(&log, 6, 1120);
+        assert_eq!(count(&log, |e| matches!(e, Ev::Map(5, ..))), 0);
+        f.engine.flights.clear();
+        f.engine.flights.push(Flight { job: Job { vm: a.clone() } });
+        f.map_pb(&a).unwrap();
+        assert_cursor(&a, f.pools.chunk_count());
+        assert_eq!(a.pb_chunks.load(Ordering::Relaxed), f.pools.chunk_count());
+    }
+
+    #[test]
+    fn growth_catches_the_running_vm_up_first() {
+        let mut f = Firmware::new();
+        let a = f.engine.flights[0].job.vm.clone();
+        // B grows the backing while A is idle.
+        f.engine.flights.clear();
+        let b = VmState::new(6);
+        f.engine.flights.push(Flight { job: Job { vm: b.clone() } });
+        f.map_pb(&b).unwrap();
+        f.fw.ctx = 6;
+        grow_to(&mut f, 1100);
+        // A runs again; its growth request maps what it lacks before backing more.
+        f.engine.flights.clear();
+        f.engine.flights.push(Flight { job: Job { vm: a.clone() } });
+        f.fw.ctx = 5;
+        take();
+        grow_to(&mut f, 1130);
+        let log = take();
+        assert_eq!(a.vm.held.borrow().len(), f.pools.chunk_count(), "running VM not caught up");
+        assert_cursor(&a, f.pools.chunk_count());
+        assert_posted_backed(&log, 5, 1024);
+    }
+
+    #[test]
+    fn partial_catch_up_counts_only_held_aliases() {
+        let mut f = Firmware::new();
+        grow_to(&mut f, 1100);
+        f.engine.flights.clear();
+        let b = VmState::new(6);
+        f.engine.flights.push(Flight { job: Job { vm: b.clone() } });
+        take();
+        // The third alias cannot be made: two held.
+        FAIL_MAP.with(|c| c.set(0));
+        crate::MAP_OK_BEFORE_FAIL.with(|c| c.set(2));
+        FAIL_MAP.with(|c| c.set(1));
+        assert_eq!(f.map_pb(&b), Err(ENOMEM));
+        assert_cursor(&b, 4);
+        assert_eq!(b.pb_chunks.load(Ordering::Relaxed), 2);
+        // The third alias is made but cannot be held: dropped, still two.
+        FAIL_APPEND.with(|c| c.set(1));
+        assert_eq!(f.map_pb(&b), Err(ENOMEM));
+        assert_eq!(b.pb_chunks.load(Ordering::Relaxed), 2, "count after a failed append");
+        assert!(take().iter().any(|e| matches!(e, Ev::Unmap(6, _))));
+        assert_cursor(&b, 4);
+        f.map_pb(&b).unwrap();
+        assert_eq!(b.pb_chunks.load(Ordering::Relaxed), 4);
+        assert_cursor(&b, 4);
+    }
+
+    /// The ledger reset of Pools::init(), not a full recovery.
+    #[test]
+    fn ledger_reset_reuses_the_backing() {
+        let mut f = Firmware::new();
+        grow_to(&mut f, 1300);
+        let chunks = f.pools.chunk_count();
+        take();
+        f.reset_ledger();
+        assert_eq!(f.pools.ledger.posted, 1024);
+        grow_to(&mut f, 1300);
+        let log = take();
+        assert_eq!(count(&log, |e| matches!(e, Ev::Alloc(..) | Ev::Map(..))), 0);
+        assert_eq!(f.pools.chunk_count(), chunks);
+        assert_posted_backed(&log, 5, f.pools.backed() as u64);
+    }
+
+    #[test]
+    fn rejected_requests_allocate_nothing() {
+        let mut f = Firmware::new();
+        let mut q = f.fw.request();
+        q[buffer::grow_request::EPOCH] = 2; // a halt epoch that has passed
+        f.events.grow.0.push_back(q);
+        f.pass();
+        let log = take();
+        assert_eq!(count(&log, is_backing), 0);
+        assert_eq!(f.pools.stats.bad, 1);
+    }
+
+    #[test]
+    fn catch_up_refuses_flights_of_another_vm() {
+        let mut f = Firmware::new();
+        let a = f.engine.flights[0].job.vm.clone();
+        let b = VmState::new(6);
+        f.engine.flights.push(Flight { job: Job { vm: b.clone() } });
+        assert_eq!(f.map_pb(&b), Err(EPROTO), "catch-up with a flight of another VM");
+        assert_eq!(b.pb_chunks.load(Ordering::Relaxed), 0);
+        assert_eq!(count(&take(), is_backing), 0);
+        // A count past the chunks.
+        f.engine.flights.pop();
+        a.pb_chunks.store(f.pools.chunk_count() + 1, Ordering::Relaxed);
+        assert_eq!(f.map_pb(&a), Err(EPROTO), "catch-up with a count past the chunks");
+    }
+
+    #[test]
+    fn grant_refuses_flights_of_two_vms() {
+        let mut f = Firmware::new();
+        let b = VmState::new(6);
+        f.engine.flights.push(Flight { job: Job { vm: b.clone() } });
+        f.renders.push(1);
+        f.queue();
+        f.pass();
+        let log = take();
+        assert_eq!(
+            count(&log, |e| is_backing(e) || matches!(e, Ev::Reply(_) | Ev::Producer(_) | Ev::Record(..))),
+            0,
+            "grant with flights of two VMs"
+        );
+        assert!(log.iter().any(|e| matches!(e, Ev::Log("err", m) if m.contains("not answered: -71"))));
+    }
+
     #[test]
     fn constructor_is_the_old_one_capped() {
         let mut values: Vec<u32> = (0..=4200).collect();
@@ -793,17 +1384,41 @@ def main():
         raise SystemExit('embedded Ledger::new() differs from ' + OLD_REF)
 
     def run(mutation):
-        paths = (POOLS, GROWTH, BUFFER, CHANNELS, INITDATA, PARAMS, HW, CORE)
+        paths = (POOLS, GROWTH, BUFFER, CHANNELS, INITDATA, PARAMS, HW, CORE, ENGINE, PGTABLE)
         src = {path: read(path) for path in paths}
         if mutation:
-            path, old, new = {**MUTATIONS, **CONTROLS}[mutation]
-            if src[path].count(old) != 1:
-                raise SystemExit(f'mutation {mutation}: anchor not found once')
-            src[path] = src[path].replace(old, new)
+            spec = {**MUTATIONS, **CONTROLS}[mutation]
+            for path, old, new in (spec if isinstance(spec, list) else [spec]):
+                if src[path].count(old) != 1:
+                    raise SystemExit(f'mutation {mutation}: anchor not found once')
+                src[path] = src[path].replace(old, new)
         pools, hw = src[POOLS], src[HW]
         bodies = [item(pools, s) for s in ('    pub(crate) fn answer_growth(&mut self) -> Result {',
-                                           '    fn answer_request(&mut self, request: &[u32; 14]) -> Result {')]
+                                           '    fn answer_request(&mut self, request: &[u32; 14]) -> Result {',
+                                           '    pub(crate) fn map_pb(&mut self, vm: &VmState) -> Result {',
+                                           '    fn running_vm(&self, ctx: u32) -> Result<Arc<VmState>> {',
+                                           '    fn back_pb(&mut self, end: u32, ctx: u32) -> Result {')]
         soft_max = item(pools, '    pub(crate) fn soft_max(&self) -> u32 {')
+        backed = item(pools, '    pub(crate) fn backed(&self) -> u32 {')
+        chunk = item(pools, 'struct PbChunk {') + '\n' + item(pools, 'impl PbChunk {')
+        start = pools.index(POOLS_NEW_BACKING[0])
+        end = pools.index('\n', pools.index(POOLS_NEW_BACKING[1], start)) + 1
+        pools_new_backing = pools[start:end]
+        if pools.count(PB_LEAF_ASSERT) != 1:
+            raise SystemExit('pools.rs does not assert the PB leaf GPU-only')
+        # Every prefix maps the PB into its VM before anything else.
+        prefix_into = item(src[ENGINE], '    fn publish_prefix_into(&mut self, job: &Arc<Job>, f: &mut Flight) -> Result {')
+        statements = [l.strip() for l in prefix_into.splitlines()[1:] if l.strip() and not l.strip().startswith('//')]
+        if not statements[0].startswith('self.map_pb(&job.vm)'):
+            raise SystemExit('publish_prefix_into does not start with the PB catch-up')
+        pgtable = src[PGTABLE]
+        pg_consts = '\n'.join(re.search(rf'^const {n}: \w+ = [^;]+;', pgtable, re.M).group(0)
+                              for n in ('UAT_AP_SHIFT', 'UAT_AP_BITS', 'UAT_HIGH_BITS_SHIFT', 'UAT_MEMATTR_SHIFT',
+                                        'UAT_MEMATTR_BITS', 'MEMATTR_CACHED', 'AP_GPU'))
+        prot = (item(pgtable, 'pub(crate) struct Prot {') + '\nimpl Prot {\n' +
+                item(pgtable, '    pub(crate) const fn from_pte(pte: u64) -> Self {') + '\n' +
+                item(pgtable, '    pub(crate) const fn is_cached_noncoherent(&self) -> bool {') +
+                '\n    pub fn ap_is_gpu(&self) -> bool { self.ap == AP_GPU }\n}\n')
         init = item(pools, '    fn init(&mut self) -> Result {')
         for line in LEDGER_RESET:
             if init.count(line) != 1:
@@ -817,10 +1432,12 @@ def main():
         sizes = consts(item(hw, 'pub(crate) mod sizes {'), ['PB_BLOCKS'])
         tuning = consts(item(hw, 'pub(crate) mod tuning {'), ['PB_GROW', 'PB_BLOCKS', 'PB_MAX_BLOCKS'])
         client = consts(item(hw, 'pub(crate) mod client {'), ['PB_HEAP', 'PB_BLOCK_LIST'])
+        pte = consts(item(hw, 'pub(crate) mod pte {'), ['LEAF_CACHED'])
         control = consts(item(src[INITDATA], 'pub(crate) mod control {'), ['HALT_COUNT'])
         growth = src[GROWTH]
         clamp_fn = item(growth, 'const fn clamp(v: u32, lo: u32, hi: u32) -> u32 {')
-        tested = ''.join(bodies) + soft_max + pb_max_blocks + growth + src[BUFFER] + sizes + tuning
+        tested = (''.join(bodies) + soft_max + backed + chunk + pools_new_backing + pb_max_blocks + growth +
+                  src[BUFFER] + sizes + tuning + pte + prot)
         dir = out / (mutation or 'actual')
         dir.mkdir(exist_ok=True)
         for path in (GROWTH, BUFFER, CHANNELS):
@@ -837,6 +1454,21 @@ def main():
                 '        pub mod sizes {\n' + sizes + '\n}\n'
                 '        pub mod tuning {\n' + tuning + '\n}\n'
                 '        pub mod client {\n' + client + '\n}\n'
+                '        pub mod pte {\n' + pte + '\n}\n'
+                '    }\n'
+                '    pub mod pgtable {\n' + pg_consts + '\n' + prot + '\n    }\n'
+                '    pub mod boot {\n        pub fn eproto() -> crate::Error { crate::EPROTO }\n    }\n'
+                '    /// The checked backing allocation, failing where a test injects it.\n'
+                '    pub mod object {\n'
+                '        use crate::prelude::*;\n'
+                '        pub struct HeldPages;\n'
+                '        pub fn gpu_backing(_: &crate::driver::AsahiDevice, bytes: usize)\n'
+                '            -> Result<(crate::gem::ObjectRef, HeldPages)> {\n'
+                '            if crate::fail(&crate::FAIL_ALLOC) { return Err(ENOMEM); }\n'
+                '            let id = crate::NEXT_ID.with(|n| { let id = n.get(); n.set(id + 1); id });\n'
+                '            crate::ev(crate::Ev::Alloc(id, bytes));\n'
+                '            Ok((crate::gem::ObjectRef { gem: crate::ARef::new(crate::gem::Object { id, size: bytes }) }, HeldPages))\n'
+                '        }\n'
                 '    }\n'
                 '    pub mod params {\n        use crate::module_parameters;\n' + pb_max_blocks + '\n    }\n'
                 '    /// Ledger::new() at ' + OLD_REF[:12] + '.\n'
@@ -850,10 +1482,19 @@ def main():
                 '        use super::fw::buffer::{self, block_ctl};\n'
                 '        use super::fw::channels::DevCtl;\n'
                 '        use super::fw::initdata::control;\n'
-                '        use super::hw::{client, tuning};\n'
-                '        use super::pools::growth::{self, Ledger};\n' +
-                MODEL.replace('p.RESET', reset) +
-                '        impl Pools {\n' + soft_max + '\n        }\n'
+                '        use super::hw::{client, pte, tuning};\n'
+                '        use super::pools::growth::{self, Ledger};\n'
+                '        use super::object::{self, HeldPages};\n'
+                '        use crate::driver::AsahiDevice;\n'
+                '        use crate::{gem, mmu, ARef};\n'
+                '        use core::sync::atomic::{AtomicUsize, Ordering};\n'
+                '        use std::sync::Arc;\n' +
+                MODEL.replace('p.RESET', reset).replace('POOLS_NEW_BACKING', '') +
+                chunk + '\n'
+                '        /// Pools::new\'s PB backing, verbatim.\n'
+                '        pub fn pools_new_backing(dev: &AsahiDevice) -> Result<(Ledger, KVec<PbChunk>)> {\n' +
+                pools_new_backing + '        Ok((ledger, chunks))\n        }\n'
+                '        impl Pools {\n' + soft_max + '\n' + backed + '\n        }\n'
                 '        impl Firmware {\n' + '\n'.join(bodies) + '\n        }\n'
                 '    }\n'
                 '}\n' + TESTS)
@@ -868,8 +1509,13 @@ def main():
 
         def no_core():
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        r = subprocess.run([str(binary), '--show-output', 'pb_growth_tests::'], capture_output=True,
-                           text=True, preexec_fn=no_core, timeout=600)
+        try:
+            r = subprocess.run([str(binary), '--show-output', 'pb_growth_tests::'], capture_output=True,
+                               text=True, preexec_fn=no_core, timeout=60)
+        except subprocess.TimeoutExpired:
+            # A hang is not a test failure: no test is reported failed, so no mutation counts.
+            return {'mutation': mutation, 'exit': 'timeout', 'summary': [], 'failed': [], 'output': {},
+                    'stderr': 'timed out after 60 s'}
         summary = [line for line in r.stdout.splitlines() if line.startswith('test result:')]
         failed = sorted(line.split()[1].removeprefix('pb_growth_tests::') for line in r.stdout.splitlines()
                         if line.startswith('test ') and line.endswith('FAILED'))
