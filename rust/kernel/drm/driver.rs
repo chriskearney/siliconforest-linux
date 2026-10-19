@@ -130,9 +130,6 @@ pub trait Driver {
     /// their `THIS_MODULE` so open files and exported DMA buffers retain the code.
     const MODULE: Option<&'static crate::ThisModule> = None;
 
-    /// Feature flags
-    const FEATURES: u32;
-
     /// IOCTL list. See `kernel::drm::ioctl::declare_drm_ioctls!{}`.
     const IOCTLS: &'static [drm::ioctl::DrmIoctlDescriptor];
 
@@ -145,6 +142,17 @@ pub trait Driver {
     /// usable from the render node (i.e. marked DRM_RENDER_ALLOW), whereas
     /// userspace processes using the master node can invoke any ioctl.
     const FEAT_RENDER: bool = false;
+
+    /// Sets the `DRIVER_SYNCOBJ` feature: the driver supports DRM sync objects for explicit
+    /// synchronization of command submission.
+    const FEAT_SYNCOBJ: bool = false;
+
+    /// Sets the `DRIVER_SYNCOBJ_TIMELINE` feature: the driver supports timeline sync objects.
+    const FEAT_SYNCOBJ_TIMELINE: bool = false;
+
+    /// Sets the `DRIVER_GEM_GPUVA` feature: the driver supports user-defined GPU VA bindings
+    /// for GEM objects.
+    const FEAT_GEM_GPUVA: bool = false;
 }
 
 /// The registration type of a `drm::Device`.

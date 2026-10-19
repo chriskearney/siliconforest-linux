@@ -164,11 +164,10 @@ impl drm::driver::Driver for AsahiDriver {
     const INFO: drm::driver::DriverInfo = INFO;
     /// Open files and exported buffers pin the module while G17P deferred cleanup can run.
     const MODULE: Option<&'static kernel::ThisModule> = Some(&crate::THIS_MODULE);
-    const FEATURES: u32 = drm::driver::FEAT_GEM
-        | drm::driver::FEAT_RENDER
-        | drm::driver::FEAT_SYNCOBJ
-        | drm::driver::FEAT_SYNCOBJ_TIMELINE
-        | drm::driver::FEAT_GEM_GPUVA;
+    const FEAT_RENDER: bool = true;
+    const FEAT_SYNCOBJ: bool = true;
+    const FEAT_SYNCOBJ_TIMELINE: bool = true;
+    const FEAT_GEM_GPUVA: bool = true;
 
     kernel::declare_drm_ioctls! {
         (ASAHI_GET_PARAMS,      drm_asahi_get_params,
