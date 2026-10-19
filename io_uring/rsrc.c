@@ -1029,6 +1029,9 @@ static struct io_rsrc_node *io_register_fragment_buffer(struct io_ring_ctx *ctx,
 	long nr;
 	int ret = -ENOMEM;
 
+	/* Like io_pin_pages(), keep the per-buffer arrays within kvmalloc() limits. */
+	if (count > INT_MAX / sizeof(struct user_page_fragment))
+		return ERR_PTR(-EOVERFLOW);
 	node = io_rsrc_node_alloc(ctx, IORING_RSRC_BUFFER);
 	if (!node)
 		return ERR_PTR(-ENOMEM);
