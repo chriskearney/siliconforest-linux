@@ -16,11 +16,13 @@ static void v14_catalog_profile_external(struct kunit *test)
 	KUNIT_ASSERT_NOT_NULL(test, dcp);
 	KUNIT_ASSERT_NOT_NULL(test, v14);
 	v14->external = true;
-	dcp->dptxport[0].lane_count = 2;
+	/* A previous sink trained at one lane: the budget takes the PHY's four. */
+	dcp->dptxport[0].max_lane_count = 4;
+	dcp->dptxport[0].lane_count = 1;
 	dcp_v14_catalog_profile(v14, dcp, &ctx);
 	KUNIT_EXPECT_TRUE(test, ctx.v14_7_rgb8);
 	KUNIT_EXPECT_TRUE(test, ctx.v14_7_dsc);
-	KUNIT_EXPECT_EQ(test, ctx.link_lanes, 2U);
+	KUNIT_EXPECT_EQ(test, ctx.link_lanes, 4U);
 	KUNIT_EXPECT_EQ(test, ctx.link_rate, (u32)LINK_RATE_HBR3);
 }
 
@@ -34,6 +36,7 @@ static void v14_catalog_profile_typec_panel_pipe(struct kunit *test)
 	KUNIT_ASSERT_NOT_NULL(test, v14);
 	v14->typec = true;
 	v14->board = &dcp_v14_board_j613;
+	dcp->dptxport[0].max_lane_count = 4;
 	dcp->dptxport[0].lane_count = 4;
 	dcp_v14_catalog_profile(v14, dcp, &ctx);
 	KUNIT_EXPECT_FALSE(test, ctx.v14_7_rgb8);

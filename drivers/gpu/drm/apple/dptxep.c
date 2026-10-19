@@ -507,6 +507,7 @@ static int dptxport_call_get_max_lane_count(struct apple_epic_service *service,
 	if (!dptx->atcphy) {
 		/* USB4 DP IN: no ATC DP PHY to validate. */
 		dptx->lane_count = 4;
+		dptx->max_lane_count = 4;
 		reply->retcode = cpu_to_le32(0);
 		reply->lane_count = cpu_to_le64(4);
 		dev_info(dcp->dev, "get_max_lane_count: USB4 DP IN, 4 lanes\n");
@@ -518,6 +519,7 @@ static int dptxport_call_get_max_lane_count(struct apple_epic_service *service,
 		dev_err(dcp->dev, "phy_validate failed: %d\n", ret);
 		reply->retcode = cpu_to_le32(1);
 		reply->lane_count = cpu_to_le64(0);
+		dptx->max_lane_count = 0;
 	} else {
 		if (phy_ops.dp.lanes < 2) {
 			// phy_validate might return 0 lanes if atc phy is not
@@ -529,6 +531,7 @@ static int dptxport_call_get_max_lane_count(struct apple_epic_service *service,
 		} else {
 			dptx->lane_count = phy_ops.dp.lanes;
 		}
+		dptx->max_lane_count = dptx->lane_count;
 		reply->retcode = cpu_to_le32(0);
 		reply->lane_count = cpu_to_le64(dptx->lane_count);
 	}

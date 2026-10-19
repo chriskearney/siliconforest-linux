@@ -1186,7 +1186,7 @@ static u64 dcp_lane_kbps(u32 rate)
 	return (u64)rate * 270000 * 8 / 10;
 }
 
-/* Uncompressed wire bits per pixel a catalog is budgeted with (RGB8). */
+/* Uncompressed wire bits per pixel a catalog is budgeted with, at most (RGB8). */
 #define DCP_BUDGET_WIRE_BPP	24
 /*
  * A DSC timing must fit the lanes at the fewest bits per pixel an 8-bit RGB
@@ -1197,8 +1197,47 @@ static u64 dcp_lane_kbps(u32 rate)
 #define DCP_BUDGET_FEC_PERMILLE	24
 
 /*
- * Keep the timings @lanes of @rate can carry uncompressed (24 bpp within the
- * lanes' payload) or compressed by the firmware (a DSC timing at
+ * Wire bits per pixel of a timing's selected uncompressed colour: three
+ * components for RGB and 4:4:4, two for 4:2:2, one and a half for 4:2:0,
+ * at most DCP_BUDGET_WIRE_BPP, so that a deeper colour never costs a
+ * timing (its 8-bit fallback is the firmware's to pick).
+ */
+static u32 dcp_budget_bpp(const struct dcp_display_mode *mode)
+{
+	const struct dcp_color_mode *colors[] = {
+		&mode->sdr_rgb, &mode->sdr_444, &mode->sdr, &mode->best,
+	};
+	const struct dcp_color_mode *c = NULL;
+	unsigned int i;
+	u32 depth, bpp;
+
+	/* The same order as the selection: the first valid one with that ID. */
+	for (i = 0; i < ARRAY_SIZE(colors) && !c; i++)
+		if (colors[i]->score >= 0 && colors[i]->id == mode->color_mode_id)
+			c = colors[i];
+	if (!c)
+		return DCP_BUDGET_WIRE_BPP;
+	depth = c->depth ? c->depth : 8;
+	switch (c->format) {
+	case DCP_COLOR_FORMAT_YCBCR420:
+		bpp = depth * 3 / 2;
+		break;
+	case DCP_COLOR_FORMAT_YCBCR422:
+	case DCP_COLOR_FORMAT_YCBCR422_DP:
+	case DCP_COLOR_FORMAT_YCBCR422_HDMI:
+		bpp = depth * 2;
+		break;
+	default:
+		bpp = depth * 3;
+		break;
+	}
+	return min_t(u32, bpp, DCP_BUDGET_WIRE_BPP);
+}
+
+/*
+ * Keep the timings @lanes of @rate can carry uncompressed (their selected
+ * colour's bits per pixel, dcp_budget_bpp(), within the lanes' payload) or
+ * compressed by the firmware (a DSC timing at
  * DCP_BUDGET_DSC_MIN_BPP within the payload less FEC). If the firmware's
  * preferred timing goes, the largest, then fastest, remaining one becomes
  * preferred. Returns the number kept; *@rejected counts the rest.
@@ -1216,7 +1255,7 @@ unsigned int dcp_catalog_budget(struct dcp_display_mode *modes, unsigned int cou
 		const struct drm_display_mode *m = &modes[i].mode;
 		bool fits = modes[i].dsc ?
 			(u64)m->clock * DCP_BUDGET_DSC_MIN_BPP <= dsc_budget :
-			(u64)m->clock * DCP_BUDGET_WIRE_BPP <= budget;
+			(u64)m->clock * dcp_budget_bpp(&modes[i]) <= budget;
 
 		if (!fits) {
 			(*rejected)++;

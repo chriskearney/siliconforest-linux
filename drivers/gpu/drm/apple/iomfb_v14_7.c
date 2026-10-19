@@ -978,18 +978,13 @@ bool iomfb_v14_7_external_release(struct apple_dcp *dcp)
 }
 
 /*
- * A display description the firmware published (or removed, @removed) on an
- * external processor: the timings and color modes of the attached display
- * (from its EDID), its attributes, and the link transport. @generation is
- * the mode catalog generation when the transfer started.
- */
-/*
  * The external role's catalog rules: the fw14 RGB8 profile, DSC-required
- * colours the sink takes compressed, and the link's budget (the lanes the
- * PHY reported to the firmware, at the highest rate the port reports:
- * HBR3 on every T6030 route). The J613 panel pipe's Type-C display is
- * described through the same callbacks (dcp_v14_description_tag()), but
- * keeps the common rules: its catalog is not parsed as an external one.
+ * colours the sink takes compressed, and the link's budget: the most lanes
+ * the PHY offers DP (not the active count a previous sink trained at), at
+ * the highest rate the port reports (HBR3 on every T6030 route). The J613
+ * panel pipe's Type-C display is described through the same callbacks
+ * (dcp_v14_description_tag()), but keeps the common rules: its catalog is
+ * not parsed as an external one.
  */
 static void dcp_v14_catalog_profile(struct apple_dcp_v14 *v14, struct apple_dcp *dcp,
 				    struct dcp_parse_ctx *ctx)
@@ -998,10 +993,16 @@ static void dcp_v14_catalog_profile(struct apple_dcp_v14 *v14, struct apple_dcp 
 		return;
 	ctx->v14_7_rgb8 = true;
 	ctx->v14_7_dsc = true;
-	ctx->link_lanes = READ_ONCE(dcp->dptxport[0].lane_count);
+	ctx->link_lanes = READ_ONCE(dcp->dptxport[0].max_lane_count);
 	ctx->link_rate = LINK_RATE_HBR3;
 }
 
+/*
+ * A display description the firmware published (or removed, @removed) on an
+ * external processor: the timings and color modes of the attached display
+ * (from its EDID), its attributes, and the link transport. @generation is
+ * the mode catalog generation when the transfer started.
+ */
 static void dcp_v14_external_published(struct apple_dcp_v14 *v14, const char *key,
 				       u64 generation, bool removed)
 {

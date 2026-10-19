@@ -257,6 +257,19 @@ static const struct fix_color ten_bit_only[] = {
 
 static const u32 sony_dsc[] = { 202, 204, 5, 203, 211 };
 
+/* A timing whose only colour is 8-bit YCbCr 4:2:0. */
+static const struct fix_color ycbcr420_only[] = {
+	{ .id = 230, .score = 200999, .depth = 8, .encoding = 1, .range = 1, .colorimetry = 1 },
+};
+
+/* 2160p60 (594 MHz) in 4:2:0 only: 12 bits per pixel on the wire. */
+static const struct fix_timing uhd60_420 = {
+	.id = 168, .score = 16598, .hpipes = -1, .vpipes = -1,
+	.h = { 3840, 4400, 176, 88, 296, 1, 0, 8847360 },
+	.v = { 2160, 2250, 8, 10, 72, 1, 0, 3932160 },
+	.colors = ycbcr420_only, .ncolors = ARRAY_SIZE(ycbcr420_only),
+};
+
 /* Derived from the captured publications (and variants of their timing 60). */
 static const struct fix_timing catalog[] = {
 	/* Philips 60: 1080p60, preferred. */
@@ -467,6 +480,19 @@ static void catalog_budget_test(struct kunit *test)
 	modes = catalog_modes(test, blob, size, &count);
 	kept = dcp_catalog_budget(modes, count, 4, LINK_RATE_HBR3, &rejected);
 	KUNIT_EXPECT_NOT_NULL(test, find_timing(modes, kept, 167));
+	kfree(modes);
+
+	/* The same 4K60 in 4:2:0 (7.13 Gb/s) fits two lanes of HBR3. */
+	blob = build_catalog(test, &uhd60_420, 1, &size);
+	modes = catalog_modes(test, blob, size, &count);
+	KUNIT_ASSERT_EQ(test, count, 1);
+	KUNIT_EXPECT_EQ(test, modes[0].color_mode_id, 230);
+	kept = dcp_catalog_budget(modes, count, 2, LINK_RATE_HBR3, &rejected);
+	KUNIT_EXPECT_EQ(test, kept, 1);
+	KUNIT_EXPECT_EQ(test, rejected, 0);
+	/* One lane of HBR3 (6.48 Gb/s) does not. */
+	kept = dcp_catalog_budget(modes, count, 1, LINK_RATE_HBR3, &rejected);
+	KUNIT_EXPECT_EQ(test, kept, 0);
 	kfree(modes);
 }
 
