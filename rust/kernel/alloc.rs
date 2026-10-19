@@ -24,8 +24,12 @@ use crate::types::declare_flags_type;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct AllocError;
 
-use crate::error::{code::EINVAL, Result};
-use core::{alloc::Layout, ptr::NonNull};
+use crate::prelude::*;
+
+use core::{
+    alloc::Layout,
+    ptr::NonNull, //
+};
 
 declare_flags_type! {
     /// Flags to be used when allocating memory.

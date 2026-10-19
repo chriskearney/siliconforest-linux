@@ -22,7 +22,6 @@
 #include <linux/irqdomain.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
 #include <linux/spmi.h>

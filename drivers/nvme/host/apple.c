@@ -1140,7 +1140,7 @@ static int apple_nvme_init_hctx(struct blk_mq_hw_ctx *hctx, void *data,
 
 static int apple_nvme_init_request(struct blk_mq_tag_set *set,
 				   struct request *req, unsigned int hctx_idx,
-				   unsigned int numa_node)
+				   int numa_node)
 {
 	struct apple_nvme_queue *q = set->driver_data;
 	struct apple_nvme *anv = queue_to_apple_nvme(q);
@@ -1179,7 +1179,7 @@ static void apple_nvme_disable_legacy(struct apple_nvme *anv, bool shutdown)
 	 * doing a safe shutdown.
 	 */
 	if (!dead && shutdown && freeze)
-		nvme_wait_freeze_timeout(&anv->ctrl, NVME_IO_TIMEOUT);
+		nvme_wait_freeze_timeout(&anv->ctrl);
 
 	nvme_quiesce_io_queues(&anv->ctrl);
 
@@ -1276,7 +1276,7 @@ static int apple_nvme_disable_locked(struct apple_nvme *anv, bool shutdown)
 		nvme_start_freeze(&anv->ctrl);
 	if (shutdown && test_bit(NVME_CTRL_FROZEN, &anv->ctrl.flags) &&
 	    !apple_rtkit_is_crashed(anv->rtk))
-		nvme_wait_freeze_timeout(&anv->ctrl, NVME_IO_TIMEOUT);
+		nvme_wait_freeze_timeout(&anv->ctrl);
 
 	/* Quiescing dispatch does not stop already submitted DMA. */
 	nvme_quiesce_io_queues(&anv->ctrl);
@@ -1530,7 +1530,7 @@ static void apple_nvme_init_queue(struct apple_nvme_queue *q)
  */
 static void apple_nvme_wait_freeze(struct apple_nvme *anv)
 {
-	while (!nvme_wait_freeze_timeout(&anv->ctrl, NVME_IO_TIMEOUT)) {
+	while (!nvme_wait_freeze_timeout(&anv->ctrl)) {
 		if (READ_ONCE(anv->abort_reset) || READ_ONCE(anv->quarantined))
 			return;
 	}

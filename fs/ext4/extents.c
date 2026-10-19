@@ -3268,8 +3268,8 @@ static struct ext4_ext_path *ext4_split_extent_at(handle_t *handle,
 	 */
 	path = ext4_find_extent(inode, ee_block, NULL, flags | EXT4_EX_NOFAIL);
 	if (IS_ERR(path)) {
-		EXT4_ERROR_INODE(inode, "Failed split extent on %u, err %ld",
-				 split, PTR_ERR(path));
+		EXT4_ERROR_INODE(inode, "Failed split extent on %u, err %pe",
+				 split, path);
 		goto out_path;
 	}
 
@@ -4976,7 +4976,7 @@ int ext4_convert_unwritten_extents_atomic(handle_t *handle, struct inode *inode,
 		 * it can tell if the extent in the cache is a split extent.
 		 * But for now let's assume pextents as 2 always.
 		 */
-		credits = ext4_meta_trans_blocks(inode, max_blocks, 2);
+		credits = ext4_meta_trans_blocks(inode, max_blocks, 2, 0);
 	}
 
 	if (credits) {

@@ -10,14 +10,25 @@
 //!
 //! Reference: <https://docs.kernel.org/core-api/memory-allocation.html>
 
-use super::Flags;
-use core::alloc::Layout;
-use core::ptr;
-use core::ptr::NonNull;
+use super::{
+    AllocError,
+    Allocator,
+    Flags,
+    NumaNode, //
+};
 
-use crate::alloc::{AllocError, Allocator, NumaNode};
-use crate::bindings;
-use crate::page;
+use crate::{
+    bindings,
+    page, //
+};
+
+use core::{
+    alloc::Layout,
+    ptr::{
+        self,
+        NonNull, //
+    }, //
+};
 
 const ARCH_KMALLOC_MINALIGN: usize = bindings::ARCH_KMALLOC_MINALIGN;
 
@@ -165,8 +176,11 @@ impl Vmalloc {
     /// # Examples
     ///
     /// ```
-    /// # use core::ptr::{NonNull, from_mut};
-    /// # use kernel::{page, prelude::*};
+    /// # use core::ptr::{
+    /// #     from_mut,
+    /// #     NonNull, //
+    /// # };
+    /// # use kernel::page;
     /// use kernel::alloc::allocator::Vmalloc;
     ///
     /// let mut vbox = VBox::<[u8; page::PAGE_SIZE]>::new_uninit(GFP_KERNEL)?;
@@ -253,6 +267,7 @@ unsafe impl Allocator for KVmalloc {
     }
 }
 
+#[cfg(CONFIG_RUST_ALLOCATOR_KUNIT_TEST)]
 #[macros::kunit_tests(rust_allocator)]
 mod tests {
     use super::*;

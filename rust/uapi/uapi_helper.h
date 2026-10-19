@@ -6,7 +6,6 @@
  * Sorted alphabetically.
  */
 
-#include <uapi/asm-generic/ioctl.h>
 #if defined(CONFIG_SILICONFOREST_M3) || defined(CONFIG_SILICONFOREST_NATIVE_GPU)
 #include <uapi/drm/asahi_m3_drm.h>
 #else
@@ -18,6 +17,7 @@
 #include <uapi/linux/android/binder.h>
 #include <uapi/linux/elf.h>
 #include <uapi/linux/elf-em.h>
+#include <uapi/linux/ioctl.h>
 #include <uapi/linux/mdio.h>
 #include <uapi/linux/mii.h>
 #include <uapi/linux/ethtool.h>
