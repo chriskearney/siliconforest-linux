@@ -77,7 +77,10 @@
             "The pstate diagnostics observe firmware records; they do not establish clock accuracy, electrical behavior or drain latency on hardware.",
             "M3 Max remains opt-in; reported compute and tessellation hangs are not fixed by this carry."
           ],
-          "provenance": "Original carries retain authorship and supplied sign-offs; local tests and review fixes are separate commits."
+          "provenance": "Original carries retain authorship and supplied sign-offs; local tests and review fixes are separate commits.",
+          "review_fixes": [
+            "Complete statistics-record loads with a full barrier before publishing the consumer index; the prior write barrier after the store did not order those reads."
+          ]
         }
       ]
     }
