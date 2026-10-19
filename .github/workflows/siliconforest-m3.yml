@@ -25,6 +25,10 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.93.1
         run: python3 tools/asahi/g15-stats-drain-tests.py --mutations --output "$RUNNER_TEMP/stats-drain"
+      - name: G15 parameter-buffer growth controls
+        env:
+          RUSTUP_TOOLCHAIN: 1.93.1
+        run: python3 tools/asahi/g15-pb-growth-tests.py --mutations --output "$RUNNER_TEMP/pb-growth"
       - name: GPU accounting and telemetry host controls
         env:
           RUSTUP_TOOLCHAIN: 1.93.1

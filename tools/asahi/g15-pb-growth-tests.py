@@ -29,7 +29,8 @@ Not shown: kernel, firmware or GPU execution, timing, or what the firmware does 
 refusal or an unanswered request. Recovery after an unanswered request is not modelled.
 
 With --mutations, each mutation below must fail its intended test with the expected message, and
-the control (a driver maximum of the whole 4096-block heap) must pass, held by the ledger's cap.
+the model-only control (a driver maximum of the whole 4096-block heap) must pass, held by the
+ledger's cap. This control bypasses pools.rs static assertions; it is not a supported kernel tuning.
 """
 import argparse
 import hashlib
@@ -868,7 +869,11 @@ def main():
         output = {m.group(1).removeprefix('pb_growth_tests::'): m.group(2).strip()
                   for m in re.finditer(r'---- (\S+) stdout ----\n(.*?)(?=\n---- |\n(?:failures|successes):\n|\Z)',
                                        r.stdout, re.S)}
+        source_hashes = {path: hashlib.sha256(src[path].encode()).hexdigest() for path in paths}
+        source_inputs = json.dumps(source_hashes, sort_keys=True, separators=(',', ':')).encode()
         return {'mutation': mutation, 'tested_sha256': hashlib.sha256(tested.encode()).hexdigest(),
+                'source_sha256': source_hashes,
+                'source_inputs_sha256': hashlib.sha256(source_inputs).hexdigest(),
                 'exit': r.returncode, 'summary': summary, 'failed': failed, 'output': output,
                 'stderr': r.stderr[-2000:]}
 
