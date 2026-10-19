@@ -61,7 +61,16 @@
 #define DCP_V14_RTKIT_RETRIES	4
 #define DCP_V14_MAX_PROPERTIES	256
 #define DCP_V14_MAX_RAW		32
+/*
+ * The size of one raw property and of all of them. An external processor
+ * publishes an HDMI 2.1 (FRL) sink's TimingElements as one chunked transfer
+ * of more than 1 MiB (1.38 MB for a 4K120 TV), so it keeps up to 8 MiB per
+ * property and 24 MiB in all; the panel's properties stay small.
+ */
+#define DCP_V14_MAX_RAW_SIZE	SZ_1M
 #define DCP_V14_MAX_RAW_BYTES	SZ_8M
+#define DCP_V14_EXT_MAX_RAW_SIZE	SZ_8M
+#define DCP_V14_EXT_MAX_RAW_BYTES	(24 * SZ_1M)
 #define DCP_V14_MAX_BUFFERS	64
 #define DCP_V14_MAX_BUFFER	SZ_16M
 #define DCP_V14_MAX_BUFFER_BYTES SZ_64M
@@ -499,13 +508,23 @@ static struct dcp_v14_property *dcp_v14_property(struct apple_dcp_v14 *v14, u32 
 	return p;
 }
 
+static u32 dcp_v14_raw_limit(const struct apple_dcp_v14 *v14)
+{
+	return v14->external ? DCP_V14_EXT_MAX_RAW_SIZE : DCP_V14_MAX_RAW_SIZE;
+}
+
+static u32 dcp_v14_raw_total(const struct apple_dcp_v14 *v14)
+{
+	return v14->external ? DCP_V14_EXT_MAX_RAW_BYTES : DCP_V14_MAX_RAW_BYTES;
+}
+
 static int dcp_v14_raw_property(struct apple_dcp_v14 *v14, u32 service, const u8 *key,
 				const void *data, u32 size)
 {
 	u32 i, old_size = 0;
 	void *copy;
 
-	if (!memchr(key, 0, 64) || size > SZ_1M)
+	if (!memchr(key, 0, 64) || size > dcp_v14_raw_limit(v14))
 		return -EINVAL;
 	for (i = 0; i < v14->raw_count; i++)
 		if (v14->raw[i].service == service && !strcmp(v14->raw[i].key, key))
@@ -514,7 +533,7 @@ static int dcp_v14_raw_property(struct apple_dcp_v14 *v14, u32 service, const u8
 		return -ENOSPC;
 	if (i < v14->raw_count)
 		old_size = v14->raw[i].size;
-	if (v14->raw_bytes - old_size + size > DCP_V14_MAX_RAW_BYTES)
+	if (v14->raw_bytes - old_size + size > dcp_v14_raw_total(v14))
 		return -ENOSPC;
 	copy = kvmemdup(data, size ?: 1, GFP_KERNEL);
 	if (!copy)
@@ -976,7 +995,8 @@ static int dcp_v14_external_callback(struct apple_dcp_v14 *v14, u32 tag, const u
 	if (tag == D(127) && SHAPE(4, 4)) {
 		count = get_unaligned_le32(in);
 		ret = -EINVAL;
-		if (!v14->chunk && count && count <= 0x100001) {
+		/* The announced count includes one byte that is never sent. */
+		if (!v14->chunk && count && count <= dcp_v14_raw_limit(v14) + 1) {
 			v14->chunk_size = count - 1;
 			v14->chunk_offset = 0;
 			v14->chunk = kvzalloc(max_t(u32, 1, v14->chunk_size), GFP_KERNEL);
@@ -1177,7 +1197,7 @@ static int dcp_v14_callback(void *cookie, u32 tag, const void *input, u32 in_siz
 	/* Chunked property transfer: start, chunk, end. */
 	if (tag == D(127) && SHAPE(4, 4)) {
 		count = get_unaligned_le32(in);
-		if (v14->chunk || !count || count > 0x100001)
+		if (v14->chunk || !count || count > dcp_v14_raw_limit(v14) + 1)
 			return -EINVAL;
 		v14->chunk_size = count - 1;
 		v14->chunk_offset = 0;
