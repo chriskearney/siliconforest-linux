@@ -6,7 +6,9 @@
 #include <linux/limits.h>
 #include <linux/math.h>
 #include <linux/string.h>
+#include <linux/math64.h>
 #include <linux/slab.h>
+#include <kunit/visibility.h>
 
 #if IS_ENABLED(CONFIG_DRM_APPLE_AUDIO)
 #include <sound/pcm.h> // for sound format masks
@@ -1167,6 +1169,73 @@ struct dcp_display_mode *enumerate_modes(struct dcp_parse_ctx *handle,
 	return modes;
 }
 
+/* 16.16 Hz refresh of a DRM mode, from its kHz clock and totals. */
+static u64 dcp_mode_rate16(const struct drm_display_mode *mode)
+{
+	u64 total = (u64)mode->htotal * mode->vtotal;
+
+	return total ? div64_u64((u64)mode->clock * 1000 * 65536 + total / 2, total) : 0;
+}
+
+/* Payload of one lane at a link rate code: 0.27 Gb/s per unit, 8b/10b. */
+static u64 dcp_lane_kbps(u32 rate)
+{
+	return (u64)rate * 270000 * 8 / 10;
+}
+
+/* Uncompressed wire bits per pixel a catalog is budgeted with (RGB8). */
+#define DCP_BUDGET_WIRE_BPP	24
+/*
+ * A DSC timing must fit the lanes at the fewest bits per pixel an 8-bit RGB
+ * DSC stream can take (VESA DSC 1.2: 8 for 4:4:4), less the FEC that carries
+ * DSC on DP (2.4 % of the link). The firmware picks the actual rate.
+ */
+#define DCP_BUDGET_DSC_MIN_BPP	8
+#define DCP_BUDGET_FEC_PERMILLE	24
+
+/*
+ * Keep the timings @lanes of @rate can carry uncompressed (24 bpp within the
+ * lanes' payload) or compressed by the firmware (a DSC timing at
+ * DCP_BUDGET_DSC_MIN_BPP within the payload less FEC). If the firmware's
+ * preferred timing goes, the largest, then fastest, remaining one becomes
+ * preferred. Returns the number kept; *@rejected counts the rest.
+ */
+unsigned int dcp_catalog_budget(struct dcp_display_mode *modes, unsigned int count,
+				u32 lanes, u32 rate, unsigned int *rejected)
+{
+	u64 budget = lanes * dcp_lane_kbps(rate);
+	u64 dsc_budget = budget - budget * DCP_BUDGET_FEC_PERMILLE / 1000;
+	unsigned int i, kept = 0, best = 0;
+	bool preferred = false;
+
+	*rejected = 0;
+	for (i = 0; i < count; i++) {
+		const struct drm_display_mode *m = &modes[i].mode;
+		bool fits = modes[i].dsc ?
+			(u64)m->clock * DCP_BUDGET_DSC_MIN_BPP <= dsc_budget :
+			(u64)m->clock * DCP_BUDGET_WIRE_BPP <= budget;
+
+		if (!fits) {
+			(*rejected)++;
+			continue;
+		}
+		preferred |= m->type & DRM_MODE_TYPE_PREFERRED;
+		modes[kept++] = modes[i];
+	}
+	if (preferred || !kept)
+		return kept;
+	for (i = 1; i < kept; i++) {
+		const struct drm_display_mode *a = &modes[i].mode, *b = &modes[best].mode;
+		u64 area_a = (u64)a->hdisplay * a->vdisplay, area_b = (u64)b->hdisplay * b->vdisplay;
+
+		if (area_a > area_b || (area_a == area_b && dcp_mode_rate16(a) > dcp_mode_rate16(b)))
+			best = i;
+	}
+	modes[best].mode.type |= DRM_MODE_TYPE_PREFERRED;
+	return kept;
+}
+EXPORT_SYMBOL_IF_KUNIT(dcp_catalog_budget);
+
 int replace_modes(struct dcp_parse_ctx *handle,
 		  struct dcp_display_mode **modes, unsigned int *count,
 		  int width_mm, int height_mm, unsigned int notch_height,
@@ -1189,6 +1258,17 @@ int replace_modes(struct dcp_parse_ctx *handle,
 	if (it.len && !next_count) {
 		kfree(next);
 		return -EINVAL;
+	}
+	/* The routed link's budget, where the caller knows it. */
+	if (handle->link_lanes && handle->link_rate) {
+		unsigned int rejected;
+
+		next_count = dcp_catalog_budget(next, next_count, handle->link_lanes,
+						handle->link_rate, &rejected);
+		if (rejected)
+			dev_info(handle->dcp->dev,
+				 "%u of %u timings over the %u-lane link's budget\n",
+				 rejected, next_count + rejected, handle->link_lanes);
 	}
 
 	kfree(*modes);

@@ -35,6 +35,12 @@ struct dcp_parse_ctx {
 	 * wire; an uncompressed colour of the timing is still preferred.
 	 */
 	bool v14_7_dsc;
+	/*
+	 * The routed link's width and highest rate code (RBR 0x06 .. HBR3
+	 * 0x1e): a catalog is budgeted by what the link can carry. 0: no
+	 * budget.
+	 */
+	u32 link_lanes, link_rate;
 #if IS_ENABLED(CONFIG_DRM_APPLE_DCP_T6030_AUDIO)
 	/*
 	 * T6030 external processor audio elements (DCP firmware 14.7, external
@@ -161,6 +167,8 @@ struct dcp_display_mode *enumerate_modes(struct dcp_parse_ctx *handle,
 					 int height_mm, unsigned notch_height,
 					 bool internal, bool external_sdr);
 int parse_display_metadata(struct dcp_parse_ctx *handle, struct dcp_display_metadata *out);
+unsigned int dcp_catalog_budget(struct dcp_display_mode *modes, unsigned int count,
+				u32 lanes, u32 rate, unsigned int *rejected);
 /* Caller holds modes_lock while checking connector ownership. */
 bool dcp_modes_for_connector(struct apple_dcp *dcp,
 			     struct apple_connector *connector);

@@ -38,6 +38,7 @@
 #include "dcp-internal.h"
 #include "dcpext_scanout.h"
 #include "dcp-lifecycle.h"
+#include "dptxep.h"
 #include "iomfb_internal.h"
 #include "iomfb_v14_7.h"
 #include "iomfb_v14_7_backlight.h"
@@ -1007,6 +1008,13 @@ static void dcp_v14_external_published(struct apple_dcp_v14 *v14, const char *ke
 			/* The fw14 RGB8 profile, DSC-required colours the sink takes compressed. */
 			ctx.v14_7_rgb8 = true;
 			ctx.v14_7_dsc = true;
+			/*
+			 * The link's budget: the lanes the PHY reported to the
+			 * firmware (GetMaxLaneCount) at the highest rate the
+			 * port reports (HBR3 on every T6030 route).
+			 */
+			ctx.link_lanes = READ_ONCE(dcp->dptxport[0].lane_count);
+			ctx.link_rate = LINK_RATE_HBR3;
 			ret = dcp_modes_replace(dcp, &ctx, generation);
 		}
 		if (ret) {
