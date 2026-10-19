@@ -18,9 +18,11 @@
 //! after publication use single, aligned volatile accesses (`r32`/`w32`/`w64`). Objects are
 //! retained until reboot: nothing the firmware can reach is ever unmapped or freed.
 
+mod geometry;
+
 use core::ptr::NonNull;
 
-use kernel::{prelude::*, sync::aref::ARef, sync::Arc};
+use kernel::{drm::gem::BaseObject, prelude::*, sync::aref::ARef, sync::Arc};
 
 use super::hw::{self, pte};
 use super::regs::wmb;
@@ -89,7 +91,7 @@ pub(crate) struct FwObject {
     /// Host-window and lower mappings; never dropped while the firmware runs.
     _mappings: KVec<mmu::KernelMapping>,
     /// Holds the pages for the device.
-    _sgt: kernel::drm::gem::shmem::SGTable<gem::AsahiObject, kernel::drm::Uninit>,
+    _sgt: HeldPages,
     backing: gem::ObjectRef,
 }
 
@@ -184,6 +186,35 @@ impl FwObject {
     pub(crate) fn gem(&self) -> ARef<gem::Object> {
         self.backing.gem.clone()
     }
+}
+
+/// The pinned pages of a firmware-visible object, as [`gpu_backing`] returns them.
+pub(crate) type HeldPages = kernel::drm::gem::shmem::SGTable<gem::AsahiObject, kernel::drm::Uninit>;
+
+// The host tests of the geometry use the hardware's page size and page-frame mask.
+static_assert!(geometry::PAGE == hw::PAGE && geometry::PA_MASK == hw::PA_MASK);
+
+/// A zeroed GEM kernel object of exactly `bytes` (a nonzero number of whole pages, EINVAL
+/// otherwise), populated and DMA-mapped. Its DMA segments must back exactly `bytes` with pages
+/// the UAT can name ([`geometry::backing_ok`], EPERM otherwise). The DMA mapping cleans the
+/// freshly zeroed pages' cacheable alias to the point of coherency, before any mapping of them
+/// exists.
+pub(crate) fn gpu_backing(dev: &AsahiDevice, bytes: usize) -> Result<(gem::ObjectRef, HeldPages)> {
+    if bytes == 0 || bytes as u64 & (hw::PAGE - 1) != 0 {
+        return Err(EINVAL);
+    }
+    let backing = gem::new_kernel_object_wc(dev, bytes)?;
+    if backing.gem.size() != bytes {
+        return Err(EINVAL);
+    }
+    let sgt = gem::held_sg_table(&backing.gem)?;
+    let segments = sgt
+        .iter()
+        .map(|range| (range.dma_address() as u64, range.dma_len() as u64));
+    if !geometry::backing_ok(bytes as u64, hw::PAGE, hw::PA_MASK, segments) {
+        return Err(EPERM);
+    }
+    Ok((backing, sgt))
 }
 
 /// Allocation request.
@@ -299,19 +330,7 @@ impl Objects {
 
         // Populate and DMA-map first: this cleans the zeroed pages' cacheable alias to the
         // point of coherency before any write-combined access.
-        let mut backing = gem::new_kernel_object_wc(&self.dev, bytes)?;
-        let sgt = gem::held_sg_table(&backing.gem)?;
-        for range in sgt.iter() {
-            let pa = range.dma_address() as u64;
-            let len = range.dma_len() as u64;
-            // EPERM for a page the UAT cannot name.
-            if pa == 0
-                || (pa | len) & (hw::PAGE - 1) != 0
-                || (pa + len - 1) & !(hw::PA_MASK | (hw::PAGE - 1)) != 0
-            {
-                return Err(EPERM);
-            }
-        }
+        let (mut backing, sgt) = gpu_backing(&self.dev, bytes)?;
         let cpu = if req.cpu {
             let mut vmap = backing.vmap()?;
             vmap.memset(0);

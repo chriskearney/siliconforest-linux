@@ -237,3 +237,63 @@ not a SiliconForest hardware test.
 
 This source carry changes no installed Mac, signed release or catalog. Public
 `v2026.10.19.2` remains at `0e1f46661376` until a separately qualified release.
+
+## 2026-10-19: physical parameter-buffer backing on demand
+
+This follow-up supersedes the eager physical-allocation policy in the previous
+section. It applies to the native G15 implementation shared by T6030 and T6031.
+It is source development; it does not qualify a new installed kernel.
+
+The logical PB address range remains 512 MiB. Its fixed layout, metadata, block
+addresses and 4095-block posting ceiling are unchanged. Physical backing starts
+at the ledger's initial size (1024 blocks, or 128 MiB, with the current tuning),
+then grows in chunks of at most 4 MiB. The firmware soft-limit parameter still
+controls the firmware's limit; it is not an allocation-size control. This uses
+the M1/M2 discipline of allocating backing before publishing usable blocks,
+while preserving G15's own live-growth protocol.
+
+The scheduler permits overlapping flights only within one GPU VM. Before any
+prefix is published, that VM catches up with all retained PB backing, including
+for compute-only work and recovery prefixes. Growth uses the requesting flight's
+retained VM directly, so closing a userspace VM handle cannot hide an active
+address space from the growth path. The complete logical aperture remains
+reserved against userspace binds even where no physical backing exists yet.
+
+New backing must be allocated, DMA-mapped, checked for complete aligned coverage,
+and installed into the executing VM before block records or the producer are
+published. Ownership and mapping progress must agree before a success reply.
+GPU-only PB leaves do not require the firmware cache-flush path on teardown;
+that depends on the actual leaf permissions, not merely their cached attribute.
+Normal mapping invalidation and lifetime rules still apply.
+
+Backing is retained at its peak until reboot. Recovery resets the posted-block
+ledger and reuses owned backing; it does not discard potentially reachable
+pages. Failed preparation leaves the producer and success reply untouched, and
+failed transport after publication retains the backing. The existing hard-limit
+refusal/deadline policy is preserved. Allocation failure and exhaustion can still
+lead to fail-stop; successful recovery and uninterrupted rendering under memory
+pressure are not promised. Backing-page allocation uses the existing shmem
+MAYFAIL policy, but synchronous allocation/reclaim latency is not bounded here.
+
+The normal M1/M2 driver, board admission, UAPI, display, DTs, Mesa and m1n1 are
+outside this change. Boot, sustained growth, multiple clients, memory pressure,
+recovery, suspend and power behavior require hardware qualification before a
+release containing this allocator is offered by the public installer.
+
+The host checks import the actual geometry and ledger modules (61 Rust tests,
+with two private-fixture tests ignored, plus 26 C/UAPI cases). The extended PB
+harness executes source-extracted allocation, mapping and grant methods against
+mocked GEM/MMU and firmware objects: 24 cases pass, and 22 mutations fail at
+their intended checks. It checks startup allocation size, mapping before posting,
+allocation/map/append failures, accurate per-VM progress, VM switching, stale
+requests, reply failure and reuse after a ledger reset. A positive tuning control
+also passes. Test progress loops are bounded, so a deliberately broken driver
+cannot keep the test running indefinitely. The existing statistics and board
+record controls remain green.
+
+These are host control-flow tests, not GPU execution or kernel MMU execution.
+Closed-job VM compatibility rests on a separate review of the actual job guard,
+VM cleanup and mapping admission paths; the model does not execute a close
+lifecycle. Ledger-reset reuse is not a full recovery test. Native build and layout
+results are recorded separately in the control repository's source-validation
+report. Hardware qualification remains outstanding.

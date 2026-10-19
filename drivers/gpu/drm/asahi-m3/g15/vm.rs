@@ -9,7 +9,9 @@
 //! - install the client aliases of the firmware objects marked for every user VM
 //!   ([`object::Objects::clients`]) as driver mappings at their fixed GVAs, and reserve
 //!   [`super::hw::client::CLIENT_APERTURE`], the pass-slot range and the PB page list
-//!   (`vm.install_driver_mappings`): user binds there fail (EINVAL);
+//!   (`vm.install_driver_mappings`): user binds there fail (EINVAL). The aperture holds the
+//!   whole PB range, whose backing is mapped later, before the VM's first prefix is published
+//!   (`Firmware::map_pb`, counted in [`VmState::pb_chunks`]);
 //! - bind it to an exclusive TTBAT slot ([`mmu::Uat::bind`]) for as long as its [`VmState`]
 //!   lives; at most [`super::hw::sizes::MAX_VMS`] such VMs (ENOSPC beyond, checked before
 //!   binding so the slot allocator never blocks).
@@ -27,7 +29,7 @@
 //! alike.
 
 use core::ops::Range;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use kernel::{
     drm::gem::BaseObject,
     new_mutex,
@@ -115,6 +117,9 @@ pub(crate) struct VmState {
     /// The exclusive slot binding, released before the live count drops.
     bind: Option<mmu::VmBind>,
     registry: Arc<Registry>,
+    /// PB backing chunks mapped into the VM, from the first (`Firmware::map_pb`); changed only
+    /// under the device lock.
+    pub(crate) pb_chunks: AtomicUsize,
 }
 
 impl VmState {
@@ -300,6 +305,7 @@ pub(crate) fn new_vm(gpu: &Gpu, kernel_range: Range<u64>) -> Result<mmu::Vm> {
             vm: vm.clone(),
             bind: Some(bind),
             registry: registry.clone(),
+            pb_chunks: AtomicUsize::new(0),
         },
         GFP_KERNEL,
     )?;

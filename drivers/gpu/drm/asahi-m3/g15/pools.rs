@@ -5,8 +5,12 @@
 //! Record layouts: [`super::fw::buffer`]; the ledger and request checks: [`growth`]
 //! (host-tested).
 //!
-//! - One 512 MiB PB heap at [`super::hw::client::PB_HEAP`] (4096 blocks of 128 KiB), populated
-//!   and mapped when the GPU starts on every G15 SoC, whatever `g15_pb_max_blocks` says; initial
+//! - One 512 MiB PB heap at [`super::hw::client::PB_HEAP`] (4096 blocks of 128 KiB), backed on
+//!   demand: the initial blocks when the GPU starts, then chunks of at most
+//!   [`growth::CHUNK_BLOCKS`] (4 MiB) as growth needs them ([`Firmware::back_pb`]), never freed
+//!   or shrunk. The backing ([`PbChunk`]) is mapped only into user VMs, at the fixed client GVA,
+//!   each VM's before its prefixes are published ([`Firmware::map_pb`]); nothing names its pages
+//!   through the host window or context 0 (the records hold client GVAs only). Initial
 //!   [`super::hw::tuning::PB_BLOCKS`] (1024), at most [`super::hw::tuning::PB_MAX_BLOCKS`]
 //!   (4095) posted, so the producer never returns to 0; the firmware is given
 //!   [`Pools::soft_max`] (default 3072) as its growth maximum. Truthful K = 4096 in every
@@ -37,6 +41,7 @@
 mod growth;
 
 use core::fmt;
+use core::sync::atomic::Ordering;
 use kernel::{
     device,
     prelude::*,
@@ -47,9 +52,11 @@ use super::fw::buffer::{self, block_ctl, counter, misc, pb_manager, uma_manager,
 use super::fw::channels::DevCtl;
 use super::fw::initdata::control;
 use super::hw::{client, pte, sizes, tuning};
-use super::object::{Class, FwObject, Objects, Placement, Request};
+use super::object::{self, Class, FwObject, HeldPages, Objects, Placement, Request};
+use super::vm::VmState;
 use super::Firmware;
 use crate::driver::AsahiDevice;
+use crate::{gem, mmu};
 
 pub(crate) use growth::Ledger;
 
@@ -65,6 +72,52 @@ static_assert!(uma_pools::POOL_SIZE == sizes::POOL_SIZE);
 static_assert!(tuning::PB_MAX_BLOCKS <= growth::MAX_POSTED);
 static_assert!(buffer::MIN_BLOCKS <= tuning::PB_BLOCKS);
 static_assert!(tuning::PB_BLOCKS <= tuning::PB_MAX_BLOCKS);
+// The PB alias is GPU-only (not cached and firmware-visible): dropping one is a plain unmap,
+// with no firmware cache flush (`KernelMapping::drop`).
+static_assert!(!mmu::Prot::from_pte(pte::LEAF_CACHED).is_cached_noncoherent());
+
+/// Physical backing of PB blocks `[first, first + blocks)`: a zeroed GEM kernel object, pinned
+/// and DMA-mapped ([`object::gpu_backing`]), aliased only into user VMs at the blocks' fixed
+/// client GVA ([`Firmware::map_pb`]). Retained until reboot, like every firmware object; each
+/// alias also holds the object.
+struct PbChunk {
+    first: u32,
+    blocks: u32,
+    _pages: HeldPages,
+    backing: gem::ObjectRef,
+}
+
+impl PbChunk {
+    fn new(dev: &AsahiDevice, first: u32, blocks: u32) -> Result<Self> {
+        if blocks == 0 || first.checked_add(blocks).ok_or(EINVAL)? > buffer::MAX_BLOCKS {
+            return Err(EINVAL);
+        }
+        let (backing, pages) =
+            object::gpu_backing(dev, blocks as usize * buffer::BLOCK_BYTES as usize)?;
+        Ok(Self {
+            first,
+            blocks,
+            _pages: pages,
+            backing,
+        })
+    }
+
+    /// The block after the chunk's last.
+    fn end(&self) -> u32 {
+        self.first + self.blocks
+    }
+
+    /// Maps the whole chunk, exactly its object's size, at its fixed client GVA in `vm`.
+    fn map(&self, vm: &mmu::Vm) -> Result<mmu::KernelMapping> {
+        vm.map_at(
+            client::PB_HEAP + self.first as u64 * buffer::BLOCK_BYTES,
+            self.blocks as usize * buffer::BLOCK_BYTES as usize,
+            self.backing.gem.clone(),
+            mmu::Prot::from_pte(pte::LEAF_CACHED),
+            false,
+        )
+    }
+}
 
 /// The allocator state a rebuild after an abort moves to the spare.
 struct AllocatorSet {
@@ -114,6 +167,8 @@ pub(crate) struct PbStats {
 pub(crate) struct Pools {
     /// The GPU device, for logging (also used by recovery).
     pub(crate) dev: ARef<device::Device>,
+    /// The DRM device, for the PB backing objects.
+    drm: ARef<AsahiDevice>,
     uma: [UmaEngine; 2],
     /// The allocator set in use.
     live: AllocatorSet,
@@ -124,7 +179,10 @@ pub(crate) struct Pools {
     spare_ready: bool,
     pb_pages: Arc<FwObject>,
     pb_blocks: Arc<FwObject>,
-    pb_heap: Arc<FwObject>,
+    /// The PB backing, contiguous from block 0, in block order: the initial blocks, then the
+    /// growth chunks. Its capacity, reserved up front, is the most the ledger can need
+    /// ([`growth::max_chunks`]).
+    chunks: KVec<PbChunk>,
     /// The PB growth ledger since the last (re)initialization.
     pub(crate) ledger: Ledger,
     /// C1 names the current initial pages.
@@ -318,24 +376,22 @@ impl Pools {
             0,
             true,
         )?;
-        let pb_heap = alloc(
-            objects,
-            client::PB_HEAP_SIZE,
-            Class::Shared,
-            Some((client::PB_HEAP, pte::LEAF_CACHED)),
-            0,
-            false,
-        )?;
+        // Backing for the initial blocks; growth adds the rest.
+        let ledger = Ledger::new(tuning::PB_GROW, tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS);
+        let mut chunks =
+            KVec::with_capacity(growth::max_chunks(ledger.initial, ledger.max), GFP_KERNEL)?;
+        chunks.push(PbChunk::new(dev, 0, ledger.initial)?, GFP_KERNEL)?;
         Ok(Self {
             dev: dev.as_ref().into(),
+            drm: dev.into(),
             uma: [uma0, uma1],
             live,
             spare_ready: spare.is_some(),
             spare,
             pb_pages,
             pb_blocks,
-            pb_heap,
-            ledger: Ledger::new(tuning::PB_GROW, tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS),
+            chunks,
+            ledger,
             c1_written: false,
             exhausted_logged: false,
             stats: PbStats::default(),
@@ -412,8 +468,11 @@ impl Pools {
             self.pb_pages.fill(0, 0, buffer::PAGE_LIST_SIZE)?;
             self.pb_blocks.fill(0, 0, buffer::BLOCK_LIST_SIZE)?;
         }
-        let heap = gva(&self.pb_heap)?;
+        let heap = client::PB_HEAP;
         let initial = self.ledger.initial;
+        if initial > self.backed() {
+            return Err(EINVAL);
+        }
         write_records(
             &self.pb_pages,
             0,
@@ -465,15 +524,23 @@ impl Pools {
         super::params::pb_max_blocks().clamp(self.ledger.initial, self.ledger.max)
     }
 
-    /// The debugfs line `pb: blocks initial/posted/firmware-max/max requests grown refused bad`.
+    /// The blocks with backing, from block 0.
+    pub(crate) fn backed(&self) -> u32 {
+        self.chunks.last().map_or(0, PbChunk::end)
+    }
+
+    /// The debugfs line `pb: blocks initial/posted/firmware-max/max backed blocks/chunks
+    /// requests grown refused bad`.
     pub(crate) fn write_stats(&self, f: &mut impl fmt::Write) -> fmt::Result {
         writeln!(
             f,
-            "pb: blocks {}/{}/{}/{} requests {} grown {} refused {} bad {}",
+            "pb: blocks {}/{}/{}/{} backed {}/{} requests {} grown {} refused {} bad {}",
             self.ledger.initial,
             self.ledger.posted,
             self.soft_max(),
             self.ledger.max,
+            self.backed(),
+            self.chunks.len(),
             self.stats.requests,
             self.stats.grown,
             self.stats.refused,
@@ -483,6 +550,109 @@ impl Pools {
 }
 
 impl Firmware {
+    /// Maps the PB backing into `vm` up to its last chunk, before anything of a prefix of the
+    /// VM is published (the start of `publish_prefix_into`). Render work runs in one VM at a
+    /// time (`Engine::publish`), so the VM about to run is the only one through which the GPU
+    /// can reach a posted block next; a VM created or idle while the backing grew catches up
+    /// here, also a closed VM whose accepted jobs still run.
+    ///
+    /// Each chunk's alias joins the VM's driver mappings, held until the VM is torn down, and
+    /// the VM's count moves past the chunk only then. When that fails, the alias just made is
+    /// dropped again: nothing of the VM runs before its count covers the chunk, and the leaf is
+    /// GPU-only, so the drop is a plain unmap. The chunks mapped before stay counted.
+    ///
+    /// The one-VM rule is checked first: a flight of another VM, or a count past the chunks,
+    /// fails with EPROTO before anything is mapped.
+    pub(crate) fn map_pb(&mut self, vm: &VmState) -> Result {
+        let mut mapped = vm.pb_chunks.load(Ordering::Relaxed);
+        if mapped > self.pools.chunks.len()
+            || self
+                .engine
+                .flights
+                .iter()
+                .any(|f| !core::ptr::eq(&*f.job.vm, vm))
+        {
+            dev_err!(
+                self.dev(),
+                "PB backing: ctx {} maps {} of {} chunks with {} flights of another VM\n",
+                vm.slot,
+                mapped,
+                self.pools.chunks.len(),
+                self.engine
+                    .flights
+                    .iter()
+                    .filter(|f| !core::ptr::eq(&*f.job.vm, vm))
+                    .count()
+            );
+            return Err(super::boot::eproto());
+        }
+        while let Some(chunk) = self.pools.chunks.get(mapped) {
+            let mut aliases = KVec::with_capacity(1, GFP_KERNEL)?;
+            aliases.push(chunk.map(&vm.vm)?, GFP_KERNEL)?;
+            vm.vm.append_driver_mappings(aliases)?;
+            mapped += 1;
+            vm.pb_chunks.store(mapped, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// The VM whose render work runs: every flight's (`Engine::publish` puts a flight behind
+    /// another only for the same VM), and it must be the asking context's. EPROTO otherwise.
+    fn running_vm(&self, ctx: u32) -> Result<Arc<VmState>> {
+        let flights = &self.engine.flights;
+        let vm = flights
+            .first()
+            .ok_or_else(super::boot::eproto)?
+            .job
+            .vm
+            .clone();
+        if vm.slot != ctx || flights.iter().any(|f| !Arc::ptr_eq(&f.job.vm, &vm)) {
+            dev_err!(
+                self.dev(),
+                "PB growth: ctx {} is not the one VM in flight (ctx {}, {} flights)\n",
+                ctx,
+                vm.slot,
+                flights.len()
+            );
+            return Err(super::boot::eproto());
+        }
+        Ok(vm)
+    }
+
+    /// Backs the PB up to block `end` in the VM that runs, the asking context `ctx`, before an
+    /// answer posts those blocks (nothing new when they are backed already): chunks of at most
+    /// [`growth::CHUNK_BLOCKS`] blocks are allocated ([`object::gpu_backing`]), mapped into that
+    /// VM and kept, one at a time. The VM first catches up ([`Self::map_pb`], which also checks
+    /// the one-VM rule), so its count equals the chunks. A chunk is kept
+    /// only once its alias in the VM is held, and the VM's count moves with it; when the alias
+    /// cannot be held, the alias and the chunk are dropped, neither ever reachable (the leaf is
+    /// GPU-only: a plain unmap). An error leaves the chunks backed so far for the next request,
+    /// and nothing is posted. The allocation sleeps (shmem pages with `__GFP_RETRY_MAYFAIL`)
+    /// while the firmware waits for the answer; how long is not bounded here.
+    fn back_pb(&mut self, end: u32, ctx: u32) -> Result {
+        let vm = self.running_vm(ctx)?;
+        self.map_pb(&vm)?;
+        while self.pools.backed() < end {
+            let (first, blocks) =
+                growth::next_chunk(self.pools.backed(), self.pools.ledger.max).ok_or(ENOSPC)?;
+            if self.pools.chunks.len() == self.pools.chunks.capacity() {
+                return Err(ENOSPC);
+            }
+            let chunk = PbChunk::new(&self.pools.drm, first, blocks)?;
+            let mut aliases = KVec::with_capacity(1, GFP_KERNEL)?;
+            aliases.push(chunk.map(&vm.vm)?, GFP_KERNEL)?;
+            vm.vm.append_driver_mappings(aliases)?;
+            // Within the capacity checked above.
+            self.pools
+                .chunks
+                .push_within_capacity(chunk)
+                .map_err(|_| EIO)?;
+            vm.pb_chunks
+                .store(self.pools.chunks.len(), Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     /// (Re)initializes the render UMA managers, PB lists and PB manager. `rebuild`: the priming
     /// prefix after a recovered abort: the first one moves to the uncached spare set, later
     /// ones rewrite it in place.
@@ -590,8 +760,14 @@ impl Firmware {
             );
             return Ok(());
         }
+        // Every block the answer posts is backed in the VM that runs before anything of the
+        // answer is written; the one-VM rule is checked for every answer. If that fails, nothing
+        // is posted or answered (answer_growth logs it; the deadline applies), and the backing
+        // made so far stays for the next request.
+        let end = self.pools.ledger.posted + self.pools.ledger.next_count();
+        self.back_pb(end, ctx)?;
         let (first, n) = self.pools.ledger.accept(request);
-        let heap = gva(&self.pools.pb_heap)?;
+        let heap = client::PB_HEAP;
         for b in first..first + n {
             self.pools.pb_blocks.w64(
                 buffer::block_record_offset(b),

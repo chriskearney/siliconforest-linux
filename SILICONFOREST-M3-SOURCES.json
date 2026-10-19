@@ -185,5 +185,45 @@
       "to": "arch/arm64/boot/dts/apple/m3-g15/"
     }
   ],
-  "scope": "Directory mappings include only the files actually present at the destination. Local adaptations, retained baseline protections, and validation limits are documented in SILICONFOREST-M3-REVIEW.md. Original licenses and commit history are retained."
+  "scope": "Directory mappings include only the files actually present at the destination. Local adaptations, retained baseline protections, and validation limits are documented in SILICONFOREST-M3-REVIEW.md. Original licenses and commit history are retained.",
+  "downstream_parameter_buffer_backing": {
+    "base": "040af44a1db02123cd862c3eed75a5eb78ae459b",
+    "scope": "Physical backing on demand for the shared T6030/T6031 native G15 parameter buffer. Supersedes the eager allocation policy recorded in the PR363 allocator carry; preserves its logical geometry and firmware growth protocol.",
+    "default_sizes": {
+      "logical_PB_MiB": 512,
+      "initial_physical_PB_MiB": 128,
+      "extension_chunk_max_MiB": 4,
+      "posted_max_blocks": 4095
+    },
+    "ownership": "Retain grow-only backing until reboot; map every owned chunk before a VM publishes work, including a closed VM retained by accepted jobs. Allocate and map before accepting a growth request or publishing records, producer or success reply.",
+    "preserved_contracts": [
+      "Block records before producer before reply, with both existing barriers.",
+      "Full logical aperture reserved against userspace binds, including the unbacked tail.",
+      "Existing two-refusal hard-limit policy and firmware-managed live page-list import.",
+      "Normal M1/M2 GPU driver, board admission, native 384/136 ABI, display, DTs, Mesa and m1n1 unchanged."
+    ],
+    "validation_limits": [
+      "Source, host tests and compilation do not qualify firmware/GPU behavior, allocation latency, power or memory-pressure recovery.",
+      "Backing does not shrink; peak allocations persist until reboot. Failed preparation leaves the request unanswered; exhaustion can still fail-stop.",
+      "No target installation, reboot, signed release or public installer change is part of this source integration."
+    ],
+    "production_head": "9e67aed169c3cc6a0388d0184d8db76936299385",
+    "implementation_commits": [
+      "6fef6f3820ba34a2c2cbd0b0ee95ec473def4ffc",
+      "d5317ea1542d42382a7d6e3dbcdc3d611d5c5237",
+      "9e67aed169c3cc6a0388d0184d8db76936299385"
+    ],
+    "test_followup_head": "51550efeda8a6ede565f9aac5128d8e1993111b2",
+    "host_validation": {
+      "rust_pass": 61,
+      "private_fixture_ignored": 2,
+      "c_uapi_pass": 26,
+      "pb_model_pass": 24,
+      "pb_mutations_rejected": 22,
+      "positive_controls_pass": 1,
+      "statistics_mutations_rejected": 7,
+      "record_mutations_rejected": 3
+    },
+    "provenance": "Chris-authored downstream implementation and tests, with Generated-by trailers. Existing upstream authorship and supplied sign-offs are retained in the earlier carries."
+  }
 }
