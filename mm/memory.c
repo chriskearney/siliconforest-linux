@@ -92,6 +92,7 @@
 
 #include "internal.h"
 #include "swap.h"
+#include "swap_table.h"
 
 #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
 #warning Unfortunate NUMA and NUMA Balancing config, growing page-frame for last_cpupid.
@@ -5848,6 +5849,23 @@ out_device:
  * as done by filemap_fault().
  */
 #if defined(CONFIG_MM_SUBPAGE) && defined(CONFIG_SWAP)
+/*
+ * The caller holds the matching swapcache folio locked and keeps a reference
+ * to the swap device. This pins the slot and its memcg ID until the charge
+ * takes its own CSS reference. Read the record under the cluster lock, but
+ * drop that lock before charging: the charge can reclaim and sleep.
+ */
+static unsigned short swap_coarse_memcg_id(swp_entry_t entry)
+{
+	struct swap_cluster_info *ci;
+	unsigned short id;
+
+	ci = swap_cluster_lock(__swap_entry_to_info(entry), swp_offset(entry));
+	id = __swap_cgroup_get(ci, swp_cluster_offset(entry));
+	swap_cluster_unlock(ci);
+	return id;
+}
+
 /* One coarse PTE owns a naturally aligned group of native swap entries. */
 vm_fault_t do_swap_coarse_page(struct vm_fault *vmf)
 {
@@ -5947,7 +5965,8 @@ vm_fault_t do_swap_coarse_page(struct vm_fault *vmf)
 		if (!backing)
 			goto oom;
 		copied = true;
-		if (mem_cgroup_swapin_charge_folio(backing, mm, GFP_KERNEL, entry))
+		if (mem_cgroup_swapin_charge_folio(backing, swap_coarse_memcg_id(entry),
+						   mm, GFP_KERNEL))
 			goto oom;
 		covered = 0;
 		for (i = 0; i < count; i++) {
