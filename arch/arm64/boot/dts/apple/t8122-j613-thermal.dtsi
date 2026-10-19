@@ -1,0 +1,213 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * CPU thermal control of the 13-inch MacBook Air (M3): the CPUs' power at each
+ * state, their cooling cells, and the SMC die sensors the J613 thermal zones
+ * read. Measured and picked on a J613 only, so the other T8122 machines do not
+ * get them.
+ *
+ * Include right after t8122.dtsi, before anything that adds SMC hwmon
+ * channels: the zones refer to the six sensors here by channel index 0-5.
+ *
+ * Copyright The Asahi Linux Contributors
+ */
+
+/*
+ * opp-microwatt is the power one busy CPU adds at each state, measured
+ * on a J613 with the SMC's cluster power keys (PPbb for the E cluster,
+ * PP0b for the P cluster): the cluster pinned to the state, all four of
+ * its CPUs busy minus the cluster idle, divided by four, starting
+ * below 60 C. The values are curves fitted to the measurements
+ * (rms deviation 31 mW for E, 22 mW for P), so that they rise
+ * monotonically: E P = 58 mW * f^1.842 (f in GHz),
+ * P ln(P/mW) = 5.394 + 1.164 ln f + 0.521 (ln f)^2.
+ *
+ * Above 3288 MHz the P cluster's power stops rising at about 11 W with
+ * all four CPUs busy, and the work done per clock at 4056 MHz is 8-10%
+ * lower than at 3420 MHz, also with one CPU busy: the hardware limits
+ * the top states by itself. Their values are the fitted curve
+ * extrapolated, the power these states would draw unlimited.
+ */
+&sawtooth_opp {
+	opp01 {
+		opp-microwatt = <33600>;
+	};
+
+	opp02 {
+		opp-microwatt = <62800>;
+	};
+
+	opp03 {
+		opp-microwatt = <118800>;
+	};
+
+	opp04 {
+		opp-microwatt = <208700>;
+	};
+
+	opp05 {
+		opp-microwatt = <262100>;
+	};
+
+	opp06 {
+		opp-microwatt = <326700>;
+	};
+
+	opp07 {
+		opp-microwatt = <373300>;
+	};
+};
+
+&everest_opp {
+	opp01 {
+		opp-microwatt = <154600>;
+	};
+
+	opp02 {
+		opp-microwatt = <244800>;
+	};
+
+	opp03 {
+		opp-microwatt = <329200>;
+	};
+
+	opp04 {
+		opp-microwatt = <425000>;
+	};
+
+	opp05 {
+		opp-microwatt = <567000>;
+	};
+
+	opp06 {
+		opp-microwatt = <742700>;
+	};
+
+	opp07 {
+		opp-microwatt = <928000>;
+	};
+
+	opp08 {
+		opp-microwatt = <1091300>;
+	};
+
+	opp09 {
+		opp-microwatt = <1275600>;
+	};
+
+	opp10 {
+		opp-microwatt = <1469000>;
+	};
+
+	opp11 {
+		opp-microwatt = <1654100>;
+	};
+
+	opp12 {
+		opp-microwatt = <1840200>;
+	};
+
+	opp13 {
+		opp-microwatt = <2024500>;
+	};
+
+	opp14 {
+		opp-microwatt = <2204000>;
+	};
+
+	opp15 {
+		opp-microwatt = <2356100>;
+	};
+
+	opp16 {
+		opp-microwatt = <2495800>;
+	};
+
+	opp17 {
+		opp-microwatt = <2599300>;
+	};
+
+	opp18 {
+		opp-microwatt = <2749900>;
+	};
+
+	opp19 {
+		opp-microwatt = <2930000>;
+	};
+
+	opp20 {
+		opp-microwatt = <3119000>;
+	};
+};
+
+&cpu_e0 {
+	#cooling-cells = <2>;
+};
+
+&cpu_e1 {
+	#cooling-cells = <2>;
+};
+
+&cpu_e2 {
+	#cooling-cells = <2>;
+};
+
+&cpu_e3 {
+	#cooling-cells = <2>;
+};
+
+&cpu_p0 {
+	#cooling-cells = <2>;
+};
+
+&cpu_p1 {
+	#cooling-cells = <2>;
+};
+
+&cpu_p2 {
+	#cooling-cells = <2>;
+};
+
+&cpu_p3 {
+	#cooling-cells = <2>;
+};
+
+&smc_hwmon {
+	#thermal-sensor-cells = <1>;
+
+	/*
+	 * CPU die temperatures, one per E-cluster sensor
+	 * group and one per P core (the key that rose most
+	 * with only that core busy, on a J613). Board
+	 * thermal zones refer to these by channel index, so
+	 * keep them first and in this order.
+	 */
+	temperature-Te05 {
+		apple,key-id = "Te05";
+		label = "E-cluster Temperature 1";
+	};
+
+	temperature-Te0P {
+		apple,key-id = "Te0P";
+		label = "E-cluster Temperature 2";
+	};
+
+	temperature-Tp05 {
+		apple,key-id = "Tp05";
+		label = "P-core 0 Temperature";
+	};
+
+	temperature-Tp0L {
+		apple,key-id = "Tp0L";
+		label = "P-core 1 Temperature";
+	};
+
+	temperature-Tp0b {
+		apple,key-id = "Tp0b";
+		label = "P-core 2 Temperature";
+	};
+
+	temperature-Tp0r {
+		apple,key-id = "Tp0r";
+		label = "P-core 3 Temperature";
+	};
+};
