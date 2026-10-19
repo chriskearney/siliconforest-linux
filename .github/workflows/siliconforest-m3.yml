@@ -17,6 +17,14 @@ jobs:
           RUSTUP_TOOLCHAIN: 1.93.1
       - name: USB3 handoff failure and retry controls
         run: python3 tools/asahi/atc-usb3-tests.py --mutations
+      - name: J516C record-word exception controls
+        env:
+          RUSTUP_TOOLCHAIN: 1.93.1
+        run: python3 tools/asahi/g15-zero-words-tests.py --mutations
+      - name: G15 statistics drain ordering controls
+        env:
+          RUSTUP_TOOLCHAIN: 1.93.1
+        run: python3 tools/asahi/g15-stats-drain-tests.py --mutations --output "$RUNNER_TEMP/stats-drain"
       - name: GPU accounting and telemetry host controls
         env:
           RUSTUP_TOOLCHAIN: 1.93.1
