@@ -30,7 +30,7 @@ pub enum Status {
 }
 
 /// Scheduler priorities
-#[repr(u32)]
+#[repr(i32)]
 pub enum Priority {
     /// Low userspace priority
     Low = bindings::drm_sched_priority_DRM_SCHED_PRIORITY_LOW,
