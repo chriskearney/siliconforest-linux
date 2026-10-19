@@ -117,6 +117,13 @@ pub(crate) struct VmState {
     registry: Arc<Registry>,
 }
 
+impl VmState {
+    /// Drops the registry's references to closed VMs (the queues call this when destroyed).
+    pub(crate) fn prune_registry(&self) {
+        self.registry.prune();
+    }
+}
+
 impl Drop for VmState {
     fn drop(&mut self) {
         mod_pr_debug!("G15: VM {} releases context {}\n", self.id, self.slot);
@@ -180,7 +187,9 @@ impl Registry {
         Ok(Reservation(Some(self)))
     }
 
-    /// Drops the registry's references to VMs whose client handle is closed.
+    /// Drops the registry's references to VMs whose client handle is closed. Called on VM close
+    /// ([`closed`]), on queue destruction and before a new VM is created: a closed VM's page
+    /// tables, bound objects and TTBAT slot go as soon as its last queue or job is gone.
     fn prune(&self) {
         let mut closed = KVec::new();
         {
@@ -297,6 +306,20 @@ pub(crate) fn new_vm(gpu: &Gpu, kernel_range: Range<u64>) -> Result<mmu::Vm> {
     registry.vms.lock().push(state, GFP_KERNEL)?;
     mod_pr_debug!("G15: VM {} context {}\n", id, slot);
     Ok(vm)
+}
+
+/// A client's VM handle is gone (`gpu::Gpu::vm_closed`): drop the registry's references to
+/// closed VMs now, outside the device lock, instead of at the next VM creation.
+pub(crate) fn closed(gpu: &Gpu) {
+    let registry = gpu
+        .shared
+        .state
+        .lock()
+        .as_ref()
+        .map(|firmware| firmware.vms.clone());
+    if let Some(registry) = registry {
+        registry.prune();
+    }
 }
 
 /// The state of a VM for a new queue.

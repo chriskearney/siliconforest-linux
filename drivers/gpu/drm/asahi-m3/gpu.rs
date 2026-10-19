@@ -325,6 +325,9 @@ pub(crate) trait Gpu: Send + Sync {
     fn bind_batch_limit(&self) -> Option<u32> {
         None
     }
+    /// A client's VM handle was destroyed: a generation that keeps per-VM state beyond the
+    /// client's handle may release it now.
+    fn vm_closed(&self) {}
     /// Frequency of the CPU timer that GPU timestamps are derived from.
     fn base_clock_hz(&self) -> u32;
     /// Return the GPU address space geometry.

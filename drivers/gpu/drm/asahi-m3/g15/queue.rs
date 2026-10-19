@@ -61,6 +61,14 @@ pub(crate) struct Queue {
     timeline: Arc<Timeline>,
 }
 
+impl Drop for Queue {
+    fn drop(&mut self) {
+        // The registry's references to closed VMs (this queue's VM among them, if its handle is
+        // gone) go now; this VM's state lives on until the scheduler below has drained.
+        self.vm.prune_registry();
+    }
+}
+
 impl Queue {
     /// Creates a logical queue. `priority` is `DRM_ASAHI_PRIORITY_REALTIME - priority`, as
     /// `file.rs` passes it.

@@ -590,6 +590,10 @@ impl gpu::Gpu for Gpu {
         Some(params::MAX_BINDS)
     }
 
+    fn vm_closed(&self) {
+        vm::closed(self)
+    }
+
     fn new_vm(&self, kernel_range: Range<u64>) -> Result<mmu::Vm> {
         vm::new_vm(self, kernel_range)
     }
