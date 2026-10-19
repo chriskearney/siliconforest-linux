@@ -3960,6 +3960,16 @@ void dcp_typec_routes_disable_dev(struct device *dev)
 	/* Applied, it stays: the live tree refers to it. */
 }
 
+/*
+ * Whether @dcp drives nothing but its Type-C routes: the T6030 and T8122
+ * external processors, and the H17P external one. Such a processor needs
+ * an enabled route.
+ */
+static bool dcp_typec_routes_required(const struct apple_dcp *dcp)
+{
+	return dcp->external || dcp->ext_failsafe || dcp_is_external_h17p(dcp);
+}
+
 int dcp_register_typec_routes(struct apple_dcp *dcp)
 {
 	struct device_node *routes __free(device_node) =
@@ -3967,13 +3977,20 @@ int dcp_register_typec_routes(struct apple_dcp *dcp)
 	struct dcp_route_probe_context ctx = { .dcp = dcp, .routes = routes };
 
 	/*
-	 * The internal processor's route stays disabled in the device tree
-	 * unless the display gate enables it at boot (J613, also seen by the
-	 * 26.6 profile that includes its device tree): then it has no route.
-	 * An external processor without an enabled route still fails.
+	 * A processor with an output of its own has no route when every
+	 * route in its container is disabled:
+	 * - the internal panel's (J613): its route stays disabled unless the
+	 *   display gate enables it at boot (also seen by the 26.6 profile
+	 *   that includes its device tree);
+	 * - the HDMI processor of the 14" and 16" M1 Pro and M1 Max (dcpext0),
+	 *   from a device tree that marks its routes disabled for the boot
+	 *   loader to enable with the processor, booted by a loader that
+	 *   does not: it keeps its fixed HDMI output.
+	 * A processor that drives nothing but its routes still fails, so a
+	 * T6030 or T8122 external processor is never admitted without one.
 	 */
-	if (routes && !dcp->external && !dcp->ext_failsafe &&
-	    !dcp_is_external_h17p(dcp) && !of_get_available_child_count(routes))
+	if (routes && !dcp_typec_routes_required(dcp) &&
+	    !of_get_available_child_count(routes))
 		return 0;
 	return dcp_fabric_run_probe(!!routes, dcp_register_typec_routes_present, &ctx);
 }
