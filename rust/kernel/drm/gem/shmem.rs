@@ -300,9 +300,17 @@ impl<T: DriverObject, C: DeviceContext> Object<T, C> {
         raw_dev: *mut bindings::drm_device,
         size: usize,
     ) -> *mut bindings::drm_gem_object {
+        // The core reaches this only for dma-buf imports and dumb buffers, which userspace
+        // requests through an open file on a registered device. Check that before forming a
+        // `Registered` view, so a caller from anywhere else is refused instead of trusted.
+        //
+        // SAFETY: The DRM core passes a valid device of `T::Driver`, which outlives the call.
+        if !unsafe { (*raw_dev).registered } {
+            return EINVAL.to_ptr();
+        }
+
         // SAFETY: The DRM core only calls this for a device of `T::Driver`, which outlives the
-        // call. It allocates objects this way only for dma-buf imports and dumb buffers, which
-        // userspace requests through a registered device node, so the device satisfies both
+        // call, and the device is registered (checked above), so it satisfies both
         // `Registered` and `C`.
         let reg = unsafe { Device::<T::Driver>::from_raw(raw_dev) };
         // SAFETY: As above.
