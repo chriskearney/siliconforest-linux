@@ -4,10 +4,6 @@ config RUST_DRM_SCHED
 	bool
 	select DRM_SCHED
 
-config RUST_DRM_GPUVM
-	bool
-	select DRM_GPUVM
-
 config DRM_ASAHI
 	tristate "Asahi (DRM support for Apple AGX GPUs)"
 	depends on RUST
@@ -19,7 +15,7 @@ config DRM_ASAHI
 	select APPLE_PMP_REPORT
 	select RUST_DRM_SCHED
 	select RUST_DRM_GEM_SHMEM_HELPER
-	select RUST_DRM_GPUVM
+	select DRM_GPUVM
 	select RUST_APPLE_RTKIT
 	select WANT_DEV_COREDUMP
 	help
