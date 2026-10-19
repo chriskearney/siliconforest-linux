@@ -34,6 +34,7 @@
 #include <linux/workqueue.h>
 
 #include <drm/drm_mode.h>
+#include <kunit/static_stub.h>
 
 #include "afk.h"
 #include "dcp-hdmi.h"
@@ -44,6 +45,8 @@
 #define DCP_HDMI_IRQ_HPD_MAX_NS		(2 * NSEC_PER_MSEC)
 /* Requests are polled at this period while the sink is held. */
 #define DCP_HDMI_SERVICE_PERIOD_MS	100
+/* Requests refused in a row before the poll stops until the next sink. */
+#define DCP_HDMI_SERVICE_REFUSALS	3
 
 /* DPTX remote port call: the sink raised an IRQ_HPD service request. */
 #define DPTX_GROUP_HOTPLUG		8
@@ -84,6 +87,7 @@ static int dcp_hdmi_sink_irq(struct apple_dcp *dcp)
 {
 	struct apple_epic_service *service = READ_ONCE(dcp->dptxport[0].service);
 
+	KUNIT_STATIC_STUB_REDIRECT(dcp_hdmi_sink_irq, dcp);
 	if (!service)
 		return -ENODEV;
 	return afk_service_call(service, DPTX_GROUP_HOTPLUG, DPTX_CMD_SINK_IRQ,
@@ -111,12 +115,16 @@ static void dcp_hdmi_work(struct work_struct *work)
 		dev_warn_ratelimited(dcp->dev,
 				     "HDMI: converter service request not delivered: %d\n",
 				     ret);
-		/* Don't keep polling a firmware that refuses the request. */
-		if (++hdmi->refused >= 3) {
+		/*
+		 * Don't keep polling a firmware that refuses the request; one
+		 * that failed once is asked again at the next period. With a
+		 * sleeping HPD line nothing else would bring the poll back.
+		 */
+		if (++hdmi->refused >= DCP_HDMI_SERVICE_REFUSALS) {
 			WRITE_ONCE(hdmi->armed, false);
 			dev_warn(dcp->dev, "HDMI: converter service stopped until the next sink\n");
 		}
-		return;
+		goto next;
 	}
 	hdmi->refused = 0;
 	if (!hdmi->announced) {
@@ -254,3 +262,7 @@ int dcp_hdmi_init(struct apple_dcp *dcp)
 		dev_info(dcp->dev, "HDMI: HPD GPIO can sleep, converter requests are polled only\n");
 	return 0;
 }
+
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+#include "dcp-hdmi-test.c"
+#endif
