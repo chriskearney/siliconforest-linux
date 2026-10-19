@@ -1234,6 +1234,43 @@ mod tests {
         rows.into_iter().map(|(_, o)| o).collect()
     }
 
+    /// No GPU node property value panics the builder (CONFIG_RUST_OVERFLOW_CHECKS is on in our
+    /// kernels): each of the properties at the u32 and single-precision boundaries, on a copy
+    /// of a seed record that builds. A value may be refused; it must not panic.
+    #[test]
+    fn device_tree_u32_boundaries_do_not_panic() {
+        let main = main_opps();
+        let cs = [Opp {
+            mhz: 24,
+            mv: [635, 0, 0, 0],
+            cells: 1,
+            mw: 0,
+        }];
+        let mut seed = vec![0u8; SIZE];
+        put32(&mut seed, MAX_POWER, 54321).unwrap();
+        for (k, key) in [b"RT0g", b"RT1g", b"RT2g", b"RT3g", b"RT0r", b"RT0f"]
+            .iter()
+            .enumerate()
+        {
+            put32(&mut seed, SENSOR_ROWS + 12 * k, u32::from_le_bytes(**key)).unwrap();
+        }
+        assert_eq!(build(&mut seed, &inputs(&main, &cs, &[])), Ok(()));
+        for prop in 0..PROPS.len() {
+            for value in [
+                0, 1, 7, 8, 31, 0x3f80_0000, 0x4000_0000, 0x7f80_0000, 0x7fc0_0000, 0x8000_0000,
+                u32::MAX,
+            ] {
+                let mut i = inputs(&main, &cs, &[]);
+                i.props[prop] = value;
+                let mut image = seed.clone();
+                let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    build(&mut image, &i)
+                }));
+                assert!(built.is_ok(), "prop {} value {:#x}", prop, value);
+            }
+        }
+    }
+
     /// Builder on the saved device tree + the file's FROM_FILE words == the file's hardware
     /// record, byte for byte. Needs `G15_J516C_FIXTURES=<dir>` with `j516c.dtb` and
     /// `t6031-j516c-board.bin` (off the tree): ignored by default, `--ignored` runs it.
