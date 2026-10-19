@@ -1333,15 +1333,8 @@ static int bio_iov_iter_get_fragments(struct bio *bio, struct iov_iter *iter,
 		iov_iter_advance(iter, 0);
 		/* As in iov_iter_extract_bvecs(), a misaligned vector fails the whole I/O. */
 		if (((unsigned long)iter_iov_addr(iter) | iter_iov_len(iter)) &
-		    mem_align_mask) {
-			release_user_fragments(bio->bi_user_fragments,
-					       bio->bi_nr_user_fragments, false);
-			kfree(bio->bi_user_fragments);
-			bio->bi_user_fragments = NULL;
-			bio->bi_nr_user_fragments = 0;
-			bio->bi_vcnt = 0;
-			return -EINVAL;
-		}
+		    mem_align_mask)
+			goto unaligned;
 		nr = pin_user_fragments_remote(current->mm,
 			(unsigned long)iter_iov_addr(iter),
 			min3(iter_iov_len(iter), iov_iter_count(iter),
@@ -1404,6 +1397,20 @@ static int bio_iov_iter_get_fragments(struct bio *bio, struct iov_iter *iter,
 		iov_iter_revert(iter, trim);
 		total -= trim;
 	}
+	/*
+	 * User-granule virtual alignment need not survive physical translation.
+	 * Validate after coalescing: adjacent quarters may form a valid bvec.
+	 */
+	{
+		unsigned int i;
+
+		for (i = 0; i < bio->bi_vcnt; i++) {
+			struct bio_vec *bv = &bio->bi_io_vec[i];
+
+			if ((bv->bv_offset | bv->bv_len) & mem_align_mask)
+				goto unaligned;
+		}
+	}
 	bio->bi_iter.bi_size = total;
 	if (!total) {
 		kfree(bio->bi_user_fragments);
@@ -1412,6 +1419,16 @@ static int bio_iov_iter_get_fragments(struct bio *bio, struct iov_iter *iter,
 	}
 	bio_set_flag(bio, BIO_PAGE_PINNED);
 	return 0;
+
+unaligned:
+	release_user_fragments(bio->bi_user_fragments,
+			       bio->bi_nr_user_fragments, false);
+	kfree(bio->bi_user_fragments);
+	bio->bi_user_fragments = NULL;
+	bio->bi_nr_user_fragments = 0;
+	bio->bi_vcnt = 0;
+	bio->bi_iter.bi_size = 0;
+	return -EINVAL;
 }
 #endif
 
