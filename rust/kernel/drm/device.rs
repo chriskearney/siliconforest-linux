@@ -269,6 +269,7 @@ impl<T: drm::Driver> UnregisteredDevice<T> {
         // won't be called during its lifetime and that the device is unregistered.
         Ok(Self(unsafe { ARef::from_raw(raw_drm) }, NotThreadSafe))
     }
+
 }
 
 /// A typed DRM device with a specific [`drm::Driver`] implementation and [`DeviceContext`].
@@ -358,6 +359,18 @@ impl<T: drm::Driver, C: DeviceContext> Device<T, C> {
     pub(crate) unsafe fn assume_ctx<NewCtx: DeviceContext>(&self) -> &Device<T, NewCtx> {
         // SAFETY: The data layout is identical via our type invariants.
         unsafe { mem::transmute(self) }
+    }
+
+    /// Returns a view of this device in the [`Uninit`] context.
+    ///
+    /// [`Uninit`] promises nothing beyond what every [`Device`] already guarantees: it may or
+    /// may not be registered. So this view is valid in every context, before and after
+    /// registration. A driver that builds its runtime before registering the device can keep
+    /// that runtime in the [`Uninit`] context, and use this view for the [`Registered`]
+    /// references the DRM core passes to its callbacks and ioctls.
+    pub fn as_uninit(&self) -> &Device<T, Uninit> {
+        // SAFETY: `Uninit` carries no guarantee that `self` does not already provide.
+        unsafe { self.assume_ctx() }
     }
 }
 

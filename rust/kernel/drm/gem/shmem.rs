@@ -17,7 +17,8 @@ use crate::{
         private::Sealed,
         Device,
         DeviceContext,
-        Registered, //
+        Registered,
+        Uninit, //
     },
     error::{
         from_err_ptr,
@@ -192,6 +193,18 @@ impl<T: DriverObject, C: DeviceContext> Object<T, C> {
         shmem.reclaimable_cpu_mappings = config.reclaimable_cpu_mappings;
 
         Ok(obj)
+    }
+
+    /// Returns a view of this object in the [`Uninit`] device context.
+    ///
+    /// The context only describes what is known about the parent device. [`Uninit`] promises
+    /// nothing beyond a valid device, so this view is valid for an object of any context. See
+    /// [`Device::as_uninit`].
+    pub fn as_uninit(&self) -> &Object<T, Uninit> {
+        // SAFETY: `Object<T, C>` and `Object<T, Uninit>` differ only in the zero-sized
+        // `PhantomData` context marker, so they have the same layout. `Uninit` carries no
+        // guarantee about the parent device that `C` does not already provide.
+        unsafe { &*core::ptr::from_ref(self).cast::<Object<T, Uninit>>() }
     }
 
     /// Returns the `Device` that owns this GEM object.
