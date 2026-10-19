@@ -93,6 +93,7 @@ static const char *const apple_pcie_tunnel_cold_init_machines[] = {
  */
 bool apple_pcie_tunnel_needs_cold_init(struct device_node *np)
 {
+	struct of_phandle_args dart_spec = {};
 	struct device_node *dart = NULL;
 	bool tunables;
 	u32 status;
@@ -106,8 +107,9 @@ bool apple_pcie_tunnel_needs_cold_init(struct device_node *np)
 	    status == 1)
 		return false;
 
-	if (of_map_id(np, 0, "iommu-map", "iommu-map-mask", &dart, NULL) || !dart)
+	if (of_map_iommu_id(np, 0, &dart_spec) || !dart_spec.np)
 		return false;
+	dart = dart_spec.np;
 	tunables = of_property_present(dart, "apple,tunable");
 	if (!tunables)
 		pr_warn_once("%pOF: no PCIe-C DART tunables, not cold-initializing\n",

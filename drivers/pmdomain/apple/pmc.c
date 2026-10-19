@@ -519,7 +519,7 @@ static int apple_pmc_dcs_init(struct apple_pmc *pmc)
 		ops = &apple_pmc_dcs_power_ops;
 	}
 
-	cdev = devm_thermal_of_cooling_device_register(dev, np, "pmc-dcs", pmc,
+	cdev = devm_thermal_of_child_cooling_device_register(dev, np, "pmc-dcs", pmc,
 						       ops);
 	if (IS_ERR(cdev))
 		return dev_err_probe(dev, PTR_ERR(cdev),
