@@ -104,7 +104,6 @@ config APPLE_SIO
 	  where it provides DMA services.
 
 config APPLE_SIO_T6030
-	depends on SILICONFOREST_M3
 	bool "Apple SIO on the M3 Pro (T6030)"
 	depends on APPLE_SIO
 	help
