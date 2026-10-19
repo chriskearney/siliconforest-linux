@@ -1558,6 +1558,10 @@ def main():
     expect_fail = a.mutation in MUTATIONS
     if (receipt['exit'] != 0) != expect_fail:
         raise SystemExit(1)
+    if expect_fail:
+        test, message = INTENDED[a.mutation]
+        if test not in receipt['failed'] or message not in receipt['output'].get(test, ''):
+            raise SystemExit('the mutation timed out or failed elsewhere than intended')
     if a.mutations and any(v['exit'] == 0 or not v['intended_failure']
                            for v in receipt.get('mutations', {}).values()):
         raise SystemExit('a mutation survived or failed elsewhere than intended')
