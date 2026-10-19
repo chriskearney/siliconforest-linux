@@ -1239,7 +1239,7 @@ static int bio_iov_iter_align_down(struct bio *bio, struct iov_iter *iter,
 	return 0;
 }
 
-#ifdef CONFIG_DEBUG_KERNEL
+#if defined(CONFIG_DEBUG_KERNEL) || defined(CONFIG_MM_SUBPAGE)
 static inline bool bio_iov_bvec_aligned(const struct bio *bio,
 					unsigned mem_align_mask)
 {
@@ -1247,8 +1247,9 @@ static inline bool bio_iov_bvec_aligned(const struct bio *bio,
 	struct bio_vec bv;
 
 	/*
-	 * Correct callers never break the alignment requirements, so this
-	 * exhaustive check is only paid for in debug builds.
+	 * Native-page callers preserve physical alignment after the first bvec.
+	 * User-granule mappings need not: check every physical bvec even in
+	 * non-debug builds when MM_SUBPAGE is enabled.
 	 */
 	for_each_mp_bvec(bv, bio->bi_io_vec, iter, bio->bi_iter)
 		if ((bv.bv_offset | bv.bv_len) & mem_align_mask)
