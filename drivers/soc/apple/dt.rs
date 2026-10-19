@@ -15,13 +15,10 @@ const IOMMUS_PROP: &CStr = c"iommus";
 const STATUS_PROP: &CStr = c"status";
 const STATUS_OKAY: &CStr = c"okay";
 
-// SEP DMA is offset BIT(40) above the DART input; one 64-bit value = two cells.
+// The SEP DART's DMA window; each 64-bit value is two cells. The values
+// come from the platform profile when the device tree does not give them.
 const DMA_OFFSET_PROP: &CStr = c"apple,dma-offset";
-// [0x100, 0] = BIT(40); [0x1, 0] would be BIT(32) and miss the page tables.
-const DMA_OFFSET_CELLS: [u32; 2] = [0x100, 0x0];
-
 const DMA_RANGE_PROP: &CStr = c"apple,dma-range";
-const DMA_RANGE_CELLS: [u32; 4] = [0, 0, 1, 0];
 
 const REGISTERED_PROP: &CStr = c"apple,sep-shmem-registered-iova";
 const CHOSEN_PATH: &CStr = c"/chosen";
@@ -188,7 +185,7 @@ pub(crate) fn preboot_uuid() -> Option<[u8; 16]> {
     Some(uuid.b)
 }
 
-pub(crate) fn enable_sep_and_dart() -> Result<()> {
+pub(crate) fn enable_sep_and_dart(window: &crate::profile::DartWindow) -> Result<()> {
     let sep = sep_node().ok_or_else(|| {
         pr_err!(
             "apple_sep: no device-tree node with compatible '{}'\n",
@@ -218,7 +215,7 @@ pub(crate) fn enable_sep_and_dart() -> Result<()> {
 
     if dart_available && (need_offset || need_range) {
         pr_err!(
-            "apple_sep: SEP DART already enabled but missing apple,dma-offset/apple,dma-range; the BIT(40) offset applies only at DART probe. Reboot and load this module first.\n"
+            "apple_sep: SEP DART already enabled but missing apple,dma-offset/apple,dma-range; the DMA window applies only at DART probe. Reboot and load this module first.\n"
         );
         return Err(EBUSY);
     }
@@ -228,11 +225,11 @@ pub(crate) fn enable_sep_and_dart() -> Result<()> {
             let mut queued = false;
             // Properties before status: the DART probes inside of_changeset_apply().
             if need_offset {
-                queue_u32_array(cs, &dart, DMA_OFFSET_PROP, &DMA_OFFSET_CELLS)?;
+                queue_u32_array(cs, &dart, DMA_OFFSET_PROP, &window.offset)?;
                 queued = true;
             }
             if need_range {
-                queue_u32_array(cs, &dart, DMA_RANGE_PROP, &DMA_RANGE_CELLS)?;
+                queue_u32_array(cs, &dart, DMA_RANGE_PROP, &window.range)?;
                 queued = true;
             }
             if !dart_available {
@@ -242,7 +239,8 @@ pub(crate) fn enable_sep_and_dart() -> Result<()> {
             Ok(queued)
         })?;
         pr_info!(
-            "apple_sep: SEP DART changeset applied (offset BIT(40), range 0..4GiB, status okay)\n"
+            "apple_sep: SEP DART changeset applied ({}, status okay)\n",
+            window.name
         );
     } else {
         pr_info!("apple_sep: SEP DART already enabled and configured\n");

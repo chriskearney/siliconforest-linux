@@ -33,6 +33,7 @@ appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += connector-edid-test.o
 appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += hotplug-test.o
 appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += external-hold-test.o
 appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += v14-board-test.o
+appledrm-$(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST) += typec-routes-test.o typec-routes-test.dtbo.o
 
 obj-$(CONFIG_DRM_APPLE_KUNIT_TEST) += afk-service-test.o
 obj-$(CONFIG_DRM_APPLE_KUNIT_TEST) += afk_test.o

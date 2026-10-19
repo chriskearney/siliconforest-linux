@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
+/dts-v1/;
+/plugin/;
+
+/*
+ * Display processors' Type-C route containers, as dcp_register_typec_routes()
+ * finds them: every route left disabled, one route enabled, and none at all.
+ */
+&{/} {
+	dcp-typec-routes-test {
+		routes-left-disabled {
+			typec-routes {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				route@0 {
+					reg = <0>;
+					mode-switch;
+					status = "disabled";
+				};
+
+				route@1 {
+					reg = <1>;
+					mode-switch;
+					status = "disabled";
+				};
+
+				route@2 {
+					reg = <2>;
+					mode-switch;
+					status = "disabled";
+				};
+			};
+		};
+
+		route-enabled {
+			typec-routes {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				route@0 {
+					reg = <0>;
+					mode-switch;
+					status = "disabled";
+				};
+
+				route@1 {
+					reg = <1>;
+					mode-switch;
+				};
+			};
+		};
+
+		no-routes {
+		};
+	};
+};

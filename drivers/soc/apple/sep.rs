@@ -38,6 +38,7 @@ mod transfer;
 mod trusted;
 mod xarm;
 mod xart_apfs;
+mod xart_guard;
 mod xart_store;
 
 use kernel::{
@@ -799,8 +800,20 @@ impl SepData {
 
         let xart_writes = *module_parameters::xart_writes.value() != 0;
         let xart_start = *module_parameters::xart_start_sector.value();
+        let xart_guard = xart_guard::level(
+            *module_parameters::xart_guard.value(),
+            xart_guard::default_level(profile.xart_guard),
+        );
         let store = match xart_store::Store::open_owner(xart_writes, xart_start) {
-            Ok(store) => {
+            Ok(mut store) => {
+                match xart_guard {
+                    Some(level) if store.writes_enabled() => store.set_guard(level)?,
+                    None if store.writes_enabled() => dev_info!(
+                        dev,
+                        "xART guard off: the enclave may rewrite any session record\n"
+                    ),
+                    _ => {}
+                }
                 let (slots, records, revision, malformed, duplicates, repaired, writable) =
                     store.summary();
                 let base = store.base();
@@ -2424,7 +2437,7 @@ impl kernel::InPlaceModule for SepModule {
                 match profile::detect() {
                     Ok(p) => {
                         if matches!(p.bootstrap, profile::Bootstrap::WarmRegister) {
-                            dt::enable_sep_and_dart()?;
+                            dt::enable_sep_and_dart(p.dart_window)?;
                         }
                     }
                     // Without this the module loads, probes nothing and logs
@@ -2461,6 +2474,10 @@ module! {
         provision_keybag: u8 {
             default: 1,
             description: "Create the Linux identity keybag when none exists; set to 0 to disable first-boot provisioning; requires xart_writes=1",
+        },
+        xart_guard: i8 {
+            default: -1,
+            description: "-1: off in SiliconForest (the upstream platform levels are not applied); 0: off; 1: refuse the enclave's writes and deletes of xART session records this Linux install did not create; 2: also refuse writes to the shared root records",
         },
         os_uuid_hi: u64 {
             default: 0,
