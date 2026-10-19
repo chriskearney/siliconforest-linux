@@ -4,8 +4,11 @@
  * end of iomfb_v14_7.c so that the production iomfb_v14_7_poweroff(),
  * iomfb_v14_7_external_sink_released() and dcp_v14_kept_on_work() run. Only
  * the firmware's power call is stubbed; the work runs on the test's thread,
- * where the stub applies, and the queued one only counts.
+ * where the stub applies, and the queued one only counts. A release that
+ * comes while DPMS off looks at the sink runs on a thread of its own.
  */
+#include <linux/delay.h>
+
 #include <kunit/device.h>
 #include <kunit/static_stub.h>
 #include <kunit/test.h>
@@ -14,6 +17,8 @@ struct v14_kept {
 	struct apple_dcp *dcp;
 	struct apple_dcp_v14 *v14;
 	unsigned int offs, ons, queued;
+	/* A release run on another thread, as dcp_dptx_release_locked() does. */
+	struct work_struct release_work;
 };
 
 static struct v14_kept *v14_kept_current;
@@ -32,11 +37,24 @@ static void v14_kept_queued(struct work_struct *work)
 	v14_kept_current->queued++;
 }
 
+/* The release: the sink is no longer inactive, then the hook. */
+static void v14_kept_released(struct v14_kept *s)
+{
+	WRITE_ONCE(s->dcp->dptxport[0].sink_inactive, false);
+	iomfb_v14_7_external_sink_released(s->dcp);
+}
+
+static void v14_kept_release_work(struct work_struct *work)
+{
+	v14_kept_released(container_of(work, struct v14_kept, release_work));
+}
+
 static void v14_kept_stop(void *data)
 {
-	struct apple_dcp_v14 *v14 = data;
+	struct v14_kept *s = data;
 
-	cancel_work_sync(&v14->kept_on_work);
+	cancel_work_sync(&s->release_work);
+	cancel_work_sync(&s->v14->kept_on_work);
 }
 
 /* A powered native external display, its sink @inactive. */
@@ -67,27 +85,42 @@ static struct v14_kept *v14_kept_setup(struct kunit *test, bool inactive)
 	s->v14->opened = true;
 	s->v14->powered = true;
 	mutex_init(&s->v14->lock);
+	mutex_init(&s->v14->kept_lock);
 	INIT_WORK(&s->v14->kept_on_work, v14_kept_queued);
-	KUNIT_ASSERT_EQ(test, kunit_add_action_or_reset(test, v14_kept_stop, s->v14), 0);
+	INIT_WORK(&s->release_work, v14_kept_release_work);
+	KUNIT_ASSERT_EQ(test, kunit_add_action_or_reset(test, v14_kept_stop, s), 0);
 	v14_kept_current = s;
 	kunit_activate_static_stub(test, dcp_v14_power_call, v14_kept_power_call);
 	return s;
 }
 
-/*
- * The release (dcp_dptx_release_locked()): the sink is no longer inactive.
- * Returns whether the work was queued; it has run either way, as it would.
- */
-static bool v14_kept_release(struct v14_kept *s)
+/* Runs the cleanup as its queued work would; returns the times it was queued. */
+static unsigned int v14_kept_cleanup(struct v14_kept *s)
 {
-	unsigned int queued;
-
-	WRITE_ONCE(s->dcp->dptxport[0].sink_inactive, false);
-	iomfb_v14_7_external_sink_released(s->dcp);
 	flush_work(&s->v14->kept_on_work);
-	queued = s->queued;
 	dcp_v14_kept_on_work(&s->v14->kept_on_work);
-	return queued;
+	return s->queued;
+}
+
+/* The release (dcp_dptx_release_locked()), then the cleanup; as above. */
+static unsigned int v14_kept_release(struct v14_kept *s)
+{
+	v14_kept_released(s);
+	return v14_kept_cleanup(s);
+}
+
+/*
+ * DPMS off's look at the sink, with its release started right after on
+ * another thread: the sink inactive as seen, the release clearing it and
+ * reaching its hook before DPMS off has noted anything.
+ */
+static bool v14_kept_look_then_release(struct apple_dcp *dcp)
+{
+	bool inactive = READ_ONCE(dcp->dptxport[0].sink_inactive);
+
+	queue_work(system_unbound_wq, &v14_kept_current->release_work);
+	msleep(50);
+	return inactive;
 }
 
 /* DPMS off keeps an inactive sink's display on; its release powers it down. */
@@ -137,10 +170,85 @@ static void v14_kept_power_on_clears(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, s->v14->powered);
 }
 
+/*
+ * The release between DPMS off's look at the sink and its note: the hook
+ * waits for the note and sees it, so the display is still powered down.
+ */
+static void v14_kept_release_during_dpms(struct kunit *test)
+{
+	struct v14_kept *s = v14_kept_setup(test, true);
+
+	kunit_activate_static_stub(test, dcp_v14_keep_for_sink, v14_kept_look_then_release);
+	iomfb_v14_7_poweroff(s->dcp);
+	flush_work(&s->release_work);
+	KUNIT_EXPECT_FALSE(test, READ_ONCE(s->dcp->dptxport[0].sink_inactive));
+	KUNIT_EXPECT_EQ(test, s->offs, 0U);
+	KUNIT_EXPECT_EQ(test, v14_kept_cleanup(s), 1U);
+	KUNIT_EXPECT_EQ(test, s->offs, 1U);
+	KUNIT_EXPECT_FALSE(test, s->v14->powered);
+	KUNIT_EXPECT_FALSE(test, s->v14->kept_on);
+	KUNIT_EXPECT_NULL(test, iomfb_v14_7_external_busy(s->dcp));
+}
+
+/* The release first, then DPMS off: it sees the sink gone and powers down itself. */
+static void v14_kept_release_before_dpms(struct kunit *test)
+{
+	struct v14_kept *s = v14_kept_setup(test, true);
+
+	v14_kept_released(s);
+	iomfb_v14_7_poweroff(s->dcp);
+	KUNIT_EXPECT_EQ(test, s->offs, 1U);
+	KUNIT_EXPECT_FALSE(test, s->v14->kept_on);
+	KUNIT_EXPECT_EQ(test, v14_kept_cleanup(s), 0U);
+	KUNIT_EXPECT_EQ(test, s->offs, 1U);
+	KUNIT_EXPECT_NULL(test, iomfb_v14_7_external_busy(s->dcp));
+}
+
+/* The sink cleared, DPMS off, then the release's hook: the same. */
+static void v14_kept_cleared_before_dpms(struct kunit *test)
+{
+	struct v14_kept *s = v14_kept_setup(test, true);
+
+	WRITE_ONCE(s->dcp->dptxport[0].sink_inactive, false);
+	iomfb_v14_7_poweroff(s->dcp);
+	KUNIT_EXPECT_EQ(test, s->offs, 1U);
+	iomfb_v14_7_external_sink_released(s->dcp);
+	KUNIT_EXPECT_EQ(test, v14_kept_cleanup(s), 0U);
+	KUNIT_EXPECT_EQ(test, s->offs, 1U);
+	KUNIT_EXPECT_FALSE(test, s->v14->powered);
+}
+
+/*
+ * A cleanup still queued for a released sink, when a newer sink went
+ * inactive and was kept on in turn: it leaves the newer one alone. That
+ * one's own release powers the display down.
+ */
+static void v14_kept_stale_cleanup(struct kunit *test)
+{
+	struct v14_kept *s = v14_kept_setup(test, true);
+
+	iomfb_v14_7_poweroff(s->dcp);
+	v14_kept_released(s);
+	/* A newer sink, inactive too, and DPMS off again before the cleanup. */
+	WRITE_ONCE(s->dcp->dptxport[0].sink_inactive, true);
+	iomfb_v14_7_poweroff(s->dcp);
+	KUNIT_EXPECT_EQ(test, v14_kept_cleanup(s), 1U);
+	KUNIT_EXPECT_EQ(test, s->offs, 0U);
+	KUNIT_EXPECT_TRUE(test, s->v14->powered);
+	KUNIT_EXPECT_TRUE(test, s->v14->kept_on);
+	KUNIT_EXPECT_EQ(test, v14_kept_release(s), 2U);
+	KUNIT_EXPECT_EQ(test, s->offs, 1U);
+	KUNIT_EXPECT_FALSE(test, s->v14->powered);
+}
+
 static struct kunit_case v14_kept_cases[] = {
 	KUNIT_CASE(v14_kept_released_powers_down),
 	KUNIT_CASE(v14_kept_active_sink),
 	KUNIT_CASE(v14_kept_power_on_clears),
+	KUNIT_CASE(v14_kept_release_during_dpms),
+	KUNIT_CASE(v14_kept_release_before_dpms),
+	KUNIT_CASE(v14_kept_cleared_before_dpms),
+	KUNIT_CASE(v14_kept_stale_cleanup),
 	{}
 };
 

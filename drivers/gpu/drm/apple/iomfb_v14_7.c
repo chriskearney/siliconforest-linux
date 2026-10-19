@@ -267,10 +267,15 @@ struct apple_dcp_v14 {
 	/* External: the display is powered (A472) in the mode last set. */
 	bool powered;
 	/*
-	 * External, under the lock: powered only for its inactive sink, its
-	 * CRTC off (iomfb_v14_7_poweroff()); any power call since clears it.
+	 * External, under kept_lock (a leaf, taken inside the lock or the HPD
+	 * lock, never around either): @kept_on, powered only for its inactive
+	 * sink, its CRTC off (iomfb_v14_7_poweroff()), for the sink of
+	 * generation @kept_gen; any power call since clears it. @sink_gen
+	 * counts the sinks released (iomfb_v14_7_external_sink_released()).
 	 */
+	struct mutex kept_lock;
 	bool kept_on;
+	u64 kept_gen, sink_gen;
 	/*
 	 * External: the mode last set (A411 then A472(1)) runs, from a
 	 * description not changed since, with these ids; and swaps with a
@@ -927,34 +932,67 @@ void iomfb_v14_7_external_sink_active(struct apple_dcp *dcp, bool active)
 static int dcp_v14_set_power(struct apple_dcp_v14 *v14, bool on);
 
 /*
+ * Whether DPMS off keeps the display on for its sink: an inactive one (a TV
+ * in standby), which only a link-up of a powered display brings back.
+ * Called under kept_lock.
+ */
+static bool dcp_v14_keep_for_sink(struct apple_dcp *dcp)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_keep_for_sink, dcp);
+	return dcp->external_native && dcp_v14_sink_inactive(dcp);
+}
+
+/*
  * A display kept powered for its inactive sink, its CRTC off, whose sink was
  * released since (unplugged): no link-up will bring it back. Power it down
  * as DPMS off would have; until then the processor holds a display, and
  * system sleep is refused. Not under the HPD lock the release holds: the
  * power call waits for the firmware.
+ *
+ * Only for the sink it was kept for: one kept on since for a newer sink
+ * (kept_gen) is left alone, and any power call since cleared the note. Under
+ * the lock, no DPMS off can keep it again meanwhile; a newer sink's attach
+ * can still overlap the power-down, as it can overlap any DPMS off.
  */
 static void dcp_v14_kept_on_work(struct work_struct *work)
 {
 	struct apple_dcp_v14 *v14 = container_of(work, struct apple_dcp_v14, kept_on_work);
 	struct apple_dcp *dcp = READ_ONCE(v14->dcp);
+	bool released;
 
 	if (!dcp || READ_ONCE(dcp->external_detached))
 		return;
 	mutex_lock(&v14->lock);
-	if (v14->kept_on && v14->powered && !v14->failed) {
+	mutex_lock(&v14->kept_lock);
+	released = v14->kept_on && v14->kept_gen != v14->sink_gen;
+	mutex_unlock(&v14->kept_lock);
+	if (released && v14->powered && !v14->failed) {
 		dev_info(dcp->dev, "display kept on for its inactive sink released: powering it down\n");
 		if (dcp_v14_set_power(v14, false))
 			dev_warn(dcp->dev, "display did not power down\n");
 	}
-	v14->kept_on = false;
 	mutex_unlock(&v14->lock);
 }
 
+/*
+ * Called by the release, under the HPD lock, once the sink is no longer
+ * marked inactive. Against DPMS off's look at the sink and its note
+ * (iomfb_v14_7_poweroff()), under kept_lock both: either that comes first,
+ * and the note is seen here, or this does, and DPMS off sees the sink gone
+ * and powers the display down itself.
+ */
 void iomfb_v14_7_external_sink_released(struct apple_dcp *dcp)
 {
 	struct apple_dcp_v14 *v14 = dcp->v14;
+	bool kept;
 
-	if (dcp->external_native && v14 && READ_ONCE(v14->kept_on))
+	if (!dcp->external_native || !v14)
+		return;
+	mutex_lock(&v14->kept_lock);
+	v14->sink_gen++;
+	kept = v14->kept_on;
+	mutex_unlock(&v14->kept_lock);
+	if (kept)
 		schedule_work(&v14->kept_on_work);
 }
 
@@ -1976,6 +2014,7 @@ int iomfb_v14_7_probe(struct apple_dcp *dcp)
 	v14->board = board;
 	v14->dcp = dcp;
 	mutex_init(&v14->lock);
+	mutex_init(&v14->kept_lock);
 	mutex_init(&v14->present_lock);
 	init_waitqueue_head(&v14->described_wait);
 	INIT_WORK(&v14->idle_work, dcp_v14_idle);
@@ -2417,6 +2456,7 @@ static int dcpext_boot(struct apple_dcp *dcp)
 		v14->stride = DCP_V14_EXT_STRIDE;
 	}
 	mutex_init(&v14->lock);
+	mutex_init(&v14->kept_lock);
 	mutex_init(&v14->present_lock);
 	init_waitqueue_head(&v14->described_wait);
 	INIT_WORK(&v14->idle_work, dcp_v14_idle);
@@ -3468,7 +3508,11 @@ static int dcp_v14_set_power(struct apple_dcp_v14 *v14, bool on)
 {
 	int ret = dcp_v14_power_call(v14, on);
 
-	v14->kept_on = false;
+	if (v14->external) {
+		mutex_lock(&v14->kept_lock);
+		v14->kept_on = false;
+		mutex_unlock(&v14->kept_lock);
+	}
 	/* A refused power-down leaves nothing on: the display is gone already. */
 	if (!ret || (!on && !READ_ONCE(v14->failed)))
 		v14->powered = on;
@@ -4042,12 +4086,18 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 		 * (iomfb_v14_7_external_sink_released()).
 		 */
 		if (v14 && v14->opened && !READ_ONCE(v14->failed)) {
-			bool keep = dcp->external_native && dcp_v14_sink_inactive(dcp);
+			bool keep;
 
 			mutex_lock(&v14->lock);
-			if (keep)
+			/* One step against the sink's release: see there. */
+			mutex_lock(&v14->kept_lock);
+			keep = dcp_v14_keep_for_sink(dcp);
+			if (keep) {
 				v14->kept_on = v14->powered;
-			else if (v14->powered && dcp_v14_set_power(v14, false))
+				v14->kept_gen = v14->sink_gen;
+			}
+			mutex_unlock(&v14->kept_lock);
+			if (!keep && v14->powered && dcp_v14_set_power(v14, false))
 				dev_warn(dcp->dev, "display did not power down\n");
 			mutex_unlock(&v14->lock);
 		}
