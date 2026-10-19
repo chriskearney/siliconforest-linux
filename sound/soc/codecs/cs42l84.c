@@ -1251,3 +1251,7 @@ MODULE_AUTHOR("Martin Povišer <povik+lin@cutebit.org>");
 MODULE_AUTHOR("Hector Martin <marcan@marcan.st>");
 MODULE_AUTHOR("James Calligeros <jcalligeros99@gmail.com>");
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_SND_SOC_CS42L84_TEST)
+#include "cs42l84-test.c"
+#endif
