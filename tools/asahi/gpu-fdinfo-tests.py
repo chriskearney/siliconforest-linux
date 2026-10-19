@@ -25,9 +25,10 @@ def function(text, signature):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument('--ref', help='Read production functions at this git revision')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    original = SOURCE.read_text()
+    original = (subprocess.check_output(['git', 'show', f'{args.ref}:drivers/gpu/drm/drm_gem_shmem_helper.c'], cwd=ROOT, text=True) if args.ref else SOURCE.read_text())
     functions = "\n".join(function(original, signature) for signature in [
         "size_t drm_gem_shmem_object_rss(",
         "enum drm_gem_object_status drm_gem_shmem_object_status(",
@@ -36,6 +37,7 @@ def main():
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #define READ_ONCE(x) (*(volatile __typeof__(x) *)&(x))
 #define min_t(type,a,b) ((type)(a) < (type)(b) ? (type)(a) : (type)(b))
@@ -60,6 +62,10 @@ int main(void) {
     mapping.nrpages = 5;
     assert(drm_gem_shmem_object_rss(&obj) == obj.size);
     mapping.nrpages = 9;
+    assert(drm_gem_shmem_object_rss(&obj) == obj.size);
+    mapping.nrpages = ULONG_MAX;
+    assert(drm_gem_shmem_object_rss(&obj) == obj.size);
+    mapping.nrpages = (1UL << (sizeof(unsigned long) * CHAR_BIT - PAGE_SHIFT));
     assert(drm_gem_shmem_object_rss(&obj) == obj.size);
     mapping.nrpages = 0;
     assert(drm_gem_shmem_object_rss(&obj) == 0);

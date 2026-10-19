@@ -40,13 +40,17 @@ MODULE_IMPORT_NS("DMA_BUF");
  */
 size_t drm_gem_shmem_object_rss(struct drm_gem_object *obj)
 {
+	unsigned long pages;
 	if (obj->import_attach)
 		return obj->size;
 	if (!obj->filp)
 		return 0;
 
-	return min_t(size_t, obj->size,
-		     READ_ONCE(obj->filp->f_mapping->nrpages) << PAGE_SHIFT);
+	pages = READ_ONCE(obj->filp->f_mapping->nrpages);
+	/* Bound the page count before converting it to bytes. */
+	if (pages > obj->size >> PAGE_SHIFT)
+		return obj->size;
+	return pages << PAGE_SHIFT;
 }
 EXPORT_SYMBOL_GPL(drm_gem_shmem_object_rss);
 
