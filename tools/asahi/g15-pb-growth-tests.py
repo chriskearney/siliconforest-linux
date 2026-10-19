@@ -850,7 +850,7 @@ def main():
                 '        use super::fw::buffer::{self, block_ctl};\n'
                 '        use super::fw::channels::DevCtl;\n'
                 '        use super::fw::initdata::control;\n'
-                '        use super::hw::tuning;\n'
+                '        use super::hw::{client, tuning};\n'
                 '        use super::pools::growth::{self, Ledger};\n' +
                 MODEL.replace('p.RESET', reset) +
                 '        impl Pools {\n' + soft_max + '\n        }\n'

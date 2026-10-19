@@ -685,6 +685,11 @@ impl Firmware {
     }
 
     fn publish_prefix_into(&mut self, job: &Arc<Job>, f: &mut Flight) -> Result {
+        // The PB backing is mapped into the job's VM before anything of the prefix is changed.
+        // Nothing is published when that fails, so the error must not be EIO (which reports a
+        // queue WRITE that advanced).
+        self.map_pb(&job.vm)
+            .map_err(|e| if e == EIO { EFAULT } else { e })?;
         let overlap = !self.engine.flights.is_empty();
         let mut mixed = tuning::MIXED_PREFIX;
         let mut pf = Prefix {
