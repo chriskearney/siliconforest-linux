@@ -197,7 +197,7 @@ impl<T: drm::Driver> UnregisteredDevice<T> {
         dumb_create: T::Object::<Uninit>::ALLOC_OPS.dumb_create,
         dumb_map_offset: T::Object::<Uninit>::ALLOC_OPS.dumb_map_offset,
 
-        show_fdinfo: None,
+        show_fdinfo: T::SHOW_FDINFO,
         fbdev_probe: None,
 
         major: T::INFO.major,
