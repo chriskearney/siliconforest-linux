@@ -1116,6 +1116,27 @@ mod tests {
             refused(&inputs(&skewed, &cs, &slots)),
             Err("a relative power does not fit its u32 word")
         );
+        // The admission cross-check as initdata::blob() composes it: the FROM_FILE words from
+        // the file, the rest built, then the first differing word against the file. A file the
+        // inputs reproduce passes; a rule word the file holds differently is found at its
+        // offset; a FROM_FILE word follows the file and is never a difference.
+        let first_difference = super::super::words::first_difference;
+        let checked = |file: &[u8]| {
+            let mut built = vec![0u8; SIZE];
+            from_file(&mut built, file).unwrap();
+            build(&mut built, &i).unwrap();
+            (first_difference(&built, file), built)
+        };
+        assert_eq!(checked(&good).0, None);
+        let mut file = good.clone();
+        put32(&mut file, a(0x4c), 801).unwrap();
+        assert_eq!(checked(&file).0, Some((a(0x4c), 800, 801)));
+        let mut file = good.clone();
+        assert!(FROM_FILE.contains(&0x1064));
+        put32(&mut file, 0x1064, get(&good, 0x1064) ^ 0x5a).unwrap();
+        let (difference, built) = checked(&file);
+        assert_eq!(difference, None);
+        assert_eq!(get(&built, 0x1064), get(&good, 0x1064) ^ 0x5a);
     }
 
     // --- The fixture: a saved copy of a J516C's device tree and its private board file. ---

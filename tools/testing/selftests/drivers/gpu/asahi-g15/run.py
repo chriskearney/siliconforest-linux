@@ -244,7 +244,17 @@ def main():
         harness = RUST_PREFIX + f'\n#[path = "{G15 / "gate.rs"}"] mod gate;\n'
         harness += f'#[path = "{G15 / "recovery/logic.rs"}"] mod recovery;\n'
         harness += f'#[path = "{G15 / "power/idle.rs"}"] mod idle;\n'
-        harness += f'#[path = "{G15 / "identity/matching.rs"}"] mod firmware_identity;\n'
+        harness += ("mod firmware_identity {\n" +
+                    f'#[path = "{G15 / "identity/matching.rs"}"] pub mod matching;\n' +
+                    f'#[path = "{G15 / "identity/lookup.rs"}"] pub mod lookup;\n' + "}\n")
+        # The T6031 board-data builders (the J516C fixture cases stay ignored: they need
+        # off-tree machine data).
+        harness += ("mod board {\n" +
+                    f'#[path = "{G15 / "board/template.rs"}"] pub mod template;\n' +
+                    "pub(crate) use template::{Line, Template};\n" +
+                    f'#[path = "{G15 / "board/data.rs"}"] pub mod data;\n' +
+                    f'#[path = "{G15 / "board/words.rs"}"] pub mod words;\n' +
+                    f'#[path = "{G15 / "board/record.rs"}"] pub mod record;\n' + "}\n")
         harness += ("mod g15 { pub mod fw {\n" +
                     f'#[path = "{G15 / "fw/channels.rs"}"] pub mod channels;\n' +
                     f'#[path = "{G15 / "fw/buffer.rs"}"] pub mod buffer;\n' +
