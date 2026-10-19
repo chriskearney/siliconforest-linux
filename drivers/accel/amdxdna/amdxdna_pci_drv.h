@@ -79,13 +79,6 @@ struct amdxdna_fw_feature_tbl {
 	u32 min_minor;
 };
 
-struct amdxdna_fw_feature_tbl {
-	u64 features;
-	u32 major;
-	u32 max_minor;
-	u32 min_minor;
-};
-
 /*
  * struct amdxdna_dev_info - Device hardware information
  * Record device static information, like reg, mbox, PSP, SMU bar index

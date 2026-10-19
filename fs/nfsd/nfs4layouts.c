@@ -264,10 +264,6 @@ nfsd4_alloc_layout_stateid(struct nfsd4_compound_state *cstate,
 	ls->ls_fence_delay = 0;
 	INIT_DELAYED_WORK(&ls->ls_fence_work, nfsd4_layout_fence_worker);
 
-	ls->ls_fenced = false;
-	ls->ls_fence_delay = 0;
-	INIT_DELAYED_WORK(&ls->ls_fence_work, nfsd4_layout_fence_worker);
-
 	if (nfsd4_layout_setlease(ls)) {
 		nfs4_put_stid(stp);
 		return NULL;

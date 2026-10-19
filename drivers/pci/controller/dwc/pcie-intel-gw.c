@@ -313,10 +313,6 @@ static int intel_pcie_host_setup(struct intel_pcie *pcie)
 	if (ret)
 		goto phy_err;
 
-	ret = phy_init(pcie->phy);
-	if (ret)
-		goto phy_err;
-
 	intel_pcie_ltssm_disable(pcie);
 	intel_pcie_link_setup(pcie);
 	intel_pcie_init_n_fts(pci);

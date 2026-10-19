@@ -376,15 +376,6 @@ static int amdxdna_hmm_register(struct amdxdna_gem_obj *abo,
 	}
 	up_read(&xdna->notifier_lock);
 
-	down_read(&xdna->notifier_lock);
-	list_for_each_entry(mapp, &abo->mem.umap_list, node) {
-		if (compare_range(mapp, current->mm, addr, addr + len)) {
-			up_read(&xdna->notifier_lock);
-			return 0;
-		}
-	}
-	up_read(&xdna->notifier_lock);
-
 	mapp = kzalloc_obj(*mapp);
 	if (!mapp)
 		return -ENOMEM;

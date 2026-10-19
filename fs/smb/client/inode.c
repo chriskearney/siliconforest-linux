@@ -3068,7 +3068,6 @@ void cifs_setsize(struct inode *inode, loff_t offset)
 		pagecache_isize_extended(inode, old_size, offset);
 	truncate_pagecache(inode, offset);
 	netfs_wait_for_outstanding_io(inode);
-	fscache_resize_cookie(cifs_inode_cookie(inode), offset);
 }
 
 void cifs_resize_file_locked(struct inode *inode, loff_t offset)

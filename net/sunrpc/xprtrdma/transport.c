@@ -539,50 +539,6 @@ void rpcrdma_req_put(struct rpcrdma_req *req)
 	kref_put(&req->rl_kref, rpcrdma_req_release);
 }
 
-/* rl_kref has two owners while a Send is outstanding: the rpc_rqst
- * owner and the sendctx. Replies complete the RPC but do not drop
- * either reference. The req returns to its free pool only after
- * xprt_rdma_free_slot() or xprt_rdma_bc_free_rqst() has dropped the
- * RPC-layer reference and rpcrdma_sendctx_unmap() has dropped the
- * Send-side reference.
- */
-static void rpcrdma_req_release(struct kref *kref)
-{
-	struct rpcrdma_req *req =
-		container_of(kref, struct rpcrdma_req, rl_kref);
-	struct rpc_rqst *rqst = &req->rl_slot;
-	struct rpc_xprt *xprt = rqst->rq_xprt;
-	struct rpcrdma_xprt *r_xprt;
-
-	/* I4: both the RPC-layer and Send-side owners have dropped,
-	 * so rpcrdma_sendctx_unmap() has cleared rl_sendctx.
-	 */
-	WARN_ON_ONCE(req->rl_sendctx);
-
-	kref_init(&req->rl_kref);
-
-#if defined(CONFIG_SUNRPC_BACKCHANNEL)
-	if (bc_prealloc(rqst)) {
-		spin_lock(&xprt->bc_pa_lock);
-		list_add_tail(&rqst->rq_bc_pa_list, &xprt->bc_pa_list);
-		spin_unlock(&xprt->bc_pa_lock);
-		return;
-	}
-#endif
-
-	if (xprt_wake_up_backlog(xprt, rqst))
-		return;
-
-	r_xprt = rpcx_to_rdmax(xprt);
-	memset(rqst, 0, sizeof(*rqst));
-	rpcrdma_buffer_put(&r_xprt->rx_buf, req);
-}
-
-void rpcrdma_req_put(struct rpcrdma_req *req)
-{
-	kref_put(&req->rl_kref, rpcrdma_req_release);
-}
-
 /**
  * xprt_rdma_alloc_slot - allocate an rpc_rqst
  * @xprt: controlling RPC transport

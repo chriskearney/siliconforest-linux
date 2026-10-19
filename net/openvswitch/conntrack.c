@@ -1843,7 +1843,6 @@ static int ovs_ct_limit_get_zone_limit(struct net *net,
 
 			err = __ovs_ct_limit_get_zone_limit(
 				net, info->data, zone, limit, reply);
-			rcu_read_unlock();
 			if (err)
 				return err;
 		}

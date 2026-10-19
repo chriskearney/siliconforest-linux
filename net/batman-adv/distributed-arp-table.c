@@ -1165,10 +1165,6 @@ bool batadv_dat_snoop_outgoing_arp_request(struct batadv_priv *bat_priv,
 	if (!pskb_may_pull(skb, hdr_size + ETH_HLEN))
 		goto out;
 
-	/* first, find out the vid. */
-	if (!pskb_may_pull(skb, hdr_size + ETH_HLEN))
-		goto out;
-
 	vid = batadv_dat_get_vid(skb, &hdr_size);
 
 	type = batadv_arp_get_type(bat_priv, skb, hdr_size);
@@ -1271,10 +1267,6 @@ bool batadv_dat_snoop_incoming_arp_request(struct batadv_priv *bat_priv,
 	if (!pskb_may_pull(skb, hdr_size + ETH_HLEN))
 		goto out;
 
-	/* first, find out the vid. */
-	if (!pskb_may_pull(skb, hdr_size + ETH_HLEN))
-		goto out;
-
 	vid = batadv_dat_get_vid(skb, &hdr_size);
 
 	type = batadv_arp_get_type(bat_priv, skb, hdr_size);
@@ -1344,10 +1336,6 @@ void batadv_dat_snoop_outgoing_arp_reply(struct batadv_priv *bat_priv,
 	if (!pskb_may_pull(skb, hdr_size + ETH_HLEN))
 		return;
 
-	/* first, find out the vid. */
-	if (!pskb_may_pull(skb, hdr_size + ETH_HLEN))
-		return;
-
 	vid = batadv_dat_get_vid(skb, &hdr_size);
 
 	type = batadv_arp_get_type(bat_priv, skb, hdr_size);
@@ -1396,10 +1384,6 @@ bool batadv_dat_snoop_incoming_arp_reply(struct batadv_priv *bat_priv,
 	u64 u64_mac;
 
 	if (!READ_ONCE(bat_priv->distributed_arp_table))
-		goto out;
-
-	/* first, find out the vid. */
-	if (!pskb_may_pull(skb, hdr_size + ETH_HLEN))
 		goto out;
 
 	/* first, find out the vid. */
