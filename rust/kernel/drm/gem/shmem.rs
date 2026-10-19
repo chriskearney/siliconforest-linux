@@ -304,8 +304,12 @@ impl<T: DriverObject, C: DeviceContext> Object<T, C> {
         // requests through an open file on a registered device. Check that before forming a
         // `Registered` view, so a caller from anywhere else is refused instead of trusted.
         //
+        // `drm_dev_unregister()` may clear the flag while an ioctl is still running, so read a
+        // snapshot. A device seen registered has been registered at some point, which is all a
+        // `Registered` view promises. This `read_volatile` corresponds to a READ_ONCE().
+        //
         // SAFETY: The DRM core passes a valid device of `T::Driver`, which outlives the call.
-        if !unsafe { (*raw_dev).registered } {
+        if !unsafe { core::ptr::addr_of!((*raw_dev).registered).read_volatile() } {
             return EINVAL.to_ptr();
         }
 
