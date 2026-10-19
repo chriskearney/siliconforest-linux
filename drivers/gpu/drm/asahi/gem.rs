@@ -71,6 +71,14 @@ pub(crate) fn lookup_handle(file: &file::DrmFile, handle: u32) -> Result<ARef<Ob
     Ok(gem.as_uninit().into())
 }
 
+impl AsahiObject {
+    pub(crate) fn classify_memory(&self, category: crate::agx_memory_stats::KernelCategory) {
+        if let Some(allocation) = &self._allocation {
+            allocation.classify_kernel(category);
+        }
+    }
+}
+
 /// Marks whether the pages of `gem` are held for the device.
 ///
 /// Populated asahi objects keep their pages referenced (device SG table, kernel vmap or a PFN
@@ -337,7 +345,7 @@ impl DriverObject for AsahiObject {
 
     /// Callback to create the inner data of a GEM object
     fn new<Ctx: drm::DeviceContext>(
-        dev: &drm::Device<AsahiDriver, Ctx>,
+        _dev: &drm::Device<AsahiDriver, Ctx>,
         size: usize,
         args: Self::Args,
     ) -> impl PinInit<Self, Error> {
@@ -345,8 +353,10 @@ impl DriverObject for AsahiObject {
         mod_pr_debug!("AsahiObject::new id={}\n", id);
         try_pin_init!(AsahiObject {
             id,
-            _allocation: if dev.is_m3 && args.driver_created {
+            _allocation: if args.driver_created {
                 Some(crate::agx_memory_stats::Allocation::gem(size, args.kernel)?)
+            } else if size != 0 {
+                Some(crate::agx_memory_stats::Allocation::core(size)?)
             } else { None },
             size,
             flags: args.flags,
