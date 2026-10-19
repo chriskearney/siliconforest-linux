@@ -16,10 +16,12 @@
 //! enclave's request, the same way a read-only gigalocker does: Touch ID may
 //! then be unavailable, but no other OS's record changes.
 //!
-//! The parameter's default, -1, takes the platform profile's level: 1 on the
-//! M1 and M2 Macs, whose enclave Linux shares with a macOS install, and 0 on
-//! the MacBook Neo, which already holds Linux records from before the list
-//! existed and would otherwise lose write access to them.
+//! Each platform profile has a level for the parameter's default, -1: 1 on
+//! the M1 and M2 Macs, whose enclave Linux shares with a macOS install, and 0
+//! on the MacBook Neo, which already holds Linux records from before the list
+//! existed and would otherwise lose write access to them. SiliconForest does
+//! not apply those levels (see [`SILICONFOREST_DEFAULT`]): there the guard is
+//! off unless `xart_guard=1` or `2` is set.
 //!
 //! The list entry is made durable before the enclave's write reaches the
 //! gigalocker. A crash between the two leaves an entry for a record that was
@@ -73,6 +75,21 @@ pub(crate) fn decide(level: u8, key: &Key, existed: bool, owned: bool) -> Verdic
     } else {
         Verdict::Adopt
     }
+}
+
+/// SiliconForest: the level `xart_guard=-1` selects on every platform, in
+/// place of the profile's. SiliconForest updates existing installs, whose
+/// Linux records predate the list: a guarded boot refuses them like another
+/// OS's, and Touch ID stops working there. Nothing migrates those records
+/// yet, and on a cold-boot M1-family Mac creating the identity keybag needs a
+/// write the guard refuses. So the guard stays opt-in. `None` would apply the
+/// profile levels, which are kept, with their tests, as the policy upstream.
+pub(crate) const SILICONFOREST_DEFAULT: Option<u8> = Some(0);
+
+/// The level `xart_guard=-1` selects on a platform whose profile says
+/// `platform`.
+pub(crate) fn default_level(platform: u8) -> u8 {
+    SILICONFOREST_DEFAULT.unwrap_or(platform)
 }
 
 /// The guard level for `xart_guard=param` on a platform whose profile
@@ -658,9 +675,32 @@ mod tests {
         assert_eq!(level(-1, profile::T6000.xart_guard), Some(1));
         assert_eq!(level(-1, profile::T6020.xart_guard), Some(1));
         assert_eq!(level(-1, profile::T8112.xart_guard), Some(1));
-        // Off on the Neo, whose Linux records predate the list.
+        assert_eq!(level(-1, profile::T6020_SEPOS13.xart_guard), Some(1));
+        // Off on the Neo, whose Linux records predate the list, and on the
+        // M3 Air, which also holds such records and is not an M1 or M2.
         assert_eq!(level(-1, profile::T8140.xart_guard), None);
+        assert_eq!(level(-1, profile::T8122.xart_guard), None);
         assert_eq!(level(i8::MIN, 1), Some(1));
+    }
+
+    #[test]
+    fn siliconforest_leaves_the_guard_off_by_default() {
+        use crate::profile;
+
+        for profile in [
+            &profile::T8103,
+            &profile::T6000,
+            &profile::T6020,
+            &profile::T6020_SEPOS13,
+            &profile::T8112,
+            &profile::T8122,
+            &profile::T8140,
+        ] {
+            assert_eq!(level(-1, default_level(profile.xart_guard)), None);
+            // Opting in still works on every platform.
+            assert_eq!(level(1, default_level(profile.xart_guard)), Some(1));
+            assert_eq!(level(2, default_level(profile.xart_guard)), Some(2));
+        }
     }
 
     #[test]

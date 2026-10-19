@@ -302,7 +302,7 @@ pub(crate) const T6020: PlatformProfile = PlatformProfile {
 /// and takes the 13.5 key store, as T8103 does; J414s on 26.0 enrols,
 /// matches, signs with the reference key and restores after a reboot this way.
 /// Everything else is [`T6020`].
-const T6020_SEPOS13: PlatformProfile = PlatformProfile {
+pub(crate) const T6020_SEPOS13: PlatformProfile = PlatformProfile {
     name: "T6020/J414s (13.5 key store)",
     keybag_create: KeybagCreate {
         variant: T8103.keybag_create.variant,
@@ -411,13 +411,16 @@ pub(crate) const T8112: PlatformProfile = PlatformProfile {
 /// geometry and key-store dialect follow it. J613 on system firmware 27.0
 /// (OS firmware 26.6.2) attaches, provisions the keybag, enrols, matches and
 /// restores the enrolment after a reboot; J615 has not been run.
-const T8122: PlatformProfile = PlatformProfile {
+pub(crate) const T8122: PlatformProfile = PlatformProfile {
     name: "T8122/J613",
     sensor: SensorProfile {
         controller_base: 0x2_a110_8000,
         ..T8112.sensor
     },
     wide_dma_mask: true,
+    // Not inherited from T8112: this DART has the BIT(40) alias, and the
+    // device tree describes its window, as J700's.
+    dart_window: &DART_HIGH_ALIAS,
     // Not inherited from T8112: the default-on levels cover M1 and M2.
     // J613 holds Linux records from enrolments made before the list
     // existed, which a guarded boot would refuse, as on T8140.
@@ -612,7 +615,7 @@ mod dart_window_tests {
 
     #[test]
     fn the_other_profiles_keep_the_bit40_window() {
-        for profile in [&T8103, &T6000, &T6020, &T8140] {
+        for profile in [&T8103, &T6000, &T6020, &T6020_SEPOS13, &T8122, &T8140] {
             assert_eq!(offset(profile.dart_window), 1 << 40);
             assert_eq!(range(profile.dart_window), (0, 1 << 32));
         }
