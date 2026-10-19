@@ -166,6 +166,7 @@ pub(crate) struct Driver(Option<AsahiDriver>);
 
 impl platform::Driver for Driver {
     type IdInfo = &'static Config;
+    type Data<'bound> = Self;
     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
 
     /// The firmware session cannot be stopped once started.
@@ -173,10 +174,10 @@ impl platform::Driver for Driver {
         true
     }
 
-    fn probe(
-        pdev: &platform::Device<Core>,
-        info: Option<&Self::IdInfo>,
-    ) -> impl PinInit<Self, Error> {
+    fn probe<'bound>(
+        pdev: &'bound platform::Device<Core<'_>>,
+        info: Option<&'bound Self::IdInfo>,
+    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         let cfg = *info.ok_or(ENODEV)?;
         dev_info!(pdev.as_ref(), "G15: probing ({})\n", cfg.name);
         match AsahiDriver::probe_g15(pdev, cfg) {
@@ -193,7 +194,7 @@ impl platform::Driver for Driver {
         }
     }
 
-    fn unbind(_pdev: &platform::Device<Core>, this: Pin<&Self>) {
+    fn unbind<'bound>(_pdev: &'bound platform::Device<Core<'_>>, this: Pin<&Self::Data<'bound>>) {
         if let Some(driver) = &this.0 {
             if let Some(gpu) = driver.drm().gpu().ok().and_then(|gpu| gpu.as_any().downcast_ref::<Gpu>()) {
                 gpu.retain();
@@ -363,7 +364,7 @@ impl Gpu {
     /// READY, then the compute and render graphs. On success the module is pinned: the
     /// firmware session lasts until reboot.
     pub(crate) fn new(
-        pdev: &platform::Device<Core>,
+        pdev: &platform::Device<Core<'_>>,
         dev: &AsahiDevice,
         cfg: &'static Config,
         res: shared_regs::Resources,

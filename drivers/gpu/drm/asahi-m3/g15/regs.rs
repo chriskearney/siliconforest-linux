@@ -213,7 +213,7 @@ pub(crate) struct Regs {
 
 impl Regs {
     /// Maps the ASC control page and the SGX status window.
-    pub(crate) fn new(pdev: &platform::Device<Core>, res: Resources) -> Result<Self> {
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>, res: Resources) -> Result<Self> {
         let window = |name: &CStr, offset: u64| -> Result<Mapping> {
             let r = pdev.resource_by_name(name).ok_or(EINVAL)?;
             let nonposted = r

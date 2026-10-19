@@ -212,7 +212,7 @@ unsafe impl Sync for CpuControl {}
 
 impl CpuControl {
     /// Resolve the mailbox phandle and validate its firmware role before use.
-    pub(crate) fn new(pdev: &platform::Device<Core>, index: usize) -> Result<Self> {
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>, index: usize) -> Result<Self> {
         let expected = match index {
             0 => bindings::apple_mbox_ascwrap_v6_role_APPLE_MBOX_ASCWRAP_V6_ROLE_GFX,
             1 => bindings::apple_mbox_ascwrap_v6_role_APPLE_MBOX_ASCWRAP_V6_ROLE_GFX1,
@@ -259,14 +259,17 @@ impl CpuControl {
 #[derive(Clone)]
 pub(crate) struct Resources {
     dev: ARef<platform::Device>,
-    sgx: Arc<Devres<IoMem<SGX_SIZE>>>,
+    sgx: Arc<Devres<IoMem<'static, SGX_SIZE>>>,
 }
 
 impl Resources {
     /// Map the required resources given our platform device.
-    pub(crate) fn new(pdev: &platform::Device<Core>) -> Result<Resources> {
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>) -> Result<Resources> {
         let sgx_req = pdev.io_request_by_name(c_str!("sgx")).ok_or(EINVAL)?;
-        let sgx_iomem = Arc::pin_init(sgx_req.iomap_sized::<SGX_SIZE>(), GFP_KERNEL)?;
+        let sgx_iomem = Arc::new(
+            sgx_req.iomap_sized::<SGX_SIZE>()?.into_devres()?,
+            GFP_KERNEL,
+        )?;
 
         Ok(Resources {
             // SAFETY: This device does DMA via the UAT IOMMU.
@@ -347,9 +350,9 @@ impl Resources {
     }
 
     /// Start the ASC coprocessor CPU.
-    pub(crate) fn start_cpu(pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn start_cpu(pdev: &platform::Device<Core<'_>>) -> Result {
         let asc_req = pdev.io_request_by_name(c_str!("asc")).ok_or(EINVAL)?;
-        let asc_iomem = KBox::pin_init(asc_req.iomap_sized::<ASC_CTL_SIZE>(), GFP_KERNEL)?;
+        let asc_iomem = asc_req.iomap_sized::<ASC_CTL_SIZE>()?.into_devres()?;
         let res = asc_iomem.access(pdev.as_ref())?.relaxed();
 
         let val = res.read32(CPU_CONTROL);
