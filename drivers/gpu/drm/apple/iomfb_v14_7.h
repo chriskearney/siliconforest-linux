@@ -19,6 +19,8 @@ struct drm_crtc_state;
  */
 const struct dcp_v14_board *iomfb_v14_7_board(struct device *dev);
 const char *iomfb_v14_7_board_name(const struct dcp_v14_board *board);
+/* The CRTC may offer a colour matrix: the firmware has a tested setter. */
+bool iomfb_v14_7_ctm_supported(struct apple_dcp *dcp);
 
 /* Platform probe: firmware identity, boot loader handoff, PMP acknowledgment. */
 int iomfb_v14_7_probe(struct apple_dcp *dcp);

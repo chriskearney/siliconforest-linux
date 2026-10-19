@@ -1570,6 +1570,20 @@ bool dcp_fw_compat_is_14_7(struct platform_device *pdev)
 	       dcp->fw_compat == DCP_FIRMWARE_V_26_6;
 }
 
+/*
+ * Whether the CRTC gets DRM colour management. A 14.7 pipe sends a colour
+ * matrix only where its firmware image has a tested setter; elsewhere the
+ * property would be taken and never applied.
+ */
+bool dcp_ctm_supported(struct platform_device *pdev)
+{
+	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+
+	if (dcp->fw_compat == DCP_FIRMWARE_V_14_7)
+		return iomfb_v14_7_ctm_supported(dcp);
+	return true;
+}
+
 unsigned long* dcp_get_iomfb_surfaces(struct platform_device *pdev)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);

@@ -1714,6 +1714,19 @@ const char *iomfb_v14_7_board_name(const struct dcp_v14_board *board)
 	return board->name;
 }
 
+/*
+ * Whether the CRTC may offer a colour matrix: only a panel whose board
+ * record names a tested matrix setter sends one (dcp_v14_ctm_locked()). On
+ * every other 14.7 pipe a matrix would be accepted and never applied, so
+ * userspace must not be offered one.
+ */
+bool iomfb_v14_7_ctm_supported(struct apple_dcp *dcp)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+
+	return v14 && v14->board && v14->board->ctm_set;
+}
+
 int iomfb_v14_7_probe(struct apple_dcp *dcp)
 {
 	struct device *dev = dcp->dev;
