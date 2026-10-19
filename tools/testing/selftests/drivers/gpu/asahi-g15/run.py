@@ -259,6 +259,8 @@ def main():
         harness += ("mod g15 { pub mod fw {\n" +
                     f'#[path = "{G15 / "fw/channels.rs"}"] pub mod channels;\n' +
                     f'#[path = "{G15 / "fw/buffer.rs"}"] pub mod buffer;\n' +
+                    "} pub mod object {\n" +
+                    f'#[path = "{G15 / "object/geometry.rs"}"] pub mod geometry;\n' +
                     "} pub mod pools {\n" +
                     f'#[path = "{G15 / "pools/growth.rs"}"] pub mod growth;\n' + "}}\n")
         rust_source = temp / "host.rs"
