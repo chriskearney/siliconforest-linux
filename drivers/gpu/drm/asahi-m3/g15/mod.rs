@@ -370,6 +370,14 @@ impl Gpu {
     ) -> Result<Arc<Gpu>> {
         // Admission (probe-time checks), then the firmware start to READY.
         let admitted = boot::admit(pdev, dev, cfg, res)?;
+        // Admission holds the GFX domain. A failure before the firmware is touched gives it
+        // back (a start that touched the firmware keeps it, retained until reboot).
+        let unretained = |error: Error| -> Error {
+            if !boot::glue::retained() {
+                boot::glue::release_power(dev.as_ref());
+            }
+            error
+        };
         let data = admitted.adt.data.clone();
         let shared = Arc::pin_init(
             pin_init!(Shared {
@@ -388,8 +396,9 @@ impl Gpu {
                 state <- new_mutex!(None, "g15::Shared::state"),
             }),
             GFP_KERNEL,
-        )?;
-        let booted = boot::start(admitted, dev, cfg, &shared)?;
+        )
+        .map_err(unretained)?;
+        let booted = boot::start(admitted, dev, cfg, &shared).map_err(unretained)?;
         let uat = booted.session.uat()?;
         let (id, max_frequency_khz) = (booted.id, booted.max_frequency_khz);
         // The backend: graphs, slots, pools, engine, recovery and VM registry.

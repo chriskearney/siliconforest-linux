@@ -23,6 +23,7 @@ void asahi_g15_sha256(const u8 *data, size_t len, u8 *out);
 bool asahi_g15_board(void);
 bool asahi_g15_machine(const char *compatible);
 void asahi_g15_hold_power(struct device *dev);
+void asahi_g15_release_power(struct device *dev);
 void asahi_g15_module_get(void);
 int asahi_g15_adt_phram(u64 *start, u64 *size);
 bool asahi_g15_ram_disjoint(u64 start, u64 size);
@@ -32,6 +33,7 @@ void __iomem *asahi_g15_ioremap_wc(u64 start, size_t size);
 bool asahi_g15_dma_coherent(struct device *dev);
 int asahi_g15_pmp_prepare(struct device *dev);
 int asahi_g15_pmp_get(struct device *dev);
+void asahi_g15_pmp_put(struct device *dev);
 bool asahi_g15_reserved_uat(u32 index, u64 start, u64 size);
 
 /*
@@ -92,6 +94,21 @@ int asahi_g15_pmp_get(struct device *dev)
 #endif
 }
 
+/*
+ * Give back the vote of asahi_g15_pmp_get() after a start that failed before
+ * the firmware was touched. The full M3 stack's J514S bridge has no release:
+ * its vote stays, as before.
+ */
+void asahi_g15_pmp_put(struct device *dev)
+{
+#ifdef CONFIG_SILICONFOREST_NATIVE_GPU
+	int ret = apple_pmp_set_device_power(0x0f, 5, 0);
+
+	if (ret)
+		dev_warn(dev, "G15: PMP AGX vote release failed: %d\n", ret);
+#endif
+}
+
 /* SHA-256 of the firmware TEXT and the board templates. */
 void asahi_g15_sha256(const u8 *data, size_t len, u8 *out)
 {
@@ -119,6 +136,17 @@ void asahi_g15_hold_power(struct device *dev)
 	pm_runtime_get_noresume(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
+}
+
+/*
+ * Give the hold of asahi_g15_hold_power() back: the start failed before
+ * anything firmware-visible was written, so the session is not retained.
+ */
+void asahi_g15_release_power(struct device *dev)
+{
+	pm_runtime_put_noidle(dev);
+	pm_runtime_disable(dev);
+	pm_runtime_set_suspended(dev);
 }
 
 /* Pin this module until reboot. */
