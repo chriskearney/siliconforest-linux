@@ -2248,7 +2248,6 @@ static struct folio *shmem_alloc_folio(gfp_t gfp, int order,
 struct folio *shmem_alloc_collapse_folio(struct mm_struct *mm, struct inode *inode,
 				       pgoff_t index, unsigned int order)
 {
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	gfp_t gfp = thp_shmem_limit_gfp_mask(GFP_TRANSHUGE,
 					     mapping_gfp_mask(inode->i_mapping));
 	struct folio *folio;
@@ -2261,9 +2260,6 @@ struct folio *shmem_alloc_collapse_folio(struct mm_struct *mm, struct inode *ino
 		return ERR_PTR(-ENOMEM);
 	}
 	return folio;
-#else
-	return ERR_PTR(-EOPNOTSUPP);
-#endif
 }
 
 static struct folio *shmem_alloc_and_add_folio(struct vm_fault *vmf,
