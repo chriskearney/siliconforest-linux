@@ -120,7 +120,8 @@ INTENDED = {
     'never-exhausted': ('default_growth_to_exhaustion', 'growth did not end'),
     'warn-every-time': ('default_growth_to_exhaustion', 'later request after exhaustion'),
     'no-record-barrier': ('default_growth_to_exhaustion', 'got Some(Producer(1034)), want Some(Sync)'),
-    'no-reply-barrier': ('default_growth_to_exhaustion', 'want Some(Sync)'),
+    'no-reply-barrier': ('default_growth_to_exhaustion',
+                         'got Some(Reply([7, 1, 0, 5, 0, 256, 3, 1, 0, 0, 0, 0, 0, 0])), want Some(Sync)'),
     'soft-boundary-inclusive': ('soft_max_boundaries', 'got Some(Log("info", "")), want Some(Log("dbg", ""))'),
     'soft-max-unclamped': ('soft_max_bounds', 'soft_max, param 0'),
     'uncapped-ledger': ('constructor_is_the_old_one_capped', 'new(true, '),
@@ -619,11 +620,18 @@ mod pb_growth_tests {
         f.queue();
         take();
         f.pass();
-        let replies: Vec<u32> = take()
+        let log = take();
+        let replies: Vec<u32> = log
             .iter()
             .filter_map(|e| if let Ev::Reply(r) = e { Some(r[grow_reply::COUNTER]) } else { None })
             .collect();
         assert_eq!(replies, vec![0, 1], "replies in the first pass");
+        // Compare both requests' complete record/barrier/producer/reply/log sequences,
+        // not just their reply order. Each request finishes before the next one's records.
+        let (want, _, _) = expected(f.pools.ledger.initial, f.pools.ledger.max, f.pools.soft_max());
+        let end = want.iter().position(|e| matches!(e, Ev::Reply(r) if r[grow_reply::COUNTER] == 1))
+            .expect("second expected reply") + 2; // Include its log too.
+        same(&levels_only(log), &want[..end]);
         let queued: Vec<u32> = f.events.grow.0.iter().map(|q| q[buffer::grow_request::COUNTER]).collect();
         assert_eq!(queued, vec![2, 3]);
         assert_eq!(f.pools.stats.requests, 2);
