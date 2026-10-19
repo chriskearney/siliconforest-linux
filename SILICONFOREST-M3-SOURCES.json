@@ -49,6 +49,35 @@
             "This selection retains 74 file-sourced record words; the reviewed upstream tip retains 32 after the held zeroing change."
           ],
           "provenance": "Original carry commits retain authorship and supplied sign-offs; local review fixes are separate commits."
+        },
+        {
+          "reviewed_head": "45338523e535b43aa6752bf2f5d0ae394b0f7f52",
+          "siliconforest_base": "9f09c85f8d3bae8512712686f5a91067fc4eb3de",
+          "selected_upstream_commits": [
+            "7c26fe10a201a2be169c62f3345068c2d9ab53f3",
+            "5131caff77ac9157e08114d9673c890b69b5bce3",
+            "a08331e7db1d2fed5297c0ace0b9bd4c9898cf27",
+            "45338523e535b43aa6752bf2f5d0ae394b0f7f52"
+          ],
+          "supersedes_held_upstream_commits": [
+            "7c26fe10a201a2be169c62f3345068c2d9ab53f3",
+            "5131caff77ac9157e08114d9673c890b69b5bce3"
+          ],
+          "scope": "Carry read-only pstate diagnostics and the J516C-specific 42-word zeroing. Adapt the upstream display tests to the existing per-instance J516C gate; the profile restriction is already present and only its remaining comment is carried. The previous import records the earlier hold, superseded by this entry.",
+          "preserved_contracts": [
+            "Board images are verified and cached before firmware start; DT arithmetic remains checked.",
+            "J516C-only GPU admission and internal-panel EDID/timestamp scope remain unchanged.",
+            "T6030 template data, image construction and default 2500 us standby remain unchanged."
+          ],
+          "board_file_record_words": 32,
+          "zeroed_record_words": 42,
+          "validation_limits": [
+            "No private J516C board/DT fixtures are included or consumed. The digest-pinned per-machine board file remains mandatory.",
+            "Zeroing follows the upstream two-boot report; sustained-load thermal and sensor behavior require J516C hardware qualification.",
+            "The pstate diagnostics observe firmware records; they do not establish clock accuracy, electrical behavior or drain latency on hardware.",
+            "M3 Max remains opt-in; reported compute and tessellation hangs are not fixed by this carry."
+          ],
+          "provenance": "Original carries retain authorship and supplied sign-offs; local tests and review fixes are separate commits."
         }
       ]
     }
