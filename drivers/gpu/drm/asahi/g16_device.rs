@@ -23,25 +23,27 @@ const ASC_CPU_RUN: u32 = 1 << 4;
 
 pub(crate) struct Device {
     dev: ARef<platform::Device>,
-    asc: Pin<KBox<Devres<ExclusiveIoMem<0x4000>>>>,
-    sgx: Pin<KBox<Devres<IoMem>>>,
+    asc: Pin<KBox<Devres<ExclusiveIoMem<'static, 0x4000>>>>,
+    sgx: Pin<KBox<Devres<IoMem<'static>>>>,
     firmware: Firmware,
     power_vote: bool,
     core_mask: u32,
 }
 
 impl Device {
-    pub(crate) fn new(pdev: &platform::Device<Core>, firmware: Firmware) -> Result<Self> {
-        let asc = KBox::pin_init(
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>, firmware: Firmware) -> Result<Self> {
+        let asc = KBox::pin(
             pdev.io_request_by_name(c_str!("asc"))
                 .ok_or(EINVAL)?
-                .iomap_exclusive_sized::<0x4000>(),
+                .iomap_exclusive_sized::<0x4000>()?
+                .into_devres()?,
             GFP_KERNEL,
         )?;
-        let sgx = KBox::pin_init(
+        let sgx = KBox::pin(
             pdev.io_request_by_name(c_str!("sgx"))
                 .ok_or(EINVAL)?
-                .iomap(),
+                .iomap()?
+                .into_devres()?,
             GFP_KERNEL,
         )?;
         // SAFETY: the platform device is live for the entire call. The C API
@@ -86,30 +88,35 @@ impl Device {
 
     pub(crate) fn core_mask(&self) -> u32 { self.core_mask }
 
-    pub(crate) fn check_drm(&self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn check_drm(&self, pdev: &platform::Device<Core<'_>>) -> Result {
         use kernel::dma::{Device as _, DmaMask};
         // SAFETY: This is the admitted T8132's 42-bit physical DMA capability.
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(42)?)? };
         crate::mmu::check_handoff_guard()?;
         dev_info!(pdev.as_ref(), "G16G: private-memory handoff guard passed success and both timeout paths\n");
         for _ in 0..2 {
-            let drm: ARef<crate::driver::AsahiDevice> = kernel::drm::Device::new(
+            // This check never registers the device.
+            let unreg = kernel::drm::UnregisteredDevice::<crate::driver::AsahiDriver>::new(
                 pdev.as_ref(), crate::driver::AsahiData::new(pdev, None, true))?;
+            let drm: ARef<crate::driver::AsahiDevice> = ARef::from(&*unreg);
             if drm.gpu().is_ok() { return Err(EIO); }
             let mut object = crate::gem::new_kernel_object(&drm, 0x4000)?;
             object.vmap()?.memset(0);
             drop(object);
             drop(drm);
+            drop(unreg);
         }
         dev_info!(pdev.as_ref(), "G16G: initialized DRM data and GEM allocation/cleanup passed twice; backend absent, device unregistered\n");
         Ok(())
     }
 
-    pub(crate) fn check_mmu(&self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn check_mmu(&self, pdev: &platform::Device<Core<'_>>) -> Result {
         use crate::{driver, gem, mmu, pgtable::prot};
         if self.asc.access(pdev.as_ref())?.read32(ASC_CPU_CONTROL) & ASC_CPU_RUN != 0 { return Err(EBUSY); }
-        let drm: ARef<driver::AsahiDevice> = kernel::drm::Device::new(
+        // This check never registers the device.
+        let unreg = kernel::drm::UnregisteredDevice::<driver::AsahiDriver>::new(
             pdev.as_ref(), driver::AsahiData::new(pdev, None, true))?;
+        let drm: ARef<driver::AsahiDevice> = ARef::from(&*unreg);
         for _ in 0..2 {
             // SAFETY: Device owns power and ASC control, ASC is stopped, and
             // this UAT and every mapping are destroyed before starting RTKit.
@@ -151,7 +158,7 @@ impl Device {
         Ok(())
     }
 
-    pub(crate) fn check_tables(&self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn check_tables(&self, pdev: &platform::Device<Core<'_>>) -> Result {
         use crate::{pgtable::{UatPageTable, prot}, pgtable_memory::ReservedTables, uat::UatGeometry};
         use kernel::{io::mem::{Mem, MemFlag}, page::Page};
         use core::sync::atomic::{AtomicU64, Ordering};
@@ -302,14 +309,14 @@ impl Device {
 
     pub(crate) fn firmware(&self) -> &Firmware { &self.firmware }
 
-    pub(crate) fn require_stopped(&self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn require_stopped(&self, pdev: &platform::Device<Core<'_>>) -> Result {
         if self.asc.access(pdev.as_ref())?.read32(ASC_CPU_CONTROL) & ASC_CPU_RUN != 0 {
             return Err(EBUSY);
         }
         Ok(())
     }
 
-    pub(crate) fn start_asc(&self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn start_asc(&self, pdev: &platform::Device<Core<'_>>) -> Result {
         self.require_stopped(pdev)?;
         let asc = self.asc.access(pdev.as_ref())?;
         asc.write32(asc.read32(ASC_CPU_CONTROL) | ASC_CPU_RUN, ASC_CPU_CONTROL);

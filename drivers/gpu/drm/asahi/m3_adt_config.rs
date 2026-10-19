@@ -311,7 +311,7 @@ impl Contents {
     /// only; it then stands in for the SoC table's missing ones. `t6031` is the same for an
     /// armed T6031 (`t6031_start`).
     pub(crate) fn select(
-        pdev: &platform::Device<Core>,
+        pdev: &platform::Device<Core<'_>>,
         firmware: &Firmware,
         soc: &Soc,
         experiment: Option<&Experiment>,

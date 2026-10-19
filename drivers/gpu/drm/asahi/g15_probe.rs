@@ -25,7 +25,8 @@ use kernel::{
 use crate::{
     driver::{
         AsahiData,
-        AsahiDevice, //
+        AsahiDevice,
+        AsahiDriver, //
     },
     drm_gpu,
     fw,
@@ -77,7 +78,7 @@ fn expose_drm() -> bool {
 }
 
 /// Probe the G15 manager backend on a t6030 described by the static device tree.
-pub(crate) fn probe(pdev: &platform::Device<Core>) -> Result<G15Manager> {
+pub(crate) fn probe(pdev: &platform::Device<Core<'_>>) -> Result<G15Manager> {
     let cfg: &'static hw::HwConfig = &hw::t6030::HWCONFIG_T6030;
 
     if !G15_FW_LAYOUT_READY {
@@ -129,8 +130,10 @@ pub(crate) fn probe(pdev: &platform::Device<Core>) -> Result<G15Manager> {
     // Start the coprocessor CPU, so UAT can initialize the handoff
     regs::Resources::start_cpu(pdev)?;
 
-    let drm: ARef<AsahiDevice> =
-        drm::device::Device::new(pdev.as_ref(), AsahiData::new(pdev, Some(res), true))?;
+    let unreg =
+        drm::UnregisteredDevice::<AsahiDriver>::new(pdev.as_ref(), AsahiData::new(pdev, Some(res), true))?;
+    // The runtime is built on the unregistered device, which is registered below if exposed.
+    let drm: ARef<AsahiDevice> = ARef::from(&*unreg);
     let res = drm.resources.as_ref().ok_or(ENODEV)?;
 
     let legacy_gpu =
@@ -149,7 +152,7 @@ pub(crate) fn probe(pdev: &platform::Device<Core>) -> Result<G15Manager> {
     // driver depends on the registration: `G15Manager` owns the `drm::Device` (and so the
     // GpuManager) either way, and unbinding just drops it.
     if expose_drm() {
-        drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
+        drm::driver::Registration::new_foreign_owned(unreg, pdev.as_ref(), 0)?;
         dev_warn!(
             pdev.as_ref(),
             "G15: DRM device registered: userspace can submit jobs\n"

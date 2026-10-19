@@ -60,7 +60,7 @@ pub(crate) fn core_masks(soc: &Soc, mask: u64) -> [u32; uapi::DRM_ASAHI_MAX_CLUS
 
 /// The highest GPU frequency in the device tree OPP table, in kHz, or None when the GPU node
 /// has no populated OPP table.
-pub(crate) fn max_frequency_khz(pdev: &platform::Device<Core>) -> Option<u32> {
+pub(crate) fn max_frequency_khz(pdev: &platform::Device<Core<'_>>) -> Option<u32> {
     let node = pdev.as_ref().of_node()?;
     let opps = node.parse_phandle(c_str!("operating-points-v2"), 0)?;
     let mut max_hz: u64 = 0;
@@ -77,7 +77,7 @@ pub(crate) fn max_frequency_khz(pdev: &platform::Device<Core>) -> Option<u32> {
 /// Every cluster of a point must have the same voltage, except on a SoC with per-cluster
 /// voltages, where the highest `opp-microvolt` cell orders the point. None without a readable
 /// OPP table.
-pub(crate) fn opp_table_shape(pdev: &platform::Device<Core>, soc: &Soc) -> Option<(u32, u32)> {
+pub(crate) fn opp_table_shape(pdev: &platform::Device<Core<'_>>, soc: &Soc) -> Option<(u32, u32)> {
     let node = pdev.as_ref().of_node()?;
     let opps = node.parse_phandle(c_str!("operating-points-v2"), 0)?;
     let mut points = KVec::new();
@@ -340,7 +340,7 @@ pub(crate) fn static_region(node: &of::Node, name: &CStr) -> Option<Result<(Reso
 /// (at least as large as the runtime maps), the GPU coprocessor mailbox, the six handoff regions
 /// by name (from the reserved-memory registry or no-map overlay nodes), and the firmware segment
 /// description. Every refusal is logged.
-pub(crate) fn admit(pdev: &platform::Device<Core>, soc: &Soc) -> Result<Resources> {
+pub(crate) fn admit(pdev: &platform::Device<Core<'_>>, soc: &Soc) -> Result<Resources> {
     let dev = pdev.as_ref();
     let refuse = |what: &str, err: Error| {
         dev_info!(dev, "M3: not admitted: {}\n", what);
@@ -460,7 +460,7 @@ pub(crate) fn admit(pdev: &platform::Device<Core>, soc: &Soc) -> Result<Resource
 
 /// Whether the GPU node links to a PMP instance (`apple,pmp`) through which the GPU power vote
 /// is cast. Without one, GPU power is left to the power domain.
-pub(crate) fn has_pmp_link(pdev: &platform::Device<Core>) -> bool {
+pub(crate) fn has_pmp_link(pdev: &platform::Device<Core<'_>>) -> bool {
     pdev.as_ref()
         .of_node()
         .is_some_and(|node| node.get_property::<u32>(c_str!("apple,pmp")).is_ok())

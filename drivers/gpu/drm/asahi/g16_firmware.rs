@@ -180,7 +180,7 @@ impl Firmware {
 
 #[cfg(not(test))]
 pub(crate) fn identify_loaded(
-    pdev: &kernel::platform::Device<kernel::device::Core>,
+    pdev: &kernel::platform::Device<kernel::device::Core<'_>>,
     resources: g16_resources::Resources,
 ) -> kernel::error::Result<Firmware> {
     use kernel::{

@@ -265,7 +265,7 @@ impl drm::file::DriverFile for File {
     type Driver = driver::AsahiDriver;
 
     /// Create a new `File` instance for a fresh client.
-    fn open(device: &AsahiDevice) -> Result<Pin<KBox<Self>>> {
+    fn open(device: &drm::Device<driver::AsahiDriver>) -> Result<Pin<KBox<Self>>> {
         debug::update_debug_flags();
 
         let gpu = device.gpu()?;
@@ -329,10 +329,12 @@ impl File {
 
     /// IOCTL: get_param: Get a driver parameter value.
     pub(crate) fn get_params(
-        device: &AsahiDevice,
-        data: &uapi::drm_asahi_get_params,
+        device: &drm::Device<driver::AsahiDriver>,
+        data: &mut uapi::drm_asahi_get_params,
         file: &DrmFile,
     ) -> Result<u32> {
+        // The runtime works in the Uninit context.
+        let device = device.as_uninit();
         mod_dev_dbg!(device, "[File {}]: IOCTL: get_params\n", file.inner().id);
 
         let gpu = device.gpu()?;
@@ -500,7 +502,7 @@ impl File {
             return Err(EINVAL);
         }
         let status = Self::vm_status(file, vm_id)?;
-        let owner = gem::ObjectRef::new(gem::Object::lookup_handle(file, handle)?);
+        let owner = gem::ObjectRef::new(gem::lookup_handle(file, handle)?);
         status.attach_mirror(owner, offset as usize)?;
         Ok(0)
     }
@@ -519,10 +521,12 @@ impl File {
 
     /// IOCTL: vm_create: Create a new `Vm`.
     pub(crate) fn vm_create(
-        device: &AsahiDevice,
+        device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_vm_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        // The runtime works in the Uninit context.
+        let device = device.as_uninit();
         if device.g17().is_some() {
             // G17P reports HAL200; it accepts the acknowledgement but does not require it.
             if data.flags & !uapi::drm_asahi_vm_create_flags_DRM_ASAHI_VM_CREATE_HAL200 != 0 {
@@ -644,7 +648,7 @@ impl File {
 
     /// IOCTL: vm_destroy: Destroy a `Vm`.
     pub(crate) fn vm_destroy(
-        _device: &AsahiDevice,
+        _device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_vm_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
@@ -658,10 +662,12 @@ impl File {
 
     /// IOCTL: gem_create: Create a new GEM object.
     pub(crate) fn gem_create(
-        device: &AsahiDevice,
+        device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_gem_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        // The runtime works in the Uninit context.
+        let device = device.as_uninit();
         mod_dev_dbg!(
             device,
             "[File {}]: IOCTL: gem_create size={:#x?}\n",
@@ -712,7 +718,7 @@ impl File {
 
     /// IOCTL: gem_mmap_offset: Assign an mmap offset to a GEM object.
     pub(crate) fn gem_mmap_offset(
-        device: &AsahiDevice,
+        device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_gem_mmap_offset,
         file: &DrmFile,
     ) -> Result<u32> {
@@ -728,14 +734,14 @@ impl File {
             return Err(EINVAL);
         }
 
-        let gem = gem::Object::lookup_handle(file, data.handle)?;
+        let gem = gem::lookup_handle(file, data.handle)?;
         data.offset = gem.create_mmap_offset()?;
         Ok(0)
     }
 
     /// IOCTL: gem_madvise: Mark a VM-private object purgeable or needed.
     pub(crate) fn gem_madvise(
-        device: &AsahiDevice,
+        device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_gem_madvise,
         file: &DrmFile,
     ) -> Result<u32> {
@@ -746,7 +752,7 @@ impl File {
         if data.pad != 0 || data.madv > uapi::drm_asahi_gem_madv_DRM_ASAHI_GEM_MADV_DONTNEED {
             return Err(EINVAL);
         }
-        let gem = gem::Object::lookup_handle(file, data.handle)?;
+        let gem = gem::lookup_handle(file, data.handle)?;
         data.retained = gem::madvise(
             &gem,
             data.madv == uapi::drm_asahi_gem_madv_DRM_ASAHI_GEM_MADV_DONTNEED,
@@ -756,8 +762,8 @@ impl File {
 
     /// IOCTL: vm_bind: Map or unmap memory into a Vm.
     pub(crate) fn vm_bind(
-        device: &AsahiDevice,
-        data: &uapi::drm_asahi_vm_bind,
+        device: &drm::Device<driver::AsahiDriver>,
+        data: &mut uapi::drm_asahi_vm_bind,
         file: &DrmFile,
     ) -> Result<u32> {
         mod_dev_dbg!(
@@ -866,7 +872,7 @@ impl File {
                 (false, false) => return Err(EINVAL),
             };
             let single_page = op.flags & uapi::drm_asahi_bind_flags_DRM_ASAHI_BIND_SINGLE_PAGE != 0;
-            let object = gem::Object::lookup_handle(file, op.handle)?;
+            let object = gem::lookup_handle(file, op.handle)?;
             let accessed = if single_page {
                 mmu::UAT_PGSZ as u64
             } else {
@@ -930,7 +936,7 @@ impl File {
 
         let single_page = data.flags & uapi::drm_asahi_bind_flags_DRM_ASAHI_BIND_SINGLE_PAGE != 0;
 
-        let bo = gem::Object::lookup_handle(file, data.handle)?;
+        let bo = gem::lookup_handle(file, data.handle)?;
 
         let start = data.addr;
         let end = data.addr.checked_add(data.range).ok_or(EINVAL)?;
@@ -1135,10 +1141,12 @@ impl File {
 
     /// IOCTL: gem_bind_object: Map or unmap a GEM object as a special object.
     pub(crate) fn gem_bind_object(
-        device: &AsahiDevice,
+        device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_gem_bind_object,
         file: &DrmFile,
     ) -> Result<u32> {
+        // The runtime works in the Uninit context.
+        let device = device.as_uninit();
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: IOCTL: gem_bind_object op={:?} handle={:#x?} flags={:#x?} {:#x?}:{:#x?} object_handle={:#x?}\n",
@@ -1202,7 +1210,7 @@ impl File {
             .checked_add(data.range)
             .ok_or(EINVAL)?
             .try_into()?;
-        let bo = gem::ObjectRef::new(gem::Object::lookup_handle(file, data.handle)?);
+        let bo = gem::ObjectRef::new(gem::lookup_handle(file, data.handle)?);
 
         let mapping = Arc::new(
             device.gpu()?.map_timestamp_buffer(bo, offset..end_offset)?,
@@ -1265,7 +1273,7 @@ impl File {
 
     /// IOCTL: queue_create: Create a new command submission queue of a given type.
     pub(crate) fn queue_create(
-        device: &AsahiDevice,
+        device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_queue_create,
         file: &DrmFile,
     ) -> Result<u32> {
@@ -1323,7 +1331,7 @@ impl File {
 
     /// IOCTL: queue_destroy: Destroy a command submission queue.
     pub(crate) fn queue_destroy(
-        _device: &AsahiDevice,
+        _device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_queue_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
@@ -1338,7 +1346,7 @@ impl File {
 
     /// IOCTL: submit: Submit GPU work to a command submission queue.
     pub(crate) fn submit(
-        device: &AsahiDevice,
+        device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_submit,
         file: &DrmFile,
     ) -> Result<u32> {
@@ -1440,7 +1448,7 @@ impl File {
 
     /// IOCTL: get_time: Get the current GPU timer value.
     pub(crate) fn get_time(
-        device: &AsahiDevice,
+        device: &drm::Device<driver::AsahiDriver>,
         data: &mut uapi::drm_asahi_get_time,
         _file: &DrmFile,
     ) -> Result<u32> {

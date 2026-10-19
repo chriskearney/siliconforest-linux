@@ -194,7 +194,7 @@ impl Firmware {
 
 #[cfg(not(test))]
 pub(crate) fn identify_loaded(
-    pdev: &kernel::platform::Device<kernel::device::Core>,
+    pdev: &kernel::platform::Device<kernel::device::Core<'_>>,
     soc: &'static crate::m3_soc::Soc,
     resources: agx_resources::Resources,
     experiment: Option<&crate::t8122_start::Experiment>,

@@ -70,7 +70,7 @@ impl Resources {
 
 #[cfg(not(test))]
 pub(crate) fn from_device(
-    pdev: &kernel::platform::Device<kernel::device::Core>,
+    pdev: &kernel::platform::Device<kernel::device::Core<'_>>,
 ) -> kernel::error::Result<Resources> {
     use kernel::{c_str, prelude::*};
 

@@ -27,8 +27,8 @@ const ASC_CPU_RUN: u32 = 1 << 4;
 
 pub(crate) struct Device {
     dev: ARef<platform::Device>,
-    asc: Pin<KBox<Devres<IoMem<0x4000>>>>,
-    sgx: Pin<KBox<Devres<IoMem>>>,
+    asc: Pin<KBox<Devres<IoMem<'static, 0x4000>>>>,
+    sgx: Pin<KBox<Devres<IoMem<'static>>>>,
     firmware: Firmware,
     core_mask: u64,
     soc: &'static Soc,
@@ -38,7 +38,7 @@ pub(crate) struct Device {
 impl Device {
     /// `experiment` is the T8122 start experiment's values, on an armed T8122 only: it decides
     /// the SGX setup write, which the T8122 table lacks. `t6031` is the same for an armed T6031.
-    pub(crate) fn new(pdev: &platform::Device<Core>, firmware: Firmware, soc: &'static Soc,
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>, firmware: Firmware, soc: &'static Soc,
         experiment: Option<&crate::t8122_start::Experiment>,
         t6031: Option<&crate::t6031_start::Experiment>) -> Result<Self> {
         // Map ASC before taking a vote. The larger SGX aperture contains
@@ -47,17 +47,19 @@ impl Device {
         // Only the 16 KiB control window is used. Some device trees describe
         // the ASC block as a larger range that also covers the mailbox, which
         // the mailbox driver has already claimed, so do not claim the range.
-        let asc = KBox::pin_init(
+        let asc = KBox::pin(
             pdev.io_request_by_name(c_str!("asc"))
                 .ok_or(EINVAL)?
-                .iomap_sized::<0x4000>(),
+                .iomap_sized::<0x4000>()?
+                .into_devres()?,
             GFP_KERNEL,
         )?;
         dev_info!(pdev.as_ref(), "M3: ASC aperture mapped\n");
-        let sgx = KBox::pin_init(
+        let sgx = KBox::pin(
             pdev.io_request_by_name(c_str!("sgx"))
                 .ok_or(EINVAL)?
-                .iomap(),
+                .iomap()?
+                .into_devres()?,
             GFP_KERNEL,
         )?;
         dev_info!(pdev.as_ref(), "M3: SGX aperture mapped\n");
@@ -190,20 +192,23 @@ impl Device {
         if fault!=0 {return Err(EIO);} Ok(())
     }
 
-    pub(crate) fn check_drm(&self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn check_drm(&self, pdev: &platform::Device<Core<'_>>) -> Result {
         use kernel::dma::{Device as _, DmaMask};
         // SAFETY: This is the admitted M3 GPU's 42-bit physical DMA capability.
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(42)?)? };
         crate::mmu::check_handoff_guard()?;
         dev_info!(pdev.as_ref(), "M3 {}: GPU handoff lock checked.\n", self.soc.gpu_name);
         for _ in 0..2 {
-            let drm: ARef<crate::driver::AsahiDevice> = kernel::drm::Device::new(
+            // This check never registers the device.
+            let unreg = kernel::drm::UnregisteredDevice::<crate::driver::AsahiDriver>::new(
                 pdev.as_ref(), crate::driver::AsahiData::new(pdev, None, true))?;
+            let drm: ARef<crate::driver::AsahiDevice> = ARef::from(&*unreg);
             if drm.gpu().is_ok() { return Err(EIO); }
             let mut object = crate::gem::new_kernel_object(&drm, 0x4000)?;
             object.vmap()?.memset(0);
             drop(object);
             drop(drm);
+            drop(unreg);
         }
         dev_info!(pdev.as_ref(), "M3 {}: DRM data initialized; backend absent, device unregistered\n", self.soc.gpu_name);
         Ok(())
@@ -267,14 +272,14 @@ impl Device {
 
     pub(crate) fn firmware(&self) -> &Firmware { &self.firmware }
 
-    pub(crate) fn require_stopped(&self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn require_stopped(&self, pdev: &platform::Device<Core<'_>>) -> Result {
         if self.asc.access(pdev.as_ref())?.read32(ASC_CPU_CONTROL) & ASC_CPU_RUN != 0 {
             return Err(EBUSY);
         }
         Ok(())
     }
 
-    pub(crate) fn start_asc(&self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn start_asc(&self, pdev: &platform::Device<Core<'_>>) -> Result {
         self.require_stopped(pdev)?;
         let asc = self.asc.access(pdev.as_ref())?;
         asc.write32(asc.read32(ASC_CPU_CONTROL) | ASC_CPU_RUN, ASC_CPU_CONTROL);

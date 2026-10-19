@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
 use core::{mem::ManuallyDrop, sync::atomic::Ordering};
-use kernel::{device::Core, platform, prelude::*, soc::apple::rtkit, sync::Arc,
+use kernel::{device::Core, drm, platform, prelude::*, soc::apple::rtkit, sync::Arc,
     time::{Instant, Monotonic, Delta, delay::fsleep}};
 use crate::{driver, mmu, m3_device::Device, m3_config::Config, m3_rtkit};
 
@@ -971,7 +971,9 @@ impl Inner {
 pub(crate) struct Runtime { inner: ManuallyDrop<KBox<Inner>> }
 impl Runtime {
     #[inline(never)]
-    pub(crate) fn new(pdev: &platform::Device<Core>, device: Device, contents: crate::m3_adt_config::Contents) -> Result<Self> {
+    /// Also returns the unregistered DRM device the runtime is built on, for the caller to
+    /// register.
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>, device: Device, contents: crate::m3_adt_config::Contents) -> Result<(Self, drm::UnregisteredDevice<driver::AsahiDriver>)> {
         // On an armed T8122, name a setup failure before the GPU coprocessor is started (RTKit
         // state, mailbox transport, the DRM device). Captured as a Copy bool so the closure does
         // not borrow `device`, which is moved into Inner below.
@@ -986,7 +988,8 @@ impl Runtime {
         // while the coprocessor may still access them. Writing the completed
         // graph into this allocation is infallible.
         let owner = KBox::<Inner>::new_uninit(GFP_KERNEL)?;
-        let drm: driver::AsahiDevRef = kernel::drm::Device::new(pdev.as_ref(), driver::AsahiData::new(pdev, None, true)).inspect_err(coproc_refused)?;
+        let unreg = drm::UnregisteredDevice::<driver::AsahiDriver>::new(pdev.as_ref(), driver::AsahiData::new(pdev, None, true)).inspect_err(coproc_refused)?;
+        let drm = driver::AsahiDevRef::from(&*unreg);
         let state = m3_rtkit::State::new(pdev, drm.clone(), device.firmware().resources.regions[5]).inspect_err(coproc_refused)?;
         let mut transport = rtkit::RtKit::new(pdev.as_ref(), None, 0, state.clone()).inspect_err(coproc_refused)?;
         if crate::m3_adt_config::stop_before_asc(pdev.as_ref()) {
@@ -1025,10 +1028,10 @@ impl Runtime {
                 return Err(e);
             }
         };
-        Ok(Self { inner: ManuallyDrop::new(owner.write(Inner { transport, state, config, uat, drm, device,
+        Ok((Self { inner: ManuallyDrop::new(owner.write(Inner { transport, state, config, uat, drm, device,
             jobs:KVec::new(),packets:KVec::new(),pending:KVec::new(),active:KVec::new(),gpu_pending:false,active_power_last:None,active_power_samples:0,fault_captured:false,timing:[[0;7];2],render_batches:[0;crate::m3_pass_layout::SLOTS],
             geometry:[GeometryTiming::default();32],geometry_overflow:0,coalesced_packets:0,coalesced_render_stamps:0,mixed_batches:0,pass_cost:policy::PassCosts::default(),render_initialized:false,t8122_verdict:false,
-            boot_step:crate::t8122_start::BootStep::Publish })) })
+            boot_step:crate::t8122_start::BootStep::Publish })) }, unreg))
     }
     pub(crate) fn drm(&self) -> driver::AsahiDevRef { self.inner.drm.clone() }
     pub(crate) fn health(&self) -> Arc<m3_rtkit::Health> { self.inner.state.health.clone() }
@@ -1120,7 +1123,7 @@ impl Runtime {
             Err(_)=>{inner.fail_pending(EIO);Service::Idle},
         }
     }
-    pub(crate) fn boot(&mut self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn boot(&mut self, pdev: &platform::Device<Core<'_>>) -> Result {
         let is_t8122 = crate::t8122_start::is_t8122(self.inner.device.soc());
         let is_t6031 = crate::t6031_start::is_t6031(self.inner.device.soc());
         self.inner.boot_step = crate::t8122_start::BootStep::Publish;
@@ -1149,7 +1152,7 @@ impl Runtime {
         }
         result
     }
-    fn boot_inner(&mut self, pdev: &platform::Device<Core>) -> Result {
+    fn boot_inner(&mut self, pdev: &platform::Device<Core<'_>>) -> Result {
         use crate::t8122_start::BootStep;
         let root = self.inner.config.root();
         dev_info!(pdev.as_ref(), "M3: publishing owned initdata {:#x}\n", root);
