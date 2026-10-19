@@ -1112,6 +1112,15 @@ impl Gpu {
     /// Stops the firmware and releases everything it used.
     pub(crate) fn shutdown(&self) {
         self.shared.statistics.load.invalidate();
+        {
+            // Unbind must drain sysfs readers before device_del, even if another
+            // shutdown is already removing the attribute. Never hold stop while
+            // calling stop_queues below, which takes that same mutex.
+            let _stopping = self.shared.stop.lock();
+            if let Some(telemetry) = &self._telemetry {
+                telemetry.unregister();
+            }
+        }
         self.shared.feed.begin_shutdown();
         self.shared.preparations.remove();
         self.shared.stop_queues();

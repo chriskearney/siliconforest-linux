@@ -3,7 +3,10 @@
 //! Per-device sysfs lifetime. Readers retain only the atomic statistics allocation.
 
 use super::statistics::Statistics;
-use core::ffi::{c_int, c_void};
+use core::{
+    ffi::{c_int, c_void},
+    sync::atomic::{AtomicPtr, Ordering},
+};
 use kernel::{device::Device, prelude::*, sync::{aref::ARef, Arc}};
 
 /// Private callback contract shared with `asahi_telemetry.c`, not a userspace ABI.
@@ -69,14 +72,9 @@ unsafe extern "C" fn snapshot(data: *const c_void, out: *mut c_void) -> c_int {
 
 pub(super) struct Telemetry {
     dev: ARef<Device>,
-    handle: *mut c_void,
+    handle: AtomicPtr<c_void>,
     _statistics: Arc<Statistics>,
 }
-
-// SAFETY: the device has a retained reference; the handle is used only for removal.
-unsafe impl Send for Telemetry {}
-// SAFETY: registration state is immutable until its exclusive drop removes the attribute.
-unsafe impl Sync for Telemetry {}
 
 impl Telemetry {
     pub(super) fn new(dev: &Device, statistics: Arc<Statistics>) -> Result<Self> {
@@ -97,15 +95,29 @@ impl Telemetry {
         kernel::error::to_result(ret)?;
         Ok(Self {
             dev: owned_dev,
-            handle,
+            handle: AtomicPtr::new(handle),
             _statistics: statistics,
         })
+    }
+
+    /// Removes the attribute while the platform device is still bound.
+    ///
+    /// Gpu::shutdown serializes these calls with Shared::stop, so every unbind
+    /// waits for the winning removal to drain readers. The atomic take also
+    /// makes a later Drop harmless after unbind or device_del.
+    pub(super) fn unregister(&self) {
+        let handle = self.handle.swap(core::ptr::null_mut(), Ordering::AcqRel);
+        if handle.is_null() {
+            return;
+        }
+        // SAFETY: this caller owns the registration handle exactly once. Removal
+        // drains callbacks; the device reference and statistics Arc remain owned.
+        unsafe { asahi_telemetry_unregister(self.dev.as_raw().cast(), handle) };
     }
 }
 
 impl Drop for Telemetry {
     fn drop(&mut self) {
-        // SAFETY: removal drains callback users before the Arc and its allocation are dropped.
-        unsafe { asahi_telemetry_unregister(self.dev.as_raw().cast(), self.handle) };
+        self.unregister();
     }
 }
