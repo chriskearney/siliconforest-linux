@@ -133,8 +133,8 @@ struct PmpData {
     /// T8140 firmware is not sent the UPDATE_IOREG confirmation, and its
     /// messages are not taken as device-power replies.
     t8140: bool,
-    pmp_mmio: Pin<KBox<Devres<IoMem<PMP_MIN_MMIO_SIZE>>>>,
-    asc_mmio: Pin<KBox<Devres<IoMem<ASC_MMIO_SIZE>>>>,
+    pmp_mmio: Pin<KBox<Devres<IoMem<'static, PMP_MIN_MMIO_SIZE>>>>,
+    asc_mmio: Pin<KBox<Devres<IoMem<'static, ASC_MMIO_SIZE>>>>,
     #[pin]
     rtkit: Mutex<Option<rtkit::RtKit<PmpData>>>,
     #[pin]
@@ -146,11 +146,17 @@ struct PmpData {
 }
 
 impl PmpData {
-    fn new(dev: &platform::Device<Core>, t8140: bool) -> Result<Arc<PmpData>> {
+    fn new(dev: &platform::Device<Core<'_>>, t8140: bool) -> Result<Arc<PmpData>> {
         let pmp_req = dev.io_request_by_name(c"pmp").ok_or(EINVAL)?;
-        let pmp_mmio = KBox::pin_init(pmp_req.iomap_sized::<PMP_MIN_MMIO_SIZE>(), GFP_KERNEL)?;
+        let pmp_mmio = KBox::pin_init(
+            pmp_req.iomap_sized::<PMP_MIN_MMIO_SIZE>()?.into_devres(),
+            GFP_KERNEL,
+        )?;
         let asc_req = dev.io_request_by_name(c"asc").ok_or(EINVAL)?;
-        let asc_mmio = KBox::pin_init(asc_req.iomap_sized::<ASC_MMIO_SIZE>(), GFP_KERNEL)?;
+        let asc_mmio = KBox::pin_init(
+            asc_req.iomap_sized::<ASC_MMIO_SIZE>()?.into_devres(),
+            GFP_KERNEL,
+        )?;
         Arc::pin_init(
             try_pin_init!(
                 PmpData {
@@ -167,7 +173,7 @@ impl PmpData {
             GFP_KERNEL,
         )
     }
-    fn start_cpu(&self, dev: &platform::Device<Core>) -> Result<()> {
+    fn start_cpu(&self, dev: &platform::Device<Core<'_>>) -> Result<()> {
         let asc_mmio = self.asc_mmio.access(dev.as_ref())?.relaxed();
         let val = asc_mmio.read32(CPU_CONTROL);
         asc_mmio.write32(val | CPU_RUN, CPU_CONTROL);
@@ -179,7 +185,11 @@ impl PmpData {
         rtk.as_mut().wake()?;
         rtk.start_endpoint(PMP_ENDPOINT)
     }
-    fn patch_bootargs(&self, dev: &platform::Device<Core>, patches: &[(u32, u32)]) -> Result<()> {
+    fn patch_bootargs(
+        &self,
+        dev: &platform::Device<Core<'_>>,
+        patches: &[(u32, u32)],
+    ) -> Result<()> {
         let io = self.pmp_mmio.access(dev.as_ref())?.relaxed();
         let offset = io.read32(BOOTARGS_OFFSET) as usize;
         let size = io.read32(BOOTARGS_SIZE) as usize;
@@ -510,10 +520,14 @@ kernel::of_device_table!(
 
 impl platform::Driver for PmpDriver {
     type IdInfo = bool;
+    type Data<'bound> = Self;
 
     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
 
-    fn probe(pdev: &platform::Device<Core>, info: Option<&bool>) -> impl PinInit<Self, Error> {
+    fn probe<'bound>(
+        pdev: &'bound platform::Device<Core<'_>>,
+        info: Option<&'bound bool>,
+    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         let dev: ARef<device::Device> = pdev.as_ref().into();
         let t8140 = info.copied().unwrap_or(false);
         if t8140 {

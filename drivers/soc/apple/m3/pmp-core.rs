@@ -129,8 +129,8 @@ impl PmpState {
 #[pin_data]
 struct PmpData {
     dev: ARef<device::Device>,
-    pmp_mmio: Pin<KBox<Devres<IoMem<PMP_MMIO_SIZE>>>>,
-    asc_mmio: Pin<KBox<Devres<IoMem<ASC_MMIO_SIZE>>>>,
+    pmp_mmio: Pin<KBox<Devres<IoMem<'static, PMP_MMIO_SIZE>>>>,
+    asc_mmio: Pin<KBox<Devres<IoMem<'static, ASC_MMIO_SIZE>>>>,
     #[pin]
     rtkit: Mutex<Option<rtkit::RtKit<PmpData>>>,
     #[pin]
@@ -142,11 +142,17 @@ struct PmpData {
 }
 
 impl PmpData {
-    fn new(dev: &platform::Device<Core>) -> Result<Arc<PmpData>> {
+    fn new(dev: &platform::Device<Core<'_>>) -> Result<Arc<PmpData>> {
         let pmp_req = dev.io_request_by_name(c"pmp").ok_or(EINVAL)?;
-        let pmp_mmio = KBox::pin_init(pmp_req.iomap_sized::<PMP_MMIO_SIZE>(), GFP_KERNEL)?;
+        let pmp_mmio = KBox::pin_init(
+            pmp_req.iomap_sized::<PMP_MMIO_SIZE>()?.into_devres(),
+            GFP_KERNEL,
+        )?;
         let asc_req = dev.io_request_by_name(c"asc").ok_or(EINVAL)?;
-        let asc_mmio = KBox::pin_init(asc_req.iomap_sized::<ASC_MMIO_SIZE>(), GFP_KERNEL)?;
+        let asc_mmio = KBox::pin_init(
+            asc_req.iomap_sized::<ASC_MMIO_SIZE>()?.into_devres(),
+            GFP_KERNEL,
+        )?;
         Arc::pin_init(
             try_pin_init!(
                 PmpData {
@@ -162,7 +168,7 @@ impl PmpData {
             GFP_KERNEL,
         )
     }
-    fn start_cpu(&self, dev: &platform::Device<Core>) -> Result<()> {
+    fn start_cpu(&self, dev: &platform::Device<Core<'_>>) -> Result<()> {
         let asc_mmio = self.asc_mmio.access(dev.as_ref())?.relaxed();
         let val = asc_mmio.read32(CPU_CONTROL);
         asc_mmio.write32(val | CPU_RUN, CPU_CONTROL);
@@ -174,7 +180,11 @@ impl PmpData {
         rtk.as_mut().wake()?;
         rtk.start_endpoint(PMP_ENDPOINT)
     }
-    fn patch_bootargs(&self, dev: &platform::Device<Core>, patches: &[(u32, u32)]) -> Result<()> {
+    fn patch_bootargs(
+        &self,
+        dev: &platform::Device<Core<'_>>,
+        patches: &[(u32, u32)],
+    ) -> Result<()> {
         let io = self.pmp_mmio.access(dev.as_ref())?.relaxed();
         let offset = io.read32(BOOTARGS_OFFSET) as usize;
         let size = io.read32(BOOTARGS_SIZE) as usize;
@@ -435,9 +445,18 @@ unsafe extern "C" fn apple_pmp_display_bound_owner(
 ) -> *mut bindings::apple_pmp_display {
     // SAFETY: guaranteed by the C caller under the supplier device lock.
     let dev = unsafe { device::Device::<device::Normal>::from_raw(raw).as_bound() };
-    let Ok(driver) = dev.drvdata::<PmpDriver>() else {
+    // The driver core no longer records the drvdata type. The C caller has
+    // matched the bound driver by name, "apple_pmp", and this file is the only
+    // driver of that name when it is built (the Makefile builds pmp.rs or it).
+    let driver = dev.get_drvdata::<PmpDriver>();
+    if driver.is_null() {
         return core::ptr::null_mut();
-    };
+    }
+    // SAFETY: the bound driver is this one, so `driver` is the drvdata that
+    // `platform::Adapter<PmpDriver>` stored after probe: a `PmpDriver`, as
+    // `Data<'bound> = Self`. The caller holds the device lock, so the device
+    // cannot unbind and free it while it is borrowed here.
+    let driver = unsafe { &*driver };
     let data = &driver.0;
     let existing = data.display.load(Ordering::Acquire);
     if !existing.is_null() {
@@ -536,6 +555,7 @@ kernel::of_device_table!(
 
 impl platform::Driver for PmpDriver {
     type IdInfo = &'static PmpHwConfig;
+    type Data<'bound> = Self;
 
     fn suppress_bind_attrs() -> bool {
         // The T6030 power votes and the display hold have no teardown path.
@@ -545,10 +565,10 @@ impl platform::Driver for PmpDriver {
 
     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
 
-    fn probe(
-        pdev: &platform::Device<Core>,
-        info: Option<&Self::IdInfo>,
-    ) -> impl PinInit<Self, Error> {
+    fn probe<'bound>(
+        pdev: &'bound platform::Device<Core<'_>>,
+        info: Option<&'bound Self::IdInfo>,
+    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         let dev: ARef<device::Device> = pdev.as_ref().into();
         let cfg = info.ok_or(ENODEV)?;
         if let Some(mask) = cfg.dma_mask {
@@ -587,7 +607,7 @@ impl platform::Driver for PmpDriver {
         Ok(PmpDriver(data))
     }
 
-    fn unbind(_dev: &platform::Device<Core>, this: Pin<&Self>) {
+    fn unbind<'bound>(_dev: &'bound platform::Device<Core<'_>>, this: Pin<&Self::Data<'bound>>) {
         // No further untagged requests may be correlated after provider teardown.
         this.0.fail_display(ENODEV);
     }
