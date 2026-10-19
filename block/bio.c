@@ -1310,6 +1310,7 @@ EXPORT_SYMBOL_GPL(bio_iov_user_vecs);
  * Split/cloned bios borrow its vectors and complete before their owner does.
  */
 static int bio_iov_iter_get_fragments(struct bio *bio, struct iov_iter *iter,
+				    unsigned int mem_align_mask,
 				    unsigned int align_mask)
 {
 	unsigned int capacity = bio->bi_max_vecs, total = 0;
@@ -1330,6 +1331,17 @@ static int bio_iov_iter_get_fragments(struct bio *bio, struct iov_iter *iter,
 		long nr;
 
 		iov_iter_advance(iter, 0);
+		/* As in iov_iter_extract_bvecs(), a misaligned vector fails the whole I/O. */
+		if (((unsigned long)iter_iov_addr(iter) | iter_iov_len(iter)) &
+		    mem_align_mask) {
+			release_user_fragments(bio->bi_user_fragments,
+					       bio->bi_nr_user_fragments, false);
+			kfree(bio->bi_user_fragments);
+			bio->bi_user_fragments = NULL;
+			bio->bi_nr_user_fragments = 0;
+			bio->bi_vcnt = 0;
+			return -EINVAL;
+		}
 		nr = pin_user_fragments_remote(current->mm,
 			(unsigned long)iter_iov_addr(iter),
 			min3(iter_iov_len(iter), iov_iter_count(iter),
@@ -1446,7 +1458,8 @@ int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter,
 
 #ifdef CONFIG_MM_SUBPAGE
 	if (bio_subpage_iter(iter))
-		return bio_iov_iter_get_fragments(bio, iter, len_align_mask);
+		return bio_iov_iter_get_fragments(bio, iter, mem_align_mask,
+						  len_align_mask);
 #endif
 
 	if (iov_iter_extract_will_pin(iter))
