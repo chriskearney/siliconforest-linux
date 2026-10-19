@@ -37,15 +37,23 @@ pub(crate) struct Ledger {
 /// Refusals answered at the maximum before requests are left to the deadline.
 pub(crate) const MAX_REFUSALS: u32 = 2;
 
+/// The most blocks a ledger posts: the mapped heap, and below K, so that the block_ctl+4
+/// producer (posted modulo K) is never 0, the value of an empty block list.
+pub(crate) const MAX_POSTED: u32 = if MAX_BLOCKS < BLOCK_LIST_RECORDS {
+    MAX_BLOCKS
+} else {
+    BLOCK_LIST_RECORDS - 1
+};
+
 impl Ledger {
-    /// A fresh ledger. With growth, the initial size is clamped to 64..=4096 blocks and the
-    /// maximum to initial..=4096 (the caller passes 4095); without, both are the whole heap.
+    /// A fresh ledger. With growth, the initial size is clamped to 64..=[`MAX_POSTED`] blocks
+    /// and the maximum to initial..=[`MAX_POSTED`]; without, both are [`MAX_POSTED`].
     pub(crate) const fn new(grow: bool, blocks: u32, max_blocks: u32) -> Self {
         let (initial, max) = if grow {
-            let nb = clamp(blocks, MIN_BLOCKS, MAX_BLOCKS);
-            (nb, clamp(max_blocks, nb, MAX_BLOCKS))
+            let nb = clamp(blocks, MIN_BLOCKS, MAX_POSTED);
+            (nb, clamp(max_blocks, nb, MAX_POSTED))
         } else {
-            (MAX_BLOCKS, MAX_BLOCKS)
+            (MAX_POSTED, MAX_POSTED)
         };
         Self {
             initial,
@@ -156,11 +164,68 @@ mod tests {
         assert_eq!(l.producer(), 1024);
         assert_eq!(Ledger::new(true, 10, 20).initial, 64);
         assert_eq!(Ledger::new(true, 10, 20).max, 64);
-        assert_eq!(Ledger::new(true, 5000, 100).initial, 4096);
+        assert_eq!(Ledger::new(true, 5000, 100).initial, 4095);
         assert_eq!(Ledger::new(true, 512, 1024).max, 1024);
         assert_eq!(Ledger::new(true, 512, 100).max, 512);
         let fixed = Ledger::new(false, 512, 1024);
-        assert_eq!((fixed.initial, fixed.max, fixed.posted), (4096, 4096, 4096));
+        assert_eq!((fixed.initial, fixed.max, fixed.posted), (4095, 4095, 4095));
+        // The values the driver passes (tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS) are kept.
+        let l = Ledger::new(true, 1024, 4095);
+        assert_eq!(
+            (l.initial, l.max, l.posted, l.producer()),
+            (1024, 4095, 1024, 1024)
+        );
+    }
+
+    #[test]
+    fn producer_never_returns_to_zero() {
+        assert_eq!(MAX_POSTED, 4095);
+        assert!(MAX_POSTED <= MAX_BLOCKS && MAX_POSTED < BLOCK_LIST_RECORDS);
+        let values = [
+            0,
+            1,
+            MIN_BLOCKS - 1,
+            MIN_BLOCKS,
+            MIN_BLOCKS + 1,
+            1023,
+            1024,
+            1025,
+            3071,
+            3072,
+            3073,
+            MAX_POSTED - 1,
+            MAX_POSTED,
+            MAX_BLOCKS,
+            MAX_BLOCKS + 1,
+            BLOCK_LIST_RECORDS,
+            2 * BLOCK_LIST_RECORDS,
+            u32::MAX,
+        ];
+        for grow in [true, false] {
+            for blocks in values {
+                for max_blocks in values {
+                    let mut l = Ledger::new(grow, blocks, max_blocks);
+                    assert!(MIN_BLOCKS <= l.initial && l.initial <= l.max && l.max <= MAX_POSTED);
+                    assert_eq!(l.posted, l.initial);
+                    assert!((1..=MAX_POSTED).contains(&l.producer()));
+                    // Every producer of a growth to the maximum stays in 1..=4095.
+                    let mut counter = 0;
+                    loop {
+                        let (first, n) = l.accept(&request(5, counter, 1));
+                        assert_eq!(first, l.posted);
+                        if n == 0 {
+                            break;
+                        }
+                        let producer = l.post(n);
+                        assert!((1..=MAX_POSTED).contains(&producer));
+                        assert_eq!(producer, l.posted);
+                        counter += 1;
+                    }
+                    assert_eq!(l.posted, l.max);
+                    assert_eq!(l.refusals, 1);
+                }
+            }
+        }
     }
 
     #[test]

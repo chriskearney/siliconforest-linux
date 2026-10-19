@@ -54,6 +54,10 @@ static_assert!(buffer::MAX_BLOCKS as u64 * buffer::BLOCK_BYTES == client::PB_HEA
 static_assert!(buffer::PAGE_LIST_SIZE as u64 == client::PB_PAGE_LIST_SIZE);
 static_assert!(uma_manager::SEEDS == sizes::FREELIST_SEED);
 static_assert!(uma_pools::POOL_SIZE == sizes::POOL_SIZE);
+// The ledger keeps the driver's PB sizes: neither is capped by [`growth::MAX_POSTED`].
+static_assert!(tuning::PB_MAX_BLOCKS <= growth::MAX_POSTED);
+static_assert!(buffer::MIN_BLOCKS <= tuning::PB_BLOCKS);
+static_assert!(tuning::PB_BLOCKS <= tuning::PB_MAX_BLOCKS);
 
 /// The allocator state a rebuild after an abort moves to the spare.
 struct AllocatorSet {
