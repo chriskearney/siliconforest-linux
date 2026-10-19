@@ -662,6 +662,9 @@ static int dcp_dptx_connect_session(struct apple_dcp *dcp, u32 port,
 		goto out_release;
 	}
 	dcp->dptxport[port].connected = true;
+	/* The HDMI converter's service, while the firmware holds its sink. */
+	if (!port)
+		dcp_hdmi_sink_held(dcp, true);
 	if (dcp_is_typec_output(dcp) && !late_hpd) {
 		if (dcp_uses_t6020_tunnel_flow(dcp))
 			ret = dptxport_set_hpd_timeout(dcp->dptxport[port].service,
@@ -1358,6 +1361,8 @@ static int dcp_dptx_release_locked(struct apple_dcp *dcp, u32 port)
 			return ret;
 		dcp->dptxport[port].connected = false;
 	}
+	if (!port)
+		dcp_hdmi_sink_held(dcp, false);
 	/* A released sink is no longer inactive: the next one starts afresh. */
 	WRITE_ONCE(dcp->dptxport[port].sink_inactive, false);
 	/*
