@@ -2373,8 +2373,12 @@ static int dcpext_boot(struct apple_dcp *dcp)
 	INIT_WORK(&v14->stopped_work, dcp_v14_stopped_work);
 	dcp->v14 = v14;
 	dcp_v14_link_init(&v14->link, dev, NULL);
-	/* An external display's swaps can be dropped after a power-on (dcp_v14_swap()). */
-	v14->link.swaps_may_drop = true;
+	/*
+	 * An external display's swaps can be dropped after a power-on. Only
+	 * where dcp_v14_swap() reports the drop (v14->external): on the manual
+	 * pipe a dropped swap must not pass as shown.
+	 */
+	v14->link.swaps_may_drop = v14->external;
 
 	rtk = apple_rtkit_init(dev, v14, "mbox", 0, &dcp_v14_rtkit_ops);
 	if (IS_ERR(rtk)) {

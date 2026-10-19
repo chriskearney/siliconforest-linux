@@ -79,6 +79,33 @@ static void link_event(struct dcp_v14_link *link, u32 kind, u64 message,
 		queue_work(system_unbound_wq, link->idle_work);
 }
 
+/* The firmware dropped swap @id, and said so in its A407 reply. */
+static void link_drop_note(struct dcp_v14_link *link, u32 id)
+{
+	mutex_lock(&link->lock);
+	link->dropped[link->dropped_next++ % DCP_V14_LINK_DROPPED] = id;
+	mutex_unlock(&link->lock);
+}
+
+/* Whether @id is a dropped swap; its one D589 is then accounted for. */
+static bool link_drop_take(struct dcp_v14_link *link, u32 id)
+{
+	bool found = false;
+	unsigned int i;
+
+	if (!id)
+		return false;
+	mutex_lock(&link->lock);
+	for (i = 0; i < DCP_V14_LINK_DROPPED && !found; i++) {
+		if (link->dropped[i] == id) {
+			link->dropped[i] = 0;
+			found = true;
+		}
+	}
+	mutex_unlock(&link->lock);
+	return found;
+}
+
 #if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
 /* KUnit: queue a firmware callback as the receive path does. */
 void dcp_v14_link_test_callback(struct dcp_v14_link *link, u64 message,
@@ -406,9 +433,7 @@ static int link_callback(struct dcp_v14_link *link, struct dcp_v14_event *e,
 		 * reply; a completion for it is not expected, but is not an
 		 * error either.
 		 */
-		if (id && id == link->dropped_completion)
-			link->dropped_completion = 0;
-		else if (completed)
+		if (!link_drop_take(link, id) && completed)
 			*completed = id;
 	}
 	return link_reply(link, e->message, e->data + sizeof(*h) + in, out);
@@ -527,9 +552,7 @@ retry:
 				    output_size == DCP_V14_A407_OUT_SIZE &&
 				    ((u8 *)output)[0] &&
 				    !get_unaligned_le32((u8 *)output + 5)) {
-					mutex_lock(&link->lock);
-					link->dropped_completion = completion_id;
-					mutex_unlock(&link->lock);
+					link_drop_note(link, completion_id);
 					kfree(e);
 					return 0;
 				}
@@ -564,3 +587,7 @@ int dcp_v14_link_call(struct dcp_v14_link *link, u32 tag, const void *input,
 	return dcp_v14_link_call_guarded(link, tag, input, input_size, output,
 		output_size, completion_id, callback, cookie, NULL, NULL, &vetoed);
 }
+
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+#include "iomfb_v14_7_link_test.c"
+#endif
