@@ -851,7 +851,9 @@ impl Slots {
             let mut st = self.scrub.states.lock();
             let mut k = 0;
             while mask != 0 {
-                if mask & 1 != 0 {
+                // Only a slot this prefix used is dirty; one it claimed but never wrote (a
+                // publication that failed before its records) keeps its state.
+                if mask & 1 != 0 && st.pass[k] == SlotState::Used {
                     st.pass[k] = SlotState::Dirty;
                 }
                 k += 1;
