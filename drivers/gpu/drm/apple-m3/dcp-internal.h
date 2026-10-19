@@ -278,6 +278,12 @@ struct apple_dcp_hw_data {
 	 * (dcp_v14_7_j516c_panel()).
 	 */
 	u32 panel_base_edid : 1;
+	/*
+	 * The main display's 14.7 swaps carry the constant timestamps.  Never
+	 * set in hardware data: 14.7 admission sets it for the J516C's own
+	 * panel only (dcp_v14_7_j516c_panel()).
+	 */
+	u32 v14_7_swap_timestamps : 1;
 };
 static_assert(sizeof(struct apple_dcp_hw_data) ==
 	      ALIGN(offsetofend(struct apple_dcp_hw_data, firmware_request),
@@ -660,14 +666,16 @@ static inline bool dcp_panel_base_edid(const struct apple_dcp *dcp)
 /*
  * The J516C panel session's own settings, taken at 14.7 admission when the
  * admitted board row is the J516C's and the machine is an "apple,j516c":
- * the base EDID of its panel node.  Every other DCP (the J514S, any other
- * T6031 board and the external DCPs) keeps none.
+ * the base EDID of its panel node and the constant swap timestamps.  Every
+ * other DCP (the J514S, any other T6031 board and the external DCPs) keeps
+ * none.
  */
 static inline void dcp_v14_7_j516c_panel(struct apple_dcp *dcp, bool j516c)
 {
 	bool take = j516c && !dcp->hw.v14_7_external;
 
 	dcp->hw.panel_base_edid = take;
+	dcp->hw.v14_7_swap_timestamps = take;
 }
 
 /* Presents carry nits; one serialized IOMFB owner (H17P panel and DCPEXT, 14.7). */
