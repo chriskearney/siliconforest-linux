@@ -353,9 +353,11 @@ dptxport_call_get_drive_settings_v14_7(struct apple_epic_service *service,
 
 /*
  * Program the levels into a running link through the PHY, and answer with
- * what the PHY programmed; a request the PHY refuses is answered as a
- * failure, never as applied. While the link is down the request is only
- * recorded.
+ * the levels. A malformed request (lanes, or levels out of range) is
+ * answered as a failure. One the PHY refuses, as a PHY not (yet) set up for
+ * that many lanes does, is recorded and answered as applied, so that the
+ * firmware's training goes on with the levels the PHY has. While the link
+ * is down the request is only recorded.
  */
 static int
 dptxport_call_set_drive_settings_v14_7(struct apple_epic_service *service,
@@ -394,10 +396,10 @@ dptxport_call_set_drive_settings_v14_7(struct apple_epic_service *service,
 		opts.dp.lanes = lanes;
 		opts.dp.set_voltages = 1;
 		ret = phy_configure(dptx->atcphy, &opts);
-		if (ret) {
-			dev_warn(dcp->dev, "DPTXPort: drive levels not programmed: %d\n", ret);
-			return 0;
-		}
+		if (ret)
+			dev_warn_ratelimited(dcp->dev,
+					     "DPTXPort: drive levels for %u lanes not programmed: %d\n",
+					     lanes, ret);
 	}
 	for (i = 0; i < lanes; i++) {
 		dptx->trained_voltage[i] = opts.dp.voltage[i];
@@ -1444,3 +1446,7 @@ int dpav_ctrl_init(struct apple_dcp *dcp)
 		dev_info(dcp->dev, "DPAV controller did not announce a service\n");
 	return 0;
 }
+
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+#include "dptxep-drive-test.c"
+#endif
