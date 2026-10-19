@@ -207,6 +207,24 @@ impl<T: DriverObject, C: DeviceContext> Object<T, C> {
         unsafe { &*core::ptr::from_ref(self).cast::<Object<T, Uninit>>() }
     }
 
+    /// Creates a new handle for this object on `file`, or returns the existing one.
+    ///
+    /// Unlike [`BaseObject::create_handle`], this accepts an object of any device context. A
+    /// [`drm::File`](crate::drm::File) exists only for a registered device, so the file itself
+    /// shows that the device can hand out handles, whatever context the object was created in.
+    pub fn create_handle<F>(&self, file: &crate::drm::File<F>) -> Result<u32>
+    where
+        F: crate::drm::file::DriverFile<Driver = T::Driver>,
+    {
+        let mut handle: u32 = 0;
+        // SAFETY: `file` and `self` are valid by their type invariants, and both belong to
+        // `T::Driver`.
+        to_result(unsafe {
+            bindings::drm_gem_handle_create(file.as_raw().cast(), self.as_raw(), &mut handle)
+        })?;
+        Ok(handle)
+    }
+
     /// Returns the `Device` that owns this GEM object.
     pub fn dev(&self) -> &Device<T::Driver, C> {
         // SAFETY: `dev` will have been initialized in `Self::new()` by `drm_gem_shmem_init()`.
