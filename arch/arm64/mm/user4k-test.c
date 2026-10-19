@@ -6407,10 +6407,10 @@ static void user4k_futex_wake_test(struct kunit *test)
 		until = jiffies + 5 * HZ;
 		kthread_use_mm(vmas[round ^ 1]->vm_mm);
 		wrong = futex_wake((u32 __user *)(addresses[round ^ 1] + 4),
-				   FLAGS_SIZE_32 | FLAGS_SHARED, 1, FUTEX_BITSET_MATCH_ANY);
+				   FLAGS_SIZE_32 | FLAGS_SHARED, NULL, 1, FUTEX_BITSET_MATCH_ANY);
 		do {
 			woke = futex_wake((u32 __user *)addresses[round ^ 1],
-					  FLAGS_SIZE_32 | FLAGS_SHARED, 1, FUTEX_BITSET_MATCH_ANY);
+					  FLAGS_SIZE_32 | FLAGS_SHARED, NULL, 1, FUTEX_BITSET_MATCH_ANY);
 			if (woke || completion_done(&w->done))
 				break;
 			schedule_timeout_uninterruptible(1);
@@ -8930,7 +8930,7 @@ static void user4k_bio_fragments_test(struct kunit *test)
 	kthread_unuse_mm(vma->vm_mm);
 	KUNIT_EXPECT_EQ(test, ret, (int)TEST_SLOTS);
 	kthread_use_mm(vma->vm_mm);
-	ret = bio_iov_iter_get_pages(state->bio, &iter, 511);
+	ret = bio_iov_iter_get_pages(state->bio, &iter, 0, 511);
 	kthread_unuse_mm(vma->vm_mm);
 	KUNIT_ASSERT_EQ(test, ret, 0);
 	KUNIT_EXPECT_EQ(test, state->bio->bi_iter.bi_size, bytes);
@@ -8981,7 +8981,7 @@ static void user4k_bio_trim_test(struct kunit *test)
 	for (i = 0; i < 1024; i++) {
 		iov_iter_ubuf(&iter, ITER_DEST, (void __user *)(TEST_VA + SZ_4K - 256), 512);
 		kthread_use_mm(vma->vm_mm);
-		ret = bio_iov_iter_get_pages(state->bio, &iter, 511);
+		ret = bio_iov_iter_get_pages(state->bio, &iter, 0, 511);
 		kthread_unuse_mm(vma->vm_mm);
 		KUNIT_ASSERT_EQ(test, ret, -EFAULT);
 		KUNIT_EXPECT_EQ(test, iov_iter_count(&iter), 512UL);
