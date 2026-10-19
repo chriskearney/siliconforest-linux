@@ -32,7 +32,7 @@ use super::hw::{self, rings, va};
 use super::initdata::InitData;
 use super::object::{Class, FwObject, Objects, Placement, Request};
 use super::power::pstate::{self, StatsSeen};
-use super::regs::{rmb, wmb};
+use super::regs::{mb, rmb, wmb};
 use super::Firmware;
 
 /// A submit channel.
@@ -288,6 +288,8 @@ impl Channels {
         if let Some(producer) = Self::note_stats(&self.stats, &mut seen)? {
             self.stats_seen = seen;
             if self.stats.read()? != producer {
+                // The record loads complete before the slots go back to the firmware.
+                mb();
                 self.stats.state.w32(STATE_READ, producer)?;
                 wmb();
             }
