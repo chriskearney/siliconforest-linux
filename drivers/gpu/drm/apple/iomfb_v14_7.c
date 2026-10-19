@@ -2,6 +2,7 @@
 
 #include <linux/clk.h>
 #include <linux/debugfs.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
@@ -241,6 +242,13 @@ struct apple_dcp_v14 {
 	unsigned int described;
 	u64 description_generation;
 	wait_queue_head_t described_wait;
+	/* External: swaps the firmware reported dropped, and the status waits. */
+	u64 swaps_dropped, status_waits, status_timeouts;
+	u32 display_status;
+
+	/* D300: id 19 is the logical level in nits (16.16), id 18 the correction. */
+	u32 pr_nits, pr_correction;
+	bool pr_nits_valid;
 
 	/* Boot framebuffer and native panel timing (notch rows included). */
 	u32 stride;
@@ -1152,8 +1160,20 @@ static int dcp_v14_callback(void *cookie, u32 tag, const void *input, u32 in_siz
 			memcpy(out, in + 8, 76);
 		return 0;
 	}
-	if ((tag == D(577) && SHAPE(4, 0)) || (tag == D(300) && SHAPE(16, 0)))
+	if (tag == D(577) && SHAPE(4, 0))
 		return 0;
+	/* Runtime property publication: the panel level and its correction. */
+	if (tag == D(300) && SHAPE(16, 0)) {
+		u32 id = get_unaligned_le32(in), value = get_unaligned_le32(in + 4);
+
+		if (id == 19) {
+			v14->pr_nits = value;
+			v14->pr_nits_valid = true;
+		} else if (id == 18) {
+			v14->pr_correction = value;
+		}
+		return 0;
+	}
 	/* Chunked property transfer: start, chunk, end. */
 	if (tag == D(127) && SHAPE(4, 4)) {
 		count = get_unaligned_le32(in);
@@ -2173,6 +2193,8 @@ static int dcpext_boot(struct apple_dcp *dcp)
 	INIT_WORK(&v14->stopped_work, dcp_v14_stopped_work);
 	dcp->v14 = v14;
 	dcp_v14_link_init(&v14->link, dev, NULL);
+	/* An external display's swaps can be dropped after a power-on (dcp_v14_swap()). */
+	v14->link.swaps_may_drop = true;
 
 	rtk = apple_rtkit_init(dev, v14, "mbox", 0, &dcp_v14_rtkit_ops);
 	if (IS_ERR(rtk)) {
@@ -2477,6 +2499,13 @@ static int dcp_v14_status_show(struct seq_file *m, void *unused)
 		seq_printf(m, "nits sent %u presents %llu brightness-only %llu refused %llu gate %d\n",
 			   v14->nits_sent, v14->nits_presents, v14->brightness_presents,
 			   v14->nits_refused, v14->bl_gate);
+	seq_printf(m, "pr nits %u.%04u valid %d correction %#x\n", v14->pr_nits >> 16,
+		   (u32)(((u64)(v14->pr_nits & 0xffff) * 10000) >> 16), v14->pr_nits_valid,
+		   v14->pr_correction);
+	if (v14->external)
+		seq_printf(m, "swaps dropped %llu status waits %llu timeouts %llu last %#x\n",
+			   v14->swaps_dropped, v14->status_waits, v14->status_timeouts,
+			   v14->display_status);
 	seq_printf(m, "ctm valid %d disabled %d calls %llu setter %#x getter %#x\n",
 		   v14->ctm_valid, v14->ctm_disabled, v14->ctm_calls, v14->ctm_status,
 		   v14->ctm_get_status);
@@ -2832,6 +2861,17 @@ static int dcp_v14_swap(struct apple_dcp_v14 *v14, const u8 *surface, u64 iova,
 		/* The swap status sits at byte 5 of the reply. */
 		if (!ret && get_unaligned_le32((u8 *)result + 5))
 			ret = -EIO;
+		/*
+		 * Status 0 with the flag at byte 0: the external firmware took
+		 * the swap and dropped it, as it does with one that arrives while
+		 * its timings are off after a power-on. No D589 follows (the link
+		 * knows); nothing was shown. Only the external role: the panel's
+		 * swaps are handled as before.
+		 */
+		if (!ret && v14->external && ((u8 *)result)[0]) {
+			v14->swaps_dropped++;
+			ret = -EAGAIN;
+		}
 		if (nits)
 			dcp_v14_swap_nits_done(v14, &present, !ret);
 	}
@@ -2881,11 +2921,12 @@ static bool __dcp_v14_present(struct apple_dcp_v14 *v14, struct drm_framebuffer 
 			   fb ? height : 0, dst_y, ctm_state);
 	elapsed = ktime_get_ns() - start;
 	if (ret && (v14->external || READ_ONCE(v14->typec)) && !READ_ONCE(v14->failed)) {
-		/* Refused before it was taken: the old framebuffer stays on screen. */
+		/* Refused, or dropped before it was shown: the old framebuffer stays. */
 		if (fb)
 			drm_framebuffer_put(fb);
 		WRITE_ONCE(v14->mode_swaps, 0);
-		dev_warn_ratelimited(v14->dev, "display refused a swap: %d\n", ret);
+		dev_warn_ratelimited(v14->dev, "display %s a swap: %d\n",
+				     ret == -EAGAIN ? "dropped" : "refused", ret);
 		return false;
 	}
 	/* Not sent, the lid is closed: the panel keeps what it showed. */
@@ -3095,6 +3136,79 @@ static int dcp_v14_set_mode(struct apple_dcp_v14 *v14, u32 color, u32 timing)
 	return ret ?: (le32_to_cpu(status) ? -EIO : 0);
 }
 
+/*
+ * A437 get_block, block 0x6e: the display status word the firmware checks
+ * before it programs a swap. The request is a token, the block and sub-block
+ * ids, eight arguments and their count, and the output length; the reply
+ * carries the block at 0 and a status at +0x1000.
+ */
+#define DCP_V14_GET_BLOCK_IN		0x5c
+#define DCP_V14_GET_BLOCK_OUT		0x1004
+#define DCP_V14_GET_BLOCK_ID		8
+#define DCP_V14_GET_BLOCK_OUT_LEN	0x54
+#define DCP_V14_GET_BLOCK_STATUS	0x1000
+#define DCP_V14_DISPLAY_STATUS_BLOCK	0x6e
+/* Pipe, can program a swap, soft and controller power, link, timings enabled. */
+#define DCP_V14_DISPLAY_READY		(BIT(0) | BIT(2) | BIT(3) | BIT(4) | BIT(6) | BIT(7))
+#define DCP_V14_DISPLAY_RUN_MODE_PENDING BIT(1)
+/* How long a display is given to enable its timings after A472 on. */
+#define DCP_V14_DISPLAY_READY_MS	2000
+
+static int dcp_v14_display_status(struct apple_dcp_v14 *v14, u32 *status)
+{
+	u8 request[DCP_V14_GET_BLOCK_IN] = {};
+	u8 *out;
+	int ret;
+
+	put_unaligned_le32(DCP_V14_DISPLAY_STATUS_BLOCK, request + DCP_V14_GET_BLOCK_ID);
+	put_unaligned_le64(4, request + DCP_V14_GET_BLOCK_OUT_LEN);
+	out = kzalloc(DCP_V14_GET_BLOCK_OUT, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+	ret = dcp_v14_call(v14, A(437), request, sizeof(request), out, DCP_V14_GET_BLOCK_OUT, 0);
+	if (!ret && get_unaligned_le32(out + DCP_V14_GET_BLOCK_STATUS)) {
+		dev_err(v14->dev, "display status query answered %#x\n",
+			get_unaligned_le32(out + DCP_V14_GET_BLOCK_STATUS));
+		ret = -EIO;
+	}
+	if (!ret)
+		*status = get_unaligned_le32(out);
+	kfree(out);
+	return ret;
+}
+
+/*
+ * After A472 on the firmware enables the display's timings asynchronously,
+ * and drops a swap that arrives before that (dcp_v14_swap_locked() ends such
+ * a swap, but shows nothing). Wait for the display status to report the pipe,
+ * link and timings up, polling while the callbacks keep running; bounded, and
+ * a display that went away ends the wait. Called with the lock held.
+ */
+static void dcp_v14_external_wait_ready(struct apple_dcp *dcp, struct apple_dcp_v14 *v14)
+{
+	unsigned long deadline = jiffies + msecs_to_jiffies(DCP_V14_DISPLAY_READY_MS);
+	u32 status = 0;
+	int ret;
+
+	lockdep_assert_held(&v14->lock);
+	v14->status_waits++;
+	for (;;) {
+		ret = dcp_v14_display_status(v14, &status);
+		if (ret)
+			return;
+		v14->display_status = status;
+		if ((status & DCP_V14_DISPLAY_READY) == DCP_V14_DISPLAY_READY &&
+		    !(status & DCP_V14_DISPLAY_RUN_MODE_PENDING))
+			return;
+		if (READ_ONCE(v14->failed) || !READ_ONCE(dcp->dptxport[0].connected) ||
+		    time_after(jiffies, deadline))
+			break;
+		usleep_range(1000, 2000);
+	}
+	v14->status_timeouts++;
+	dev_warn(dcp->dev, "display not ready after power-on: status %#x\n", status);
+}
+
 /* A472: the power state; its status sits at byte 4 of the reply. */
 static int dcp_v14_power_call(struct apple_dcp_v14 *v14, bool on)
 {
@@ -3264,10 +3378,13 @@ static int dcp_v14_external_modeset(struct apple_dcp *dcp, struct drm_crtc_state
 	if (!ret) {
 		v14->panel_width = mode.mode.hdisplay;
 		v14->panel_height = mode.mode.vdisplay;
+		/* D101: the default stride follows the mode from here on. */
+		v14->stride = mode.mode.hdisplay * 4;
 		v14->mode_timing = mode.timing_mode_id;
 		v14->mode_color = mode.color_mode_id;
 		v14->mode_swaps = 0;
 		v14->mode_live = true;
+		dcp_v14_external_wait_ready(dcp, v14);
 	}
 	mutex_unlock(&v14->lock);
 out:
