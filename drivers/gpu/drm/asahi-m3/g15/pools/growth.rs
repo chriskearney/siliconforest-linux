@@ -41,6 +41,28 @@ pub(crate) struct Ledger {
 /// Refusals answered at the maximum before requests are left to the deadline.
 pub(crate) const MAX_REFUSALS: u32 = 2;
 
+/// Blocks of each PB backing chunk after the initial one (4 MiB): growth backs at most this
+/// much at a time while the firmware waits for its answer.
+pub(crate) const CHUNK_BLOCKS: u32 = 32;
+
+/// The backing chunk that follows `backed` blocks of a ledger with maximum `max`: its first block
+/// and size, at most [`CHUNK_BLOCKS`] and never past `max`; none from `max` on.
+pub(crate) const fn next_chunk(backed: u32, max: u32) -> Option<(u32, u32)> {
+    if backed >= max {
+        None
+    } else if max - backed < CHUNK_BLOCKS {
+        Some((backed, max - backed))
+    } else {
+        Some((backed, CHUNK_BLOCKS))
+    }
+}
+
+/// The chunks that back a ledger with `initial` and `max` blocks at most: the initial one and
+/// [`next_chunk`]'s from `initial` to `max`.
+pub(crate) const fn max_chunks(initial: u32, max: u32) -> usize {
+    1 + max.saturating_sub(initial).div_ceil(CHUNK_BLOCKS) as usize
+}
+
 /// The most blocks a ledger posts: the mapped heap, and below K, so that the block_ctl+4
 /// producer (posted modulo K) is never 0, the value of an empty block list.
 pub(crate) const MAX_POSTED: u32 = if MAX_BLOCKS < BLOCK_LIST_RECORDS {
@@ -92,12 +114,17 @@ impl Ledger {
             && request_epoch(request) == epoch
     }
 
+    /// The blocks the next accepted request posts: at most [`GROW_STEP`], none at the maximum.
+    pub(crate) fn next_count(&self) -> u32 {
+        GROW_STEP.min(self.max - self.posted)
+    }
+
     /// Accepts an admitted request: the next expected counter follows it, and the returned
     /// blocks `[first, first + count)` are to be written to the block list, `count` 0 meaning a
     /// refusal at the maximum.
     pub(crate) fn accept(&mut self, request: &[u32; 14]) -> (u32, u32) {
         self.next_request = request[grow_request::COUNTER].wrapping_add(1);
-        let count = GROW_STEP.min(self.max - self.posted);
+        let count = self.next_count();
         if count == 0 {
             self.refusals += 1;
         }
@@ -288,6 +315,53 @@ mod tests {
         assert!(!l.admits(&request(5, counter + 4, 1), true, true, 1));
         // A fresh ledger starts over.
         assert!(!Ledger::new(true, 512, 1024).exhausted());
+    }
+
+    /// Backing for every ledger the constructor makes, the driver's included: the chunks from
+    /// the initial one are contiguous, at most [`CHUNK_BLOCKS`] each, end at the maximum and
+    /// number at most [`max_chunks`]; growth with the backing made first never posts a block
+    /// past it.
+    #[test]
+    fn backing_chunks() {
+        assert_eq!(max_chunks(1024, 4095), 1 + 96);
+        assert_eq!(max_chunks(MIN_BLOCKS, MAX_POSTED), 1 + 126);
+        assert_eq!(max_chunks(MAX_POSTED, MAX_POSTED), 1);
+        assert_eq!(next_chunk(1024, 4095), Some((1024, 32)));
+        assert_eq!(next_chunk(4064, 4095), Some((4064, 31)));
+        assert_eq!(next_chunk(4095, 4095), None);
+        assert_eq!(next_chunk(4096, 4095), None);
+        let values = [
+            0, 1, MIN_BLOCKS, 65, 1023, 1024, 1025, 3072, 4094, MAX_POSTED, 5000,
+        ];
+        for grow in [true, false] {
+            for blocks in values {
+                for max_blocks in values {
+                    let mut l = Ledger::new(grow, blocks, max_blocks);
+                    let (mut backed, mut chunks) = (l.initial, 1);
+                    let mut counter = 0;
+                    loop {
+                        let end = l.posted + l.next_count();
+                        while backed < end {
+                            let (first, n) = next_chunk(backed, l.max).unwrap();
+                            assert_eq!(first, backed);
+                            assert!(n >= 1 && n <= CHUNK_BLOCKS);
+                            backed += n;
+                            chunks += 1;
+                        }
+                        let (first, n) = l.accept(&request(5, counter, 1));
+                        assert!(first + n <= backed);
+                        if n == 0 {
+                            break;
+                        }
+                        l.post(n);
+                        counter += 1;
+                    }
+                    assert_eq!((l.posted, backed), (l.max, l.max));
+                    assert!(chunks <= max_chunks(l.initial, l.max));
+                    assert_eq!(next_chunk(backed, l.max), None);
+                }
+            }
+        }
     }
 
     #[test]
