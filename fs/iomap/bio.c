@@ -97,13 +97,6 @@ static void iomap_bio_submit_read(const struct iomap_iter *iter,
 {
 	return iomap_bio_submit_read_endio(iter, ctx, iomap_read_end_io);
 }
-EXPORT_SYMBOL_GPL(iomap_bio_submit_read_endio);
-
-static void iomap_bio_submit_read(const struct iomap_iter *iter,
-		struct iomap_read_folio_ctx *ctx)
-{
-	return iomap_bio_submit_read_endio(iter, ctx, iomap_read_end_io);
-}
 
 static struct bio_set *iomap_read_bio_set(struct iomap_read_folio_ctx *ctx)
 {
