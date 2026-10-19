@@ -2000,8 +2000,9 @@ int dcp_start(struct platform_device *pdev)
  * on the driver's opt-in (hdmi_audio), as the other DCPs start it, for a
  * processor whose port@0 links an audio device; once per session, and after
  * the first display's EDID was read: with the endpoint's interfaces
- * published, a CopyEDID has the firmware rebuild them and re-plug the sink,
- * so the endpoint starts only once the first EDID is cached.
+ * published, an EDID copy (dcpavserv_copy_edid()) has the firmware rebuild
+ * them and re-plug the sink, so the endpoint starts only once the first
+ * EDID is cached.
  */
 static void dcp_external_audio_work(struct work_struct *work)
 {

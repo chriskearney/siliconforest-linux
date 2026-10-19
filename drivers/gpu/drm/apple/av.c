@@ -288,10 +288,10 @@ void dcp_audiosrv_close(struct device *dev)
 }
 
 /*
- * The link methods of the 14.7 external role's audio service, the native
- * audio driver's: PrepareLink, StartLink, StopLink and CompleteLink all take
- * the selected element's 32-byte link data at body+0 and link source 0 at
- * +32, and answer an IOReturn at body+48.
+ * The link commands of the 14.7 external role's audio service, the native
+ * audio driver's: prepare, start, stop and complete all take the selected
+ * element's 32-byte link data at body+0 and link source 0 at +32, and
+ * answer a status at body+48.
  */
 int dcp_audiosrv_link(struct device *dev, enum dcp_audio_link op,
 		      const struct dcp_sound_cookie *cookie)

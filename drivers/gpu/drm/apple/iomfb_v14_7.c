@@ -3377,7 +3377,7 @@ static int dcp_v14_set_mode(struct apple_dcp_v14 *v14, u32 color, u32 timing)
 }
 
 /*
- * A437 get_block, block 0x6e: the display status word the firmware checks
+ * A437, block 0x6e: the display status word the firmware checks
  * before it programs a swap. The request is a token, the block and sub-block
  * ids, eight arguments and their count, and the output length; the reply
  * carries the block at 0 and a status at +0x1000.

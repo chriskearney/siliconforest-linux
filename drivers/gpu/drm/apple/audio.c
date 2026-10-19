@@ -609,11 +609,11 @@ struct snd_pcm_ops dcp_playback_ops = {
  * DCP firmware 14.7, external role (the T6030 external processor, J514S
  * built-in HDMI): the link lifecycle of the native audio driver:
  *
- *   prepare:   the DMA channel configured, then PrepareLink, once per link;
- *   START:     the cyclic DMA issued, then StartLink;
+ *   prepare:   the DMA channel configured, then the link prepared, once;
+ *   START:     the cyclic DMA issued, then the link started;
  *   STOP:      the DMA terminated;
- *   sync_stop: the DMA drained, then StopLink and CompleteLink;
- *   hw_free:   CompleteLink of a link prepared but never started.
+ *   sync_stop: the DMA drained, then the link stopped and completed;
+ *   hw_free:   a link prepared but never started, completed.
  *
  * Every link method carries the selected element's link data. A link of an
  * earlier connection went with its service: its state is dropped unsent.
@@ -651,8 +651,8 @@ static int dcp_pcm_native_close(struct snd_pcm_substream *substream)
 }
 
 /*
- * StopLink and CompleteLink of the link held, on the open audio service
- * (@live), or dropped unsent with a service that went away.
+ * Stop and complete the link held, on the open audio service (@live), or
+ * drop both unsent with a service that went away.
  */
 static void dcpaud_link_teardown(struct dcp_audio *dcpaud, bool live)
 {
@@ -663,14 +663,14 @@ static void dcpaud_link_teardown(struct dcp_audio *dcpaud, bool live)
 		ret = dcp_audiosrv_link(dcpaud->dcp_dev, DCP_AUDIO_LINK_STOP,
 					&dcpaud->selected_cookie);
 		if (ret)
-			dev_err(dcpaud->dev, "StopLink failed: %d\n", ret);
+			dev_err(dcpaud->dev, "audio link stop failed: %d\n", ret);
 	}
 	dcpaud->link_started = false;
 	if (dcpaud->link_prepared && live) {
 		ret = dcp_audiosrv_link(dcpaud->dcp_dev, DCP_AUDIO_LINK_COMPLETE,
 					&dcpaud->selected_cookie);
 		if (ret)
-			dev_err(dcpaud->dev, "CompleteLink failed: %d\n", ret);
+			dev_err(dcpaud->dev, "audio link complete failed: %d\n", ret);
 	}
 	dcpaud->link_prepared = false;
 }
@@ -717,7 +717,7 @@ static int dcp_pcm_native_prepare(struct snd_pcm_substream *substream)
 	if (dcpaud->link_prepared)
 		return 0;
 
-	/* The SIO channel is configured again before every PrepareLink. */
+	/* The SIO channel is configured again before every link prepare. */
 	ret = dmaengine_slave_config(snd_dmaengine_pcm_get_chan(substream),
 				     &slave_config);
 	if (ret)
@@ -740,7 +740,7 @@ static int dcp_pcm_native_start(struct snd_pcm_substream *substream, int cmd)
 	if (!dcpaud_connection_up(dcpaud))
 		return -ENXIO;
 
-	/* The first period descriptor is issued before StartLink. */
+	/* The first period descriptor is issued before the link starts. */
 	ret = snd_dmaengine_pcm_trigger(substream, cmd);
 	if (ret)
 		return ret;
@@ -803,7 +803,7 @@ static int dcp_pcm_native_sync_stop(struct snd_pcm_substream *substream)
  * stays: the display was powered off or the sink released, and the service
  * is about to be closed. Its link is completed first, the DMA drained
  * before: the firmware keeps a link prepared by a client that closes without
- * CompleteLink, and refuses every later PrepareLink of that service
+ * completing it, and refuses every later link prepare of that service
  * (0xe00002ea), so every later open failed.
  */
 void dcpaud_release_link(struct platform_device *pdev)
