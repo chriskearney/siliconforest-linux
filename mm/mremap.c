@@ -1371,7 +1371,10 @@ static void dontunmap_complete(struct vma_remap_struct *vrm,
 	 * table has been moved.
 	 */
 	if (start == old_start && end == old_end) {
-		const pgoff_t pgoff_unfaulted = vma->vm_start >> PAGE_SHIFT;
+		const struct vm_page_offset pos_unfaulted = {
+			.index = vma->vm_start >> PAGE_SHIFT,
+			.offset = vma->vm_start & ~PAGE_MASK,
+		};
 
 		unlink_anon_vmas(vma);
 		/*
@@ -1380,7 +1383,7 @@ static void dontunmap_complete(struct vma_remap_struct *vrm,
 		 * vma->vm_start >> PAGE_SHIFT.
 		 */
 		if (vma_is_anonymous(vma) && !vma->vm_file)
-			vma->vm_pgoff = pgoff_unfaulted;
+			vma_set_page_offset(vma, pos_unfaulted);
 	}
 }
 
