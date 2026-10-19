@@ -315,6 +315,97 @@ dptxport_call_get_max_drive_settings(struct apple_epic_service *service,
 	return 0;
 }
 
+/*
+ * The 14.7 external role's drive levels: the lane count at +16, then one
+ * (voltage swing, pre-emphasis) pair per lane from +32, levels 0..3 with
+ * their sum at most 3. The firmware asks for them while the link trains.
+ */
+#define DPTX_DRIVE_LANES	16
+#define DPTX_DRIVE_LEVELS	32
+#define DPTX_DRIVE_MAX		3
+
+static int
+dptxport_call_get_drive_settings_v14_7(struct apple_epic_service *service,
+				       const void *request, size_t request_size,
+				       void *reply, size_t reply_size)
+{
+	struct dptx_port *dptx = service->cookie;
+	u32 lanes = dptx->lane_count, i;
+	u8 *out = reply;
+
+	if (reply_size < DPTX_DRIVE_LEVELS + 8 * lanes || request_size < reply_size)
+		return -EINVAL;
+	memcpy(out, request, reply_size);
+	/* The lane count at +0, the control word at +16 cleared, the programmed levels. */
+	put_unaligned_le32(lanes, out);
+	put_unaligned_le32(0, out + DPTX_DRIVE_LANES);
+	for (i = 0; i < lanes; i++) {
+		put_unaligned_le32(dptx->trained_voltage[i], out + DPTX_DRIVE_LEVELS + 8 * i);
+		put_unaligned_le32(dptx->trained_pre[i], out + DPTX_DRIVE_LEVELS + 8 * i + 4);
+	}
+	return 0;
+}
+
+/*
+ * Program the levels into a running link through the PHY, and answer with
+ * what the PHY programmed; a request the PHY refuses is answered as a
+ * failure, never as applied. While the link is down the request is only
+ * recorded.
+ */
+static int
+dptxport_call_set_drive_settings_v14_7(struct apple_epic_service *service,
+				       const void *request, size_t request_size,
+				       void *reply, size_t reply_size)
+{
+	struct dptx_port *dptx = service->cookie;
+	struct apple_dcp *dcp = service->ep->dcp;
+	union phy_configure_opts opts = {};
+	const u8 *in = request;
+	u8 *out = reply;
+	u32 lanes, i;
+	int ret;
+
+	if (request_size < DPTX_DRIVE_LEVELS || reply_size < request_size)
+		return -EINVAL;
+	memcpy(out, in, request_size);
+	put_unaligned_le32(1, out);
+	lanes = get_unaligned_le32(in + DPTX_DRIVE_LANES);
+	if (!lanes || lanes > ARRAY_SIZE(dptx->trained_voltage) ||
+	    request_size < DPTX_DRIVE_LEVELS + 8 * lanes) {
+		dev_warn(dcp->dev, "DPTXPort: drive levels for %u lanes refused\n", lanes);
+		return 0;
+	}
+	for (i = 0; i < lanes; i++) {
+		opts.dp.voltage[i] = get_unaligned_le32(in + DPTX_DRIVE_LEVELS + 8 * i);
+		opts.dp.pre[i] = get_unaligned_le32(in + DPTX_DRIVE_LEVELS + 8 * i + 4);
+		if (opts.dp.voltage[i] > DPTX_DRIVE_MAX || opts.dp.pre[i] > DPTX_DRIVE_MAX ||
+		    opts.dp.voltage[i] + opts.dp.pre[i] > DPTX_DRIVE_MAX) {
+			dev_warn(dcp->dev, "DPTXPort: lane %u drive %u/%u refused\n", i,
+				 opts.dp.voltage[i], opts.dp.pre[i]);
+			return 0;
+		}
+	}
+	if (dptx->link_rate && dptx->atcphy && !dcp->dptx_tunnel) {
+		opts.dp.lanes = lanes;
+		opts.dp.set_voltages = 1;
+		ret = phy_configure(dptx->atcphy, &opts);
+		if (ret) {
+			dev_warn(dcp->dev, "DPTXPort: drive levels not programmed: %d\n", ret);
+			return 0;
+		}
+	}
+	for (i = 0; i < lanes; i++) {
+		dptx->trained_voltage[i] = opts.dp.voltage[i];
+		dptx->trained_pre[i] = opts.dp.pre[i];
+		put_unaligned_le32(opts.dp.voltage[i], out + DPTX_DRIVE_LEVELS + 8 * i);
+		put_unaligned_le32(opts.dp.pre[i], out + DPTX_DRIVE_LEVELS + 8 * i + 4);
+	}
+	dev_dbg(dcp->dev, "DPTXPort: %u lanes drive %u/%u%s\n", lanes, opts.dp.voltage[0],
+		opts.dp.pre[0], dptx->link_rate ? "" : " (link down, recorded)");
+	put_unaligned_le32(0, out);
+	return 0;
+}
+
 static int
 dptxport_call_get_drive_settings(struct apple_epic_service *service,
 				     const void *request_, size_t request_size,
@@ -324,6 +415,9 @@ dptxport_call_get_drive_settings(struct apple_epic_service *service,
 	const struct dptxport_apcall_drive_settings *request = request_;
 	struct dptxport_apcall_drive_settings *reply = reply_;
 
+	if (dcp_is_v14_7_external(service->ep->dcp))
+		return dptxport_call_get_drive_settings_v14_7(service, request_, request_size,
+							      reply_, reply_size);
 	if (reply_size < sizeof(*reply) || request_size < sizeof(*request))
 		return -EINVAL;
 
@@ -358,6 +452,9 @@ dptxport_call_set_drive_settings(struct apple_epic_service *service,
 	const struct dptxport_apcall_drive_settings *request = request_;
 	struct dptxport_apcall_drive_settings *reply = reply_;
 
+	if (dcp_is_v14_7_external(service->ep->dcp))
+		return dptxport_call_set_drive_settings_v14_7(service, request_, request_size,
+							      reply_, reply_size);
 	if (reply_size < sizeof(*reply) || request_size < sizeof(*request))
 		return -EINVAL;
 
