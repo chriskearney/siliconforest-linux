@@ -146,11 +146,30 @@ static const struct dcp_v14_board dcp_v14_board_j516c = {
 	.log_bringup = true,
 };
 
+/*
+ * J514C (MacBook Pro 14", M3 Max): the T6031 DCP running the J516C image
+ * (the DCP image is the SoC's; its UUID is checked at probe), in the J514S
+ * chassis, so the J514 panel: the board file names the J514S panel values,
+ * not yet read from a J514C, and the panel size comes from the boot
+ * framebuffer. Every panel timing and the display clock are logged.
+ */
+static const struct dcp_v14_board dcp_v14_board_j514c = {
+	.name = "J514C",
+	.debugfs = "dcp-j514c",
+	.dcp_compatible = "apple,t6031-dcp",
+	.machine = "apple,j514c",
+	.firmware_uuid = DCP_V14_J516C_FIRMWARE_UUID,
+	.handoff = "apple,t6031-handoff",
+	.promotion = true,
+	.log_bringup = true,
+};
+
 static const struct dcp_v14_board *const dcp_v14_boards[] = {
 	&dcp_v14_board_t6030,
 	&dcp_v14_board_j613,
 	&dcp_v14_board_j615,
 	&dcp_v14_board_j516c,
+	&dcp_v14_board_j514c,
 };
 
 struct dcp_v14_property {
