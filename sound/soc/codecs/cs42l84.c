@@ -608,6 +608,17 @@ static int cs42l84_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 							CS42L84_CCM_CTL4_REFCLK_EN, 0);
 		}
 	} else {
+		/*
+		 * The ASoC resume work unmutes DAIs that were active at
+		 * suspend while the card is still below D0. The PCM is
+		 * suspended then and the host may not be driving BCLK yet,
+		 * so moving the codec onto it would take the I2C bus down.
+		 * Stay on the oscillator; the unmute after the next prepare
+		 * does the switch.
+		 */
+		if (snd_power_get_state(component->card->snd_card) != SNDRV_CTL_POWER_D0)
+			return 0;
+
 		if (!cs42l84->stream_use) {
 			/* SCLK must be running before codec unmute.
 			 *
@@ -636,8 +647,24 @@ static int cs42l84_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 							       (regval & CS42L84_PLL_LOCK_STATUS_LOCKED),
 							       CS42L84_PLL_LOCK_POLL_US,
 							       CS42L84_PLL_LOCK_TIMEOUT_US);
-				if (ret < 0)
+				if (ret < 0) {
+					/*
+					 * Without a locked PLL the codec has no clock
+					 * once it leaves the oscillator, and then the
+					 * I2C bus stops working. Stay on the oscillator
+					 * and undo what was enabled above, in the same
+					 * order as the mute path.
+					 */
 					dev_warn(component->dev, "PLL failed to lock: %d\n", ret);
+					snd_soc_component_update_bits(component,
+								      CS42L84_PLL_CTL1,
+								      CS42L84_PLL_CTL1_EN, 0);
+					snd_soc_component_update_bits(component,
+								      CS42L84_CCM_CTL4,
+								      CS42L84_CCM_CTL4_REFCLK_EN,
+								      0);
+					return ret;
+				}
 
 				if (regval & CS42L84_PLL_LOCK_STATUS_ERROR)
 					dev_warn(component->dev, "PLL lock error\n");
