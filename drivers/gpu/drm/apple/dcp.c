@@ -1358,6 +1358,8 @@ static int dcp_dptx_release_locked(struct apple_dcp *dcp, u32 port)
 			return ret;
 		dcp->dptxport[port].connected = false;
 	}
+	/* A released sink is no longer inactive: the next one starts afresh. */
+	WRITE_ONCE(dcp->dptxport[port].sink_inactive, false);
 	/*
 	 * T6030: the firmware takes a direct crossbar output down when it
 	 * stops the link. Make sure of it for a display released here, also

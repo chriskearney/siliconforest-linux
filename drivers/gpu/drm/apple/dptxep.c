@@ -18,6 +18,7 @@
 #include "dcp.h"
 #include "dcp-hdmi.h"
 #include "dptxep.h"
+#include "iomfb_v14_7.h"
 #include "dcp-180hz.h"
 #include "dptx-service.h"
 #include "parser.h"
@@ -948,6 +949,12 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
 			dcp_direct_crossbar_link(service->ep->dcp, true);
 		if (!ret)
 			dcp_hdmi_link_configured(service->ep->dcp, dptx->link_rate);
+		/* A link-up ends an inactive sink (14.7 external role). */
+		if (!ret && dptx->link_rate && dptx->sink_inactive &&
+		    dcp_is_v14_7_external(service->ep->dcp)) {
+			dptx->sink_inactive = false;
+			iomfb_v14_7_external_sink_active(service->ep->dcp, true);
+		}
 		return ret;
 	}
 	case DPTX_APCALL_GET_MAX_LINK_RATE:
@@ -1034,6 +1041,15 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
 		memcpy(reply, data, min(reply_size, data_size));
 		if (reply_size >= 4)
 			memset(reply, 0, 4);
+		/*
+		 * The 14.7 external role reports it for a sink in standby or
+		 * on another input too: such a sink is gone until its link is
+		 * up again or it is described again.
+		 */
+		if (dcp_is_v14_7_external(service->ep->dcp) && !dptx->sink_inactive) {
+			dptx->sink_inactive = true;
+			iomfb_v14_7_external_sink_active(service->ep->dcp, false);
+		}
 		return 0;
 	case DPTX_APCALL_SET_ACTIVE:
 	default:

@@ -843,6 +843,38 @@ static bool dcp_v14_external_hold(struct apple_dcp *dcp, bool hdmi)
 	return true;
 }
 
+/* The attached sink is inactive (DPTX callback 20) until its link is up again. */
+static bool dcp_v14_sink_inactive(struct apple_dcp *dcp)
+{
+	return READ_ONCE(dcp->dptxport[0].sink_inactive);
+}
+
+/*
+ * The firmware reported the attached sink inactive (a TV in standby or on
+ * another input), or active again at its next link-up. Its display stays
+ * powered: the firmware retrains only a powered display's link, and that
+ * link-up is how the sink comes back. Meanwhile it is reported disconnected,
+ * no swap goes to it, and DPMS off does not power it down. During link
+ * training the same callback is routine: an unpowered display's connector
+ * is left as it is.
+ */
+void iomfb_v14_7_external_sink_active(struct apple_dcp *dcp, bool active)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+
+	if (!dcp->external_native || !v14 || READ_ONCE(dcp->external_detached))
+		return;
+	if (!active) {
+		if (!READ_ONCE(v14->powered))
+			return;
+		dev_info(dcp->dev, "display sink inactive: reported disconnected until its link is back\n");
+		dcp_v14_external_hotplug(dcp, false);
+		return;
+	}
+	dev_info(dcp->dev, "display sink active again\n");
+	dcp_v14_external_hotplug(dcp, READ_ONCE(dcp->nr_modes) > 0);
+}
+
 /*
  * The firmware withdrew the timings of the attached display. An HPD bounce
  * withdraws the description, as can a connect or a mode set on the HDMI
@@ -982,6 +1014,11 @@ static void dcp_v14_external_published(struct apple_dcp_v14 *v14, const char *ke
 			v14->described |= DCP_V14_DESC_TIMING;
 		wake_up_all(&v14->described_wait);
 		dev_info(dcp->dev, "display has %u usable modes\n", READ_ONCE(dcp->nr_modes));
+		/* A sink the firmware describes again is active: it reads only an active one. */
+		if (READ_ONCE(dcp->nr_modes) && dcp_v14_sink_inactive(dcp)) {
+			WRITE_ONCE(dcp->dptxport[0].sink_inactive, false);
+			dev_info(dcp->dev, "display sink described again: active\n");
+		}
 		dcp_v14_external_hotplug(dcp, READ_ONCE(dcp->nr_modes) > 0);
 	} else if (!strcmp(key, "DisplayAttributes") && !removed) {
 		ret = parse(raw->data, raw->size, &ctx);
@@ -2824,7 +2861,7 @@ static bool dcp_v14_swap_admit(void *cookie)
 	if (!v14->external && !v14->typec)
 		return true;
 	if (!dcp || READ_ONCE(v14->failed) || !READ_ONCE(v14->powered) ||
-	    !READ_ONCE(v14->mode_live) ||
+	    !READ_ONCE(v14->mode_live) || dcp_v14_sink_inactive(dcp) ||
 	    admission->generation != v14->description_generation ||
 	    !dcp_v14_external_described(v14) || !READ_ONCE(dcp->mode_state.valid))
 		return false;
@@ -3591,7 +3628,7 @@ void iomfb_v14_7_flush(struct apple_dcp *dcp, struct drm_crtc *crtc,
 	    (!dcp->v14 || !READ_ONCE(dcp->v14->powered) ||
 	     !dcp_v14_external_described(dcp->v14) ||
 	     !READ_ONCE(dcp->mode_state.valid) || !dcp->connector ||
-	     !READ_ONCE(dcp->connector->connected))) {
+	     !READ_ONCE(dcp->connector->connected) || dcp_v14_sink_inactive(dcp))) {
 		dcp_drm_crtc_vblank(dcp->crtc);
 		return;
 	}
@@ -3855,7 +3892,13 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 		/* Audio stops with the display, as dcp_poweroff() has it. */
 		if (dcp->avep)
 			av_service_disconnect(dcp);
-		if (v14 && v14->opened && !READ_ONCE(v14->failed)) {
+		/*
+		 * An inactive sink's display stays powered: the firmware
+		 * retrains only a powered display's link, and that link-up is
+		 * how the sink comes back. Its release powers it off.
+		 */
+		if (v14 && v14->opened && !READ_ONCE(v14->failed) &&
+		    !(dcp->external_native && dcp_v14_sink_inactive(dcp))) {
 			mutex_lock(&v14->lock);
 			if (v14->powered && dcp_v14_set_power(v14, false))
 				dev_warn(dcp->dev, "display did not power down\n");

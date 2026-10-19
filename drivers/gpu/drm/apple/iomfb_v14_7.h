@@ -69,6 +69,8 @@ bool iomfb_v14_7_external_showing(struct apple_dcp *dcp,
  * _holding() says whether one is kept connected now.
  */
 void dcp_v14_external_hotplug(struct apple_dcp *dcp, bool connected);
+/* The firmware reported the attached sink inactive, or active again. */
+void iomfb_v14_7_external_sink_active(struct apple_dcp *dcp, bool active);
 void iomfb_v14_7_external_withdrawn(struct apple_dcp *dcp);
 bool iomfb_v14_7_external_release(struct apple_dcp *dcp);
 bool iomfb_v14_7_external_holding(struct apple_dcp *dcp);
