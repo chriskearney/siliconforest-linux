@@ -2200,8 +2200,6 @@ int vfio_pci_core_init_dev(struct vfio_device *core_vdev)
 	init_rwsem(&vdev->memory_lock);
 	xa_init(&vdev->ctx);
 
-	vdev->disable_idle_d3 = disable_idle_d3;
-
 	return 0;
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_init_dev);
