@@ -677,7 +677,7 @@ static void apple_piodma_schedule_admission(struct apple_piodma_diag *diag,
 		if (WARN_ON_ONCE(previous != host))
 			return;
 	}
-	mod_delayed_work(system_unbound_wq, &diag->admission_retry, HZ);
+	mod_delayed_work(system_dfl_wq, &diag->admission_retry, HZ);
 }
 
 int apple_piodma_bootstrap_guard_begin(struct device *supplier, struct device *host)

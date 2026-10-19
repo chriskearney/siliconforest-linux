@@ -301,7 +301,7 @@ static void cow_registry_free_rcu(struct rcu_head *rcu)
 	struct mm_subpage_cow_pools *pools =
 		container_of(rcu, struct mm_subpage_cow_pools, rcu);
 
-	queue_work(system_unbound_wq, &pools->free_work);
+	queue_work(system_dfl_wq, &pools->free_work);
 }
 
 static void cow_registry_put(struct mm_subpage_cow_pools *pools)
@@ -656,7 +656,7 @@ static void owner_free(struct mm_subpage_owner *owner, bool put_folio)
 	if (owner->anon_root || owner->rmap) {
 		/* Any final anon-vma put can sleep, including a linear owner's. */
 		INIT_WORK(&owner->free_work, owner_free_work);
-		queue_work(system_unbound_wq, &owner->free_work);
+		queue_work(system_dfl_wq, &owner->free_work);
 	} else {
 		owner_free_metadata(owner);
 	}
@@ -804,7 +804,7 @@ int mm_subpage_bind_rmap(struct mm_subpage *slot, struct vm_area_struct *vma,
 unlock:
 	spin_unlock_irqrestore(&pool->lock, flags);
 	if (retired)
-		queue_work(system_unbound_wq, &retired->work);
+		queue_work(system_dfl_wq, &retired->work);
 	return ret;
 }
 
@@ -919,7 +919,7 @@ void mm_subpage_move_finish(struct mm_subpage_move *move)
 {
 	if (move->committed) {
 		if (move->retired)
-			queue_work(system_unbound_wq, &move->retired->work);
+			queue_work(system_dfl_wq, &move->retired->work);
 	} else {
 		/* The locked destination VMA still holds this root. */
 		if (move->root_changed)

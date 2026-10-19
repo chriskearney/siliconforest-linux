@@ -1698,7 +1698,7 @@ static void apple_dp_aux_work(struct work_struct *work)
 	 * after the fact, once polling ends.
 	 */
 	if (!dprx && anhi->dp_aux_polls < APPLE_DP_AUX_POLL_MAX) {
-		mod_delayed_work(system_wq, &anhi->dp_aux_work,
+		mod_delayed_work(system_percpu_wq, &anhi->dp_aux_work,
 				 msecs_to_jiffies(APPLE_DP_AUX_POLL_MS));
 	} else if (anhi->acio) {
 		apple_dp_dump_analog(anhi->acio,
@@ -1805,7 +1805,7 @@ static int apple_nhi_dp_tunnel_post_activate(struct tb_nhi *nhi,
 				 in->cap_adap + i, 1))
 			anhi->dp_in_cs[i] = 0xffffffff;
 	}
-	mod_delayed_work(system_wq, &anhi->dp_aux_work,
+	mod_delayed_work(system_percpu_wq, &anhi->dp_aux_work,
 			 msecs_to_jiffies(APPLE_DP_AUX_POLL_MS));
 	return 0;
 }
@@ -2983,7 +2983,7 @@ static int apple_cio_pm_notify(struct notifier_block *nb, unsigned long event,
 		}
 		/* Start from a worker: probing children inside this chain can deadlock. */
 		if (owed)
-			queue_delayed_work(system_unbound_wq, &acio->sleep_restart_work,
+			queue_delayed_work(system_dfl_wq, &acio->sleep_restart_work,
 					   early ? 0 :
 					   msecs_to_jiffies(APPLE_CIO_SLEEP_RESTART_FALLBACK_MS));
 		break;

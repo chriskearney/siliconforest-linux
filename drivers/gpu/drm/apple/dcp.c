@@ -304,7 +304,7 @@ static void dcp_swap_watchdog(struct work_struct *work)
 void dcp_swap_watchdog_arm(struct apple_dcp *dcp)
 {
 	if (dcp_is_typec_output(dcp))
-		mod_delayed_work(system_wq, &dcp->swap_watchdog_wq,
+		mod_delayed_work(system_percpu_wq, &dcp->swap_watchdog_wq,
 				 msecs_to_jiffies(DCP_SWAP_WATCHDOG_MS));
 }
 

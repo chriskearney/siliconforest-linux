@@ -273,7 +273,7 @@ static void iomfb_queue_advance(struct apple_dcp *dcp)
 				unsigned int delay = dcp_backlight_retry_delay(dcp);
 
 				if (delay)
-					mod_delayed_work(system_wq, &dcp->iomfb.backlight_retry,
+					mod_delayed_work(system_percpu_wq, &dcp->iomfb.backlight_retry,
 							 msecs_to_jiffies(delay));
 				else
 					dev_warn_ratelimited(dcp->dev,
@@ -313,7 +313,7 @@ static void iomfb_queue_work(struct work_struct *work)
 	dcp->iomfb.active = transaction;
 	WRITE_ONCE(dcp->iomfb.owner, current);
 	dcp->iomfb.deadline = jiffies + msecs_to_jiffies(10000);
-	mod_delayed_work(system_wq, &dcp->iomfb.timeout, msecs_to_jiffies(10000));
+	mod_delayed_work(system_percpu_wq, &dcp->iomfb.timeout, msecs_to_jiffies(10000));
 	transaction->start(dcp, transaction);
 	WRITE_ONCE(dcp->iomfb.owner, NULL);
 	iomfb_queue_advance(dcp);
@@ -328,7 +328,7 @@ static void iomfb_queue_timeout(struct work_struct *work)
 
 	mutex_lock(&dcp->iomfb.lock);
 	if (dcp->iomfb.active && time_before(jiffies, dcp->iomfb.deadline)) {
-		mod_delayed_work(system_wq, &dcp->iomfb.timeout,
+		mod_delayed_work(system_percpu_wq, &dcp->iomfb.timeout,
 				 dcp->iomfb.deadline - jiffies);
 	} else if (dcp->iomfb.active) {
 		WRITE_ONCE(dcp->crashed, true);

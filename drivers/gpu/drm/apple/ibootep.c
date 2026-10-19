@@ -430,7 +430,7 @@ int ibootep_query_modes(struct apple_dcp *dcp)
 	if (atomic_cmpxchg(&query->busy, 0, 1))
 		return -EBUSY;
 	/* AFK replies run on ep->wq; waiting on that same queue deadlocks. */
-	queue_work(system_unbound_wq, &query->work);
+	queue_work(system_dfl_wq, &query->work);
 	return 0;
 }
 

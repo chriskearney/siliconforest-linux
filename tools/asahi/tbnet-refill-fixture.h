@@ -74,7 +74,7 @@ static int pause_at,paused,resume_poll,teardown_entered,completion_ok=1,alloc_li
 static bool tail_pending,setup_active,pool_alloc_active;
 static int schedule_calls,retry_queues,retry_delay;
 static bool cancel_waiting;
-static int system_wq;
+static int system_wq __attribute__((unused)), system_percpu_wq __attribute__((unused));
 #define msecs_to_jiffies(x) (x)
 #define INIT_DELAYED_WORK(w,f) ((w)->work.fn=(f))
 static _Thread_local int heldmutex;

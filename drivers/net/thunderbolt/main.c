@@ -958,7 +958,7 @@ static int tbnet_poll(struct napi_struct *napi, int budget)
 
 	/* An empty Rx ring cannot interrupt when memory becomes available. */
 	if (tbnet_available_buffers(&net->rx_ring) < TBNET_RING_SIZE)
-		queue_delayed_work(system_wq, &net->rx_refill_work,
+		queue_delayed_work(system_percpu_wq, &net->rx_refill_work,
 				   msecs_to_jiffies(100));
 
 	if (rx_packets >= budget)

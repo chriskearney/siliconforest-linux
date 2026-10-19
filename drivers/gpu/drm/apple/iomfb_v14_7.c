@@ -380,7 +380,7 @@ static void dcp_v14_bl_queue(struct apple_dcp_v14 *v14, unsigned long delay)
 
 	spin_lock_irqsave(&v14->bl_gate_lock, flags);
 	if (dcp_v14_bl_may_queue(v14->bl_gate))
-		mod_delayed_work(system_wq, &v14->backlight_work, delay);
+		mod_delayed_work(system_percpu_wq, &v14->backlight_work, delay);
 	spin_unlock_irqrestore(&v14->bl_gate_lock, flags);
 }
 
@@ -499,7 +499,7 @@ void iomfb_v14_7_release_rx(struct apple_dcp *dcp)
 		return;
 	dcp_v14_rx_resume(v14);
 	/* Notifications queued before the hold were left for now. */
-	queue_work(system_unbound_wq, &v14->idle_work);
+	queue_work(system_dfl_wq, &v14->idle_work);
 }
 
 void iomfb_v14_7_backlight_resume(struct apple_dcp *dcp)

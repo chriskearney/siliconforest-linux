@@ -910,7 +910,7 @@ static void apple_pmp_t6030_request_start(struct apple_pmp_report *rep)
 	guard(mutex)(&apple_pmp_report_mutex);
 	if (!rep->stopping && READ_ONCE(rep->seeded) && atomic_read(&rep->start_requested) &&
 	    !atomic_xchg(&rep->start_queued, 1))
-		queue_work(system_unbound_wq, &rep->start_work);
+		queue_work(system_dfl_wq, &rep->start_work);
 }
 
 static void apple_pmp_report_remove(struct platform_device *pdev)

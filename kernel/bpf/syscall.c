@@ -197,7 +197,7 @@ static bool bpf_obj_release_uptr_pins(const struct btf_record *rec, void *obj)
 	pins = *owner;
 	if (pins) {
 		*owner = NULL;
-		queue_work(system_unbound_wq, &pins->work);
+		queue_work(system_dfl_wq, &pins->work);
 		return true;
 	}
 #endif

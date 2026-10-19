@@ -248,7 +248,7 @@ static void dcp_backlight_fade_work(struct work_struct *work)
 	if (kick)
 		dcp_backlight_kick(dcp);
 	if (running)
-		queue_delayed_work(system_wq, &dcp->backlight.fade_work,
+		queue_delayed_work(system_percpu_wq, &dcp->backlight.fade_work,
 				   msecs_to_jiffies(DCP_BL_FADE_STEP_MS));
 }
 
@@ -579,7 +579,7 @@ static int dcp_set_brightness_h17p(struct backlight_device *bd)
 			dcp->backlight.fade_start = jiffies;
 		spin_unlock_irqrestore(&dcp->backlight.lock, flags);
 		if (fade)
-			queue_delayed_work(system_wq, &dcp->backlight.fade_work,
+			queue_delayed_work(system_percpu_wq, &dcp->backlight.fade_work,
 					   msecs_to_jiffies(DCP_BL_FADE_STEP_MS));
 		else if (!ret)
 			dcp_backlight_kick(dcp);

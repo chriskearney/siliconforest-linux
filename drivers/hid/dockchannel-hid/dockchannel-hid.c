@@ -1382,7 +1382,7 @@ static int dockchannel_hid_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(dev, "Failed to set up wakeup: %d\n", ret);
 
-	dchid->new_iface_wq = alloc_workqueue("dchid-new", WQ_MEM_RECLAIM, 0);
+	dchid->new_iface_wq = alloc_workqueue("dchid-new", WQ_PERCPU | WQ_MEM_RECLAIM, 0);
 	if (!dchid->new_iface_wq)
 		return -ENOMEM;
 

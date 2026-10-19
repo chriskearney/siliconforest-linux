@@ -1425,7 +1425,7 @@ static enum blk_eh_timer_return apple_nvme_timeout(struct request *req)
 				}
 				WRITE_ONCE(anv->abort_reset, true);
 			}
-			queue_work(system_unbound_wq, &anv->recovery_work);
+			queue_work(system_dfl_wq, &anv->recovery_work);
 		}
 		return BLK_EH_RESET_TIMER;
 	}
