@@ -487,7 +487,7 @@ static int cs42l84_test_case_init(struct kunit *test)
 	priv->soc_card.snd_card = &priv->card;
 #ifdef CONFIG_PM
 	init_waitqueue_head(&priv->card.power_sleep);
-	init_waitqueue_head(&priv->card.power_ref_sleep);
+	snd_refcount_init(&priv->card.power_ref);
 #endif
 	cs42l84_test_set_power(priv, SNDRV_CTL_POWER_D0);
 
