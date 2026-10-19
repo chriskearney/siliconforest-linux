@@ -18,6 +18,7 @@ use kernel::{
     c_str,
     device,
     device::{Bound, Core},
+    devres::Devres,
     dma::{
         Coherent,
         Device,
@@ -1284,7 +1285,7 @@ impl WorkItem for AopServiceRegisterWork {
 }
 
 impl AopData {
-    fn new(dev: &platform::Device<Core>, cfg: &AopHwConfig) -> Result<Arc<AopData>> {
+    fn new(dev: &platform::Device<Core<'_>>, cfg: &AopHwConfig) -> Result<Arc<AopData>> {
         let registration_queue = OwnedQueue::new_ordered(c_str!("apple-aop"))?;
         let setup_queue = if cfg.setup_port {
             Some(OwnedQueue::new_ordered(c_str!("apple-aop-setup"))?)
@@ -1462,7 +1463,7 @@ impl AopData {
 
     fn patch_bootargs(
         &self,
-        aop_mmio: &IoMem<AOP_MMIO_SIZE>,
+        aop_mmio: &IoMem<'_, AOP_MMIO_SIZE>,
         patches: &[(u32, u64)],
     ) -> Result<()> {
         let aop_mmio = aop_mmio.relaxed();
@@ -2281,13 +2282,14 @@ kernel::of_device_table!(
 
 impl platform::Driver for AopDriver {
     type IdInfo = &'static AopHwConfig;
+    type Data<'bound> = Self;
 
     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
 
-    fn probe(
-        pdev: &platform::Device<Core>,
-        info: Option<&Self::IdInfo>,
-    ) -> impl PinInit<Self, Error> {
+    fn probe<'bound>(
+        pdev: &'bound platform::Device<Core<'_>>,
+        info: Option<&'bound Self::IdInfo>,
+    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         let cfg = info.ok_or(ENODEV)?;
         if RETIRED.load(Acquire) {
             dev_err!(
@@ -2298,9 +2300,15 @@ impl platform::Driver for AopDriver {
         }
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::new::<42>())? };
         let aop_req = pdev.io_request_by_index(0).ok_or(EINVAL)?;
-        let aop_mmio = KBox::pin_init(aop_req.iomap_sized::<AOP_MMIO_SIZE>(), GFP_KERNEL)?;
+        let aop_mmio: Pin<KBox<Devres<IoMem<'static, AOP_MMIO_SIZE>>>> = KBox::pin_init(
+            aop_req.iomap_sized::<AOP_MMIO_SIZE>()?.into_devres(),
+            GFP_KERNEL,
+        )?;
         let asc_req = pdev.io_request_by_index(1).ok_or(EINVAL)?;
-        let asc_mmio = KBox::pin_init(asc_req.iomap_sized::<ASC_MMIO_SIZE>(), GFP_KERNEL)?;
+        let asc_mmio: Pin<KBox<Devres<IoMem<'static, ASC_MMIO_SIZE>>>> = KBox::pin_init(
+            asc_req.iomap_sized::<ASC_MMIO_SIZE>()?.into_devres(),
+            GFP_KERNEL,
+        )?;
         let data = AopData::new(pdev, cfg)?;
         // Whatever fails below leaves the AOP running and its children
         // registering; the same teardown as unbind's cleans that up.
@@ -2344,7 +2352,7 @@ impl platform::Driver for AopDriver {
         Ok(Self(data))
     }
 
-    fn unbind(_dev: &platform::Device<Core>, this: Pin<&Self>) {
+    fn unbind<'bound>(_dev: &'bound platform::Device<Core<'_>>, this: Pin<&Self::Data<'bound>>) {
         // The device is still bound here, which the DMA allocations the
         // teardown frees require. Drop only repeats it as a no-op.
         this.0.remove();
