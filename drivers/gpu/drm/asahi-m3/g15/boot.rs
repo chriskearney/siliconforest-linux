@@ -181,7 +181,8 @@ impl Vote {
 
 impl Drop for Vote {
     fn drop(&mut self) {
-        if let Some(d) = self.0.take() {
+        // The vote is a level, not a count: never give it back under a retained session.
+        if let Some(d) = self.0.take().filter(|_| !glue::retained()) {
             // SAFETY: `d` is the device `asahi_g15_pmp_get` voted for.
             unsafe { glue::asahi_g15_pmp_put(d.as_raw().cast()) };
         }

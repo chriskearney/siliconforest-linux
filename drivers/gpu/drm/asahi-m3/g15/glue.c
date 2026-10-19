@@ -106,6 +106,8 @@ void asahi_g15_pmp_put(struct device *dev)
 
 	if (ret)
 		dev_warn(dev, "G15: PMP AGX vote release failed: %d\n", ret);
+#else
+	(void)dev;
 #endif
 }
 
@@ -128,8 +130,9 @@ bool asahi_g15_machine(const char *compatible)
 }
 
 /*
- * Keep the GFX domain powered for the whole (retained) session. Never released,
- * like the firmware session itself.
+ * Keep the GFX domain powered for the whole (retained) session, like the
+ * firmware session itself; released only by a start that failed before the
+ * firmware was touched (asahi_g15_release_power()).
  */
 void asahi_g15_hold_power(struct device *dev)
 {
@@ -141,12 +144,18 @@ void asahi_g15_hold_power(struct device *dev)
 /*
  * Give the hold of asahi_g15_hold_power() back: the start failed before
  * anything firmware-visible was written, so the session is not retained.
+ * Only where the AGX vote is given back as well (asahi_g15_pmp_put()): the
+ * full M3 stack's J514S bridge keeps its vote, and with it the hold stays.
  */
 void asahi_g15_release_power(struct device *dev)
 {
+#ifdef CONFIG_SILICONFOREST_NATIVE_GPU
 	pm_runtime_put_noidle(dev);
 	pm_runtime_disable(dev);
 	pm_runtime_set_suspended(dev);
+#else
+	(void)dev;
+#endif
 }
 
 /* Pin this module until reboot. */
