@@ -4564,6 +4564,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 
 	if (panel_np) {
 		const char height_prop[2][16] = { "adj-height-mm", "height-mm" };
+		const char *compatible;
 
 		if (of_device_is_available(panel_np)) {
 			ret = of_property_read_u32(panel_np, "apple,max-brightness",
@@ -4576,6 +4577,10 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 		/* use adjusted height as long as the notch is hidden */
 		of_property_read_u32(panel_np, height_prop[!dcp->notch_height],
 				     &dcp->panel.height_mm);
+		/* The most specific compatible names the panel for its EDID. */
+		if (!of_property_read_string_index(panel_np, "compatible", 0, &compatible) &&
+		    dcp_panel_id_from_compatible(&dcp->panel.id, compatible))
+			dev_dbg(dev, "no EDID make and product in '%s'\n", compatible);
 
 		of_node_put(panel_np);
 		dcp->fixed_connector_type = DRM_MODE_CONNECTOR_eDP;
@@ -4859,6 +4864,7 @@ struct dcp_v14_7_board {
 	const char *inherited;		/* boolean on display and piodma */
 	const char *native_scanout, *native_piodma, *chosen_note;
 	bool pmp_optional;		/* adopt without a PMP when none is described */
+	bool j516c_panel;		/* the J516C's own panel session settings */
 };
 
 static const char *const j514s_boards[] = { "apple,j514s", NULL };
@@ -4902,6 +4908,7 @@ static const struct dcp_v14_7_board dcp_v14_7_t6031 = {
 	.boot_stride = 3456 * 4,
 	.marker = "apple,t6031-handoff",
 	.pmp_optional = true,
+	.j516c_panel = true,
 };
 
 /* The board profile of a 14.7 panel DCP node, or NULL. */
@@ -5153,6 +5160,8 @@ static int dcp_platform_probe(struct platform_device *pdev)
 			dcp->v14_7->panel_width = board->panel_width;
 			dcp->v14_7->panel_height = board->panel_height;
 			dcp->v14_7->pmp_optional = board->pmp_optional;
+			dcp_v14_7_j516c_panel(dcp, board->j516c_panel &&
+					      of_machine_is_compatible("apple,j516c"));
 		}
 	}
 
