@@ -1885,7 +1885,7 @@ static void user4k_vma_copy_shrink_test(struct kunit *test)
 		struct vm_page_offset pos = vm_page_offset_add(initial, i == 2 ? 0 : (i + 1) * SZ_4K);
 
 		mmap_write_lock(mm);
-		dest = copy_vma(&source, addr, SZ_4K, pos, &need_locks);
+		dest = copy_vma(&source, addr, SZ_4K, pos, &need_locks, false);
 		mmap_write_unlock(mm);
 		KUNIT_ASSERT_NOT_NULL(test, dest);
 		KUNIT_EXPECT_EQ(test, mm->map_count, 2);
