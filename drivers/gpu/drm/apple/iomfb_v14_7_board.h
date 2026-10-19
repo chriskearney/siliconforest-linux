@@ -39,6 +39,11 @@ struct dcp_v14_board {
 	 * releases, so they are only set where tested.
 	 */
 	u32 ctm_set, ctm_get;
+	/*
+	 * The swap's panel level block (iomfb_v14_7_swap.h) applies to this
+	 * board's panel: Linux registers its backlight and presents levels.
+	 */
+	bool panel_nits;
 };
 
 /* Whether the DCP node or the machine (as @ctx gives them) has @compat. */

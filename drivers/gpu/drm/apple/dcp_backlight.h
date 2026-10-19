@@ -263,6 +263,19 @@ static inline bool dcp_bl_complete(struct dcp_backlight_state *state,
 	return true;
 }
 
+/*
+ * The level a backlight device reports as its actual level: the one the last
+ * accepted present carried, or the loader's reported level. With @strict, a
+ * default that was never presented is not reported: there is none until a
+ * present carries a level.
+ */
+static inline int dcp_bl_reported_actual(const struct dcp_backlight_state *state, bool strict)
+{
+	if (strict && !state->level_known)
+		return -ENODATA;
+	return state->actual;
+}
+
 /* Three deferred retries per user request; a permanent rejection stays dirty. */
 static inline unsigned int dcp_bl_retry_delay(const struct dcp_backlight_state *state)
 {
@@ -280,6 +293,8 @@ struct apple_dcp;
  * Configure before registration and keep the callback valid until teardown.
  */
 bool dcp_backlight_active(struct apple_dcp *dcp);
+/* Whether the panel shows a level Linux knows (see level_known). */
+bool dcp_backlight_level_known(struct apple_dcp *dcp);
 int dcp_backlight_takeover(struct apple_dcp *dcp, u32 millinits);
 int dcp_backlight_configure(struct apple_dcp *dcp, u32 maximum,
 			    bool inherited_valid, u32 inherited,

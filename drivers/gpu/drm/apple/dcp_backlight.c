@@ -16,6 +16,7 @@
 #include "connector.h"
 #include "dcp.h"
 #include "dcp-internal.h"
+#include "iomfb_v14_7.h"
 
 #define MIN_BRIGHTNESS_PART1	2U
 #define MAX_BRIGHTNESS_PART1	99U
@@ -93,11 +94,35 @@ static u32 brightness_part2[] = {
 #define DCP_BL_FADE_MS		250U
 #define DCP_BL_FADE_STEP_MS	16U
 
+/*
+ * Panels whose presents carry the level in nits: H17P, and the 14.7 T6030
+ * panel (iomfb_v14_7_panel_nits()). Both run this policy.
+ */
+static bool dcp_backlight_presents_nits(struct apple_dcp *dcp)
+{
+	return (dcp->fw_compat == DCP_FIRMWARE_H17P &&
+		dcp->hw.iomfb_method_profile != DCP_IOMFB_METHODS_H17G) ||
+	       iomfb_v14_7_panel_nits(dcp);
+}
+
 bool dcp_backlight_active(struct apple_dcp *dcp)
 {
-	return dcp->fw_compat == DCP_FIRMWARE_H17P &&
-		dcp->hw.iomfb_method_profile != DCP_IOMFB_METHODS_H17G &&
+	return dcp_backlight_presents_nits(dcp) &&
 		READ_ONCE(dcp->backlight.state.ready);
+}
+
+bool dcp_backlight_level_known(struct apple_dcp *dcp)
+{
+	unsigned long flags;
+	bool known;
+
+	/* Only a panel running the policy initialised its lock and state. */
+	if (!dcp_backlight_active(dcp))
+		return false;
+	spin_lock_irqsave(&dcp->backlight.lock, flags);
+	known = dcp->backlight.state.ready && dcp->backlight.state.level_known;
+	spin_unlock_irqrestore(&dcp->backlight.lock, flags);
+	return known;
 }
 
 int dcp_backlight_takeover(struct apple_dcp *dcp, u32 millinits)
@@ -121,16 +146,23 @@ static int dcp_get_brightness(struct backlight_device *bd)
 {
 	struct apple_dcp *dcp = bl_get_data(bd);
 	unsigned long flags;
-	u32 actual;
 
 	if (READ_ONCE(dcp->quiescing))
 		return -ENODEV;
 
 	if (dcp_backlight_active(dcp)) {
+		int ret;
+
+		/*
+		 * The 14.7 panel reports no actual level until a present
+		 * carried one: before that it shows the boot loader's level,
+		 * which Linux does not know.
+		 */
 		spin_lock_irqsave(&dcp->backlight.lock, flags);
-		actual = dcp->backlight.state.actual;
+		ret = dcp_bl_reported_actual(&dcp->backlight.state,
+					     iomfb_v14_7_panel_nits(dcp));
 		spin_unlock_irqrestore(&dcp->backlight.lock, flags);
-		return actual;
+		return ret;
 	}
 
 	return dcp->brightness.nits;
@@ -144,8 +176,8 @@ int dcp_backlight_configure(struct apple_dcp *dcp, u32 maximum,
 	unsigned long flags;
 	int ret;
 
-	if (dcp->fw_compat != DCP_FIRMWARE_H17P || !dcp_has_panel(dcp) ||
-	    !dcp->crtc || !kick)
+	if ((dcp->fw_compat != DCP_FIRMWARE_H17P && !iomfb_v14_7_panel_nits(dcp)) ||
+	    !dcp_has_panel(dcp) || !dcp->crtc || !kick)
 		return -EINVAL;
 
 	mutex_lock(&dcp->bl_register_mutex);
@@ -157,7 +189,12 @@ int dcp_backlight_configure(struct apple_dcp *dcp, u32 maximum,
 				  inherited_valid, inherited,
 				  default_valid, default_nits);
 		if (!ret) {
-			dcp->backlight.state.fade = true;
+			/*
+			 * H17P fades between levels. The 14.7 panel jumps, as
+			 * each step would be a present of its own, and nothing
+			 * is presented until a level is requested.
+			 */
+			dcp->backlight.state.fade = !iomfb_v14_7_panel_nits(dcp);
 			dcp->backlight.kick = kick;
 		}
 	}
@@ -494,8 +531,7 @@ int dcp_backlight_update(struct apple_dcp *dcp)
 		dcp_backlight_kick(dcp);
 		return 0;
 	}
-	if (dcp->fw_compat == DCP_FIRMWARE_H17P &&
-	    dcp->hw.iomfb_method_profile != DCP_IOMFB_METHODS_H17G)
+	if (dcp_backlight_presents_nits(dcp))
 		return -ENODATA;
 
 	/*
@@ -569,7 +605,8 @@ static int dcp_set_brightness(struct backlight_device *bd)
 	struct drm_modeset_acquire_ctx ctx;
 	int brightness = backlight_get_brightness(bd);
 
-	if (dcp->fw_compat == DCP_FIRMWARE_H17P)
+	/* The 14.7 panel takes the H17P policy: a level request, no DAC. */
+	if (dcp->fw_compat == DCP_FIRMWARE_H17P || iomfb_v14_7_panel_nits(dcp))
 		return dcp_set_brightness_h17p(bd);
 
 	drm_modeset_acquire_init(&ctx, DRM_MODESET_ACQUIRE_INTERRUPTIBLE);
@@ -615,9 +652,22 @@ static const struct backlight_ops dcp_backlight_ops_h17p = {
 	.controls_device = dcp_backlight_controls_device,
 };
 
+/*
+ * The 14.7 panel: the policy, and fbdev blanking only for this display.
+ * System sleep reaches it through the CRTC (iomfb_v14_7_poweroff()), so
+ * the core's suspend state is not followed: before Linux sets a level, a
+ * sleep must not replace the boot loader's level either.
+ */
+static const struct backlight_ops dcp_backlight_ops_v14 = {
+	.get_brightness = dcp_get_brightness,
+	.update_status = dcp_set_brightness,
+	.controls_device = dcp_backlight_controls_device,
+};
+
 int dcp_backlight_register(struct apple_dcp *dcp)
 {
 	struct device *dev = dcp->dev;
+	const struct backlight_ops *ops;
 	struct backlight_device *bl_dev;
 	unsigned long flags;
 	struct backlight_properties props = {
@@ -626,9 +676,7 @@ int dcp_backlight_register(struct apple_dcp *dcp)
 		.scale = BACKLIGHT_SCALE_LINEAR,
 	};
 	props.max_brightness = min(dcp->brightness.maximum, MAX_BRIGHTNESS_PART2 - 1);
-	if (dcp->fw_compat == DCP_FIRMWARE_H17P &&
-	    dcp->hw.iomfb_method_profile != DCP_IOMFB_METHODS_H17G &&
-	    !dcp_backlight_active(dcp))
+	if (dcp_backlight_presents_nits(dcp) && !dcp_backlight_active(dcp))
 		return -ENODATA;
 	if (dcp_backlight_active(dcp)) {
 		spin_lock_irqsave(&dcp->backlight.lock, flags);
@@ -643,10 +691,13 @@ int dcp_backlight_register(struct apple_dcp *dcp)
 		spin_unlock_irqrestore(&dcp->backlight.lock, flags);
 	}
 
-	bl_dev = devm_backlight_device_register(dev, "apple-panel-bl", dev, dcp,
-						dcp->fw_compat == DCP_FIRMWARE_H17P ?
-						&dcp_backlight_ops_h17p :
-						&dcp_backlight_ops, &props);
+	if (dcp->fw_compat == DCP_FIRMWARE_H17P)
+		ops = &dcp_backlight_ops_h17p;
+	else if (iomfb_v14_7_panel_nits(dcp))
+		ops = &dcp_backlight_ops_v14;
+	else
+		ops = &dcp_backlight_ops;
+	bl_dev = devm_backlight_device_register(dev, "apple-panel-bl", dev, dcp, ops, &props);
 	if (IS_ERR(bl_dev))
 		return PTR_ERR(bl_dev);
 
