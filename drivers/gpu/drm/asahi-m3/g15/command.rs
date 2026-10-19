@@ -515,7 +515,7 @@ fn check_render(context: &Context<'_>, cmd: &uapi::drm_asahi_cmd_render) -> Resu
     }
     cover(vm, vdm, vdm + 4, true, false)?;
     gate::vdm(vm, vdm)?;
-    cover(vm, scissor, scissor + 8, true, false)?;
+    cover(vm, scissor, scissor.checked_add(8).ok_or(EINVAL)?, true, false)?;
     if cmd.isp_dbias_base != 0 {
         let base = cmd.isp_dbias_base;
         cover(vm, base, base.checked_add(8).ok_or(EINVAL)?, true, false)?;

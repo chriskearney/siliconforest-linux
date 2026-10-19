@@ -876,7 +876,14 @@ impl Firmware {
                     hz_stop = Some(2);
                     break;
                 }
-                f.group.reserve(1, GFP_KERNEL)?;
+                // Without room for another group entry the horizon ends here: the base job
+                // is published already, and nothing of `j2` has been touched or sent, so a
+                // transient allocation failure must not fail the prefix (which, after a queue
+                // WRITE, would be taken for an uncertain post-WRITE state and stop the engine).
+                if f.group.reserve(1, GFP_KERNEL).is_err() {
+                    hz_stop = Some(1);
+                    break;
+                }
                 for k in 0..n2 {
                     match command(&j2, k).ok_or(EINVAL)? {
                         Command::Compute(c) => self.prefix_compute(&j2, c, &mut pf, f, false)?,

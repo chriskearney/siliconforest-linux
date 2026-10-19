@@ -17,6 +17,9 @@
 #define DCP_V14_CALL_TIMEOUT	(5 * HZ)
 #define DCP_V14_TAG_D589	DCP_V14_TAG('D', 589)
 #define DCP_V14_D589_IN_SIZE	0x6f0
+/* A407 swap_submit: its reply flags a dropped swap at +0, its status is at +5. */
+#define DCP_V14_TAG_A407	DCP_V14_TAG('A', 407)
+#define DCP_V14_A407_OUT_SIZE	12
 
 enum dcp_v14_event_kind {
 	DCP_V14_EVENT_REPLY = 1,
@@ -75,6 +78,44 @@ static void link_event(struct dcp_v14_link *link, u32 kind, u64 message,
 	if (link->idle_work)
 		queue_work(system_unbound_wq, link->idle_work);
 }
+
+/* The firmware dropped swap @id, and said so in its A407 reply. */
+static void link_drop_note(struct dcp_v14_link *link, u32 id)
+{
+	mutex_lock(&link->lock);
+	link->dropped[link->dropped_next++ % DCP_V14_LINK_DROPPED] = id;
+	mutex_unlock(&link->lock);
+}
+
+/* Whether @id is a dropped swap; its one D589 is then accounted for. */
+static bool link_drop_take(struct dcp_v14_link *link, u32 id)
+{
+	bool found = false;
+	unsigned int i;
+
+	if (!id)
+		return false;
+	mutex_lock(&link->lock);
+	for (i = 0; i < DCP_V14_LINK_DROPPED && !found; i++) {
+		if (link->dropped[i] == id) {
+			link->dropped[i] = 0;
+			found = true;
+		}
+	}
+	mutex_unlock(&link->lock);
+	return found;
+}
+
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+/* KUnit: queue a firmware callback as the receive path does. */
+void dcp_v14_link_test_callback(struct dcp_v14_link *link, u64 message,
+				const void *data, u32 size)
+{
+	mutex_lock(&link->lock);
+	link_event(link, DCP_V14_EVENT_CALLBACK, message, data, size);
+	mutex_unlock(&link->lock);
+}
+#endif
 
 void dcp_v14_link_init(struct dcp_v14_link *link, struct device *dev,
 		       struct apple_rtkit *rtk)
@@ -384,8 +425,17 @@ static int link_callback(struct dcp_v14_link *link, struct dcp_v14_event *e,
 		dev_err(link->dev, "callback %#x (%u/%u bytes) failed: %d\n", tag, in, out, ret);
 		return ret;
 	}
-	if (tag == DCP_V14_TAG_D589 && in == DCP_V14_D589_IN_SIZE && completed)
-		*completed = get_unaligned_le32(h + 1);
+	if (tag == DCP_V14_TAG_D589 && in == DCP_V14_D589_IN_SIZE) {
+		u32 id = get_unaligned_le32(h + 1);
+
+		/*
+		 * The firmware dropped this swap and said so in its A407
+		 * reply; a completion for it is not expected, but is not an
+		 * error either.
+		 */
+		if (!link_drop_take(link, id) && completed)
+			*completed = id;
+	}
 	return link_reply(link, e->message, e->data + sizeof(*h) + in, out);
 }
 
@@ -492,6 +542,20 @@ retry:
 					memcpy(output, e->data + sizeof(*h) + input_size,
 					       output_size);
 				replied = true;
+				/*
+				 * A swap the firmware reports dropped (the flag at
+				 * +0 with status 0) is never completed by D589:
+				 * the call ends with its reply.
+				 */
+				if (link->swaps_may_drop && completion_id &&
+				    tag == DCP_V14_TAG_A407 &&
+				    output_size == DCP_V14_A407_OUT_SIZE &&
+				    ((u8 *)output)[0] &&
+				    !get_unaligned_le32((u8 *)output + 5)) {
+					link_drop_note(link, completion_id);
+					kfree(e);
+					return 0;
+				}
 			}
 		} else {
 			ret = link_callback(link, e, callback, cookie, &completed);
@@ -523,3 +587,7 @@ int dcp_v14_link_call(struct dcp_v14_link *link, u32 tag, const void *input,
 	return dcp_v14_link_call_guarded(link, tag, input, input_size, output,
 		output_size, completion_id, callback, cookie, NULL, NULL, &vetoed);
 }
+
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+#include "iomfb_v14_7_link_test.c"
+#endif

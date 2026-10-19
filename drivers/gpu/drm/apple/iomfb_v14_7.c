@@ -2,6 +2,7 @@
 
 #include <linux/clk.h>
 #include <linux/debugfs.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
@@ -31,18 +32,21 @@
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
+#include <kunit/static_stub.h>
 
 #include "afk.h"
 #include "dcp.h"
 #include "dcp-internal.h"
 #include "dcpext_scanout.h"
 #include "dcp-lifecycle.h"
+#include "dptxep.h"
 #include "iomfb_internal.h"
 #include "iomfb_v14_7.h"
 #include "iomfb_v14_7_backlight.h"
 #include "iomfb_v14_7_board.h"
 #include "iomfb_v14_7_link.h"
 #include "iomfb_v14_7_swap.h"
+#include "av.h"
 #include "parser.h"
 
 #define A(n) DCP_V14_TAG('A', n)
@@ -59,7 +63,16 @@
 #define DCP_V14_RTKIT_RETRIES	4
 #define DCP_V14_MAX_PROPERTIES	256
 #define DCP_V14_MAX_RAW		32
+/*
+ * The size of one raw property and of all of them. An external processor
+ * publishes an HDMI 2.1 (FRL) sink's TimingElements as one chunked transfer
+ * of more than 1 MiB (1.38 MB for a 4K120 TV), so it keeps up to 8 MiB per
+ * property and 24 MiB in all; the panel's properties stay small.
+ */
+#define DCP_V14_MAX_RAW_SIZE	SZ_1M
 #define DCP_V14_MAX_RAW_BYTES	SZ_8M
+#define DCP_V14_EXT_MAX_RAW_SIZE	SZ_8M
+#define DCP_V14_EXT_MAX_RAW_BYTES	(24 * SZ_1M)
 #define DCP_V14_MAX_BUFFERS	64
 #define DCP_V14_MAX_BUFFER	SZ_16M
 #define DCP_V14_MAX_BUFFER_BYTES SZ_64M
@@ -134,11 +147,30 @@ static const struct dcp_v14_board dcp_v14_board_j516c = {
 	.log_bringup = true,
 };
 
+/*
+ * J514C (MacBook Pro 14", M3 Max): the T6031 DCP running the J516C image
+ * (the DCP image is the SoC's; its UUID is checked at probe), in the J514S
+ * chassis, so the J514 panel: the board file names the J514S panel values,
+ * not yet read from a J514C, and the panel size comes from the boot
+ * framebuffer. Every panel timing and the display clock are logged.
+ */
+static const struct dcp_v14_board dcp_v14_board_j514c = {
+	.name = "J514C",
+	.debugfs = "dcp-j514c",
+	.dcp_compatible = "apple,t6031-dcp",
+	.machine = "apple,j514c",
+	.firmware_uuid = DCP_V14_J516C_FIRMWARE_UUID,
+	.handoff = "apple,t6031-handoff",
+	.promotion = true,
+	.log_bringup = true,
+};
+
 static const struct dcp_v14_board *const dcp_v14_boards[] = {
 	&dcp_v14_board_t6030,
 	&dcp_v14_board_j613,
 	&dcp_v14_board_j615,
 	&dcp_v14_board_j516c,
+	&dcp_v14_board_j514c,
 };
 
 struct dcp_v14_property {
@@ -192,8 +224,16 @@ struct apple_dcp_v14 {
 	struct work_struct idle_work;
 	/* External: reports the display gone once the session stopped. */
 	struct work_struct stopped_work;
+	/* External: powers down a display kept on for a sink since released. */
+	struct work_struct kept_on_work;
 	bool failed;
 	bool started;
+	/*
+	 * Panel, under the lock: the mailbox holds the firmware's messages
+	 * through system sleep (iomfb_v14_7_hold_rx()). No call is sent then:
+	 * its reply could not arrive until resume.
+	 */
+	bool rx_held;
 	/*
 	 * J613 internal pipe with a Type-C route (iomfb_v14_7_clamshell_start()):
 	 * the lid state IOMFB was told (A475: 1 open, 2 closed, 0 not yet), the
@@ -227,6 +267,16 @@ struct apple_dcp_v14 {
 	/* External: the display is powered (A472) in the mode last set. */
 	bool powered;
 	/*
+	 * External, under kept_lock (a leaf, taken inside the lock or the HPD
+	 * lock, never around either): @kept_on, powered only for its inactive
+	 * sink, its CRTC off (iomfb_v14_7_poweroff()), for the sink of
+	 * generation @kept_gen; any power call since clears it. @sink_gen
+	 * counts the sinks released (iomfb_v14_7_external_sink_released()).
+	 */
+	struct mutex kept_lock;
+	bool kept_on;
+	u64 kept_gen, sink_gen;
+	/*
 	 * External: the mode last set (A411 then A472(1)) runs, from a
 	 * description not changed since, with these ids; and swaps with a
 	 * framebuffer completed since it was set.
@@ -240,6 +290,13 @@ struct apple_dcp_v14 {
 	unsigned int described;
 	u64 description_generation;
 	wait_queue_head_t described_wait;
+	/* External: swaps the firmware reported dropped, and the status waits. */
+	u64 swaps_dropped, status_waits, status_timeouts;
+	u32 display_status;
+
+	/* D300: id 19 is the logical level in nits (16.16), id 18 the correction. */
+	u32 pr_nits, pr_correction;
+	bool pr_nits_valid;
 
 	/* Boot framebuffer and native panel timing (notch rows included). */
 	u32 stride;
@@ -383,6 +440,68 @@ void iomfb_v14_7_backlight_suspend(struct apple_dcp *dcp)
 		dcp_v14_bl_shut(dcp->v14, false);
 }
 
+/*
+ * System sleep of the panel, as dcp_platform_suspend()'s last step. The panel
+ * keeps scanning out through sleep and its firmware keeps publishing to the
+ * AP; each message would wake a CPU out of suspend-to-idle. Once no call is
+ * in flight (calls and notifications run under the lock), hold its messages
+ * in the mailbox until iomfb_v14_7_release_rx(). The brightness work is
+ * already shut (iomfb_v14_7_backlight_suspend()). Not for an external
+ * processor, whose display refuses sleep, nor for the J613 internal pipe
+ * while it drives a Type-C display.
+ */
+static void dcp_v14_rx_hold(struct apple_dcp_v14 *v14)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_rx_hold, v14);
+	apple_rtkit_hold_rx(v14->rtk);
+}
+
+static void dcp_v14_rx_resume(struct apple_dcp_v14 *v14)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_rx_resume, v14);
+	apple_rtkit_resume_rx(v14->rtk);
+}
+
+void iomfb_v14_7_hold_rx(struct apple_dcp *dcp)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+
+	if (dcp->external || !v14 || v14->external || !v14->rtk || !v14->started)
+		return;
+	/*
+	 * Under the lock calls and the notification pump run under: none is
+	 * in progress, and the pump leaves anything already queued alone
+	 * from here on (dcp_v14_idle()). Nothing is flushed or cancelled
+	 * with the lock held.
+	 */
+	mutex_lock(&v14->lock);
+	if (!v14->failed && !READ_ONCE(v14->typec) && !v14->rx_held) {
+		dcp_v14_rx_hold(v14);
+		v14->rx_held = true;
+	}
+	mutex_unlock(&v14->lock);
+}
+
+/* Resume: the held messages are delivered, and calls may go out again. */
+void iomfb_v14_7_release_rx(struct apple_dcp *dcp)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+	bool held;
+
+	if (!v14)
+		return;
+	mutex_lock(&v14->lock);
+	held = v14->rx_held;
+	v14->rx_held = false;
+	mutex_unlock(&v14->lock);
+	/* Outside the lock: the held messages' callbacks take it. */
+	if (!held)
+		return;
+	dcp_v14_rx_resume(v14);
+	/* Notifications queued before the hold were left for now. */
+	queue_work(system_unbound_wq, &v14->idle_work);
+}
+
 void iomfb_v14_7_backlight_resume(struct apple_dcp *dcp)
 {
 	struct apple_dcp_v14 *v14 = dcp->v14;
@@ -434,6 +553,11 @@ static int dcp_v14_call_guarded(struct apple_dcp_v14 *v14, u32 tag, const void *
 
 	if (v14->failed)
 		return -EIO;
+	/* Not a link failure: the session goes on after resume. */
+	if (v14->rx_held) {
+		dev_warn_ratelimited(v14->dev, "DCP call %#x during system sleep refused\n", tag);
+		return -EAGAIN;
+	}
 	dev_dbg(v14->dev, "call %#x in %u out %u\n", tag, in_size, out_size);
 	ret = dcp_v14_link_call_guarded(&v14->link, tag, in, in_size, out, out_size, completion,
 				dcp_v14_callback, v14, admit, admit_cookie, &vetoed);
@@ -490,13 +614,23 @@ static struct dcp_v14_property *dcp_v14_property(struct apple_dcp_v14 *v14, u32 
 	return p;
 }
 
+static u32 dcp_v14_raw_limit(const struct apple_dcp_v14 *v14)
+{
+	return v14->external ? DCP_V14_EXT_MAX_RAW_SIZE : DCP_V14_MAX_RAW_SIZE;
+}
+
+static u32 dcp_v14_raw_total(const struct apple_dcp_v14 *v14)
+{
+	return v14->external ? DCP_V14_EXT_MAX_RAW_BYTES : DCP_V14_MAX_RAW_BYTES;
+}
+
 static int dcp_v14_raw_property(struct apple_dcp_v14 *v14, u32 service, const u8 *key,
 				const void *data, u32 size)
 {
 	u32 i, old_size = 0;
 	void *copy;
 
-	if (!memchr(key, 0, 64) || size > SZ_1M)
+	if (!memchr(key, 0, 64) || size > dcp_v14_raw_limit(v14))
 		return -EINVAL;
 	for (i = 0; i < v14->raw_count; i++)
 		if (v14->raw[i].service == service && !strcmp(v14->raw[i].key, key))
@@ -505,7 +639,7 @@ static int dcp_v14_raw_property(struct apple_dcp_v14 *v14, u32 service, const u8
 		return -ENOSPC;
 	if (i < v14->raw_count)
 		old_size = v14->raw[i].size;
-	if (v14->raw_bytes - old_size + size > DCP_V14_MAX_RAW_BYTES)
+	if (v14->raw_bytes - old_size + size > dcp_v14_raw_total(v14))
 		return -ENOSPC;
 	copy = kvmemdup(data, size ?: 1, GFP_KERNEL);
 	if (!copy)
@@ -763,6 +897,105 @@ static bool dcp_v14_external_hold(struct apple_dcp *dcp, bool hdmi)
 	return true;
 }
 
+/* The attached sink is inactive (DPTX callback 20) until its link is up again. */
+static bool dcp_v14_sink_inactive(struct apple_dcp *dcp)
+{
+	return READ_ONCE(dcp->dptxport[0].sink_inactive);
+}
+
+/*
+ * The firmware reported the attached sink inactive (a TV in standby or on
+ * another input), or active again at its next link-up. Its display stays
+ * powered: the firmware retrains only a powered display's link, and that
+ * link-up is how the sink comes back. Meanwhile it is reported disconnected,
+ * no swap goes to it, and DPMS off does not power it down. During link
+ * training the same callback is routine: an unpowered display's connector
+ * is left as it is.
+ */
+void iomfb_v14_7_external_sink_active(struct apple_dcp *dcp, bool active)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+
+	if (!dcp->external_native || !v14 || READ_ONCE(dcp->external_detached))
+		return;
+	if (!active) {
+		if (!READ_ONCE(v14->powered))
+			return;
+		dev_info(dcp->dev, "display sink inactive: reported disconnected until its link is back\n");
+		dcp_v14_external_hotplug(dcp, false);
+		return;
+	}
+	dev_info(dcp->dev, "display sink active again\n");
+	dcp_v14_external_hotplug(dcp, READ_ONCE(dcp->nr_modes) > 0);
+}
+
+static int dcp_v14_set_power(struct apple_dcp_v14 *v14, bool on);
+
+/*
+ * Whether DPMS off keeps the display on for its sink: an inactive one (a TV
+ * in standby), which only a link-up of a powered display brings back.
+ * Called under kept_lock.
+ */
+static bool dcp_v14_keep_for_sink(struct apple_dcp *dcp)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_keep_for_sink, dcp);
+	return dcp->external_native && dcp_v14_sink_inactive(dcp);
+}
+
+/*
+ * A display kept powered for its inactive sink, its CRTC off, whose sink was
+ * released since (unplugged): no link-up will bring it back. Power it down
+ * as DPMS off would have; until then the processor holds a display, and
+ * system sleep is refused. Not under the HPD lock the release holds: the
+ * power call waits for the firmware.
+ *
+ * Only for the sink it was kept for: one kept on since for a newer sink
+ * (kept_gen) is left alone, and any power call since cleared the note. Under
+ * the lock, no DPMS off can keep it again meanwhile; a newer sink's attach
+ * can still overlap the power-down, as it can overlap any DPMS off.
+ */
+static void dcp_v14_kept_on_work(struct work_struct *work)
+{
+	struct apple_dcp_v14 *v14 = container_of(work, struct apple_dcp_v14, kept_on_work);
+	struct apple_dcp *dcp = READ_ONCE(v14->dcp);
+	bool released;
+
+	if (!dcp || READ_ONCE(dcp->external_detached))
+		return;
+	mutex_lock(&v14->lock);
+	mutex_lock(&v14->kept_lock);
+	released = v14->kept_on && v14->kept_gen != v14->sink_gen;
+	mutex_unlock(&v14->kept_lock);
+	if (released && v14->powered && !v14->failed) {
+		dev_info(dcp->dev, "display kept on for its inactive sink released: powering it down\n");
+		if (dcp_v14_set_power(v14, false))
+			dev_warn(dcp->dev, "display did not power down\n");
+	}
+	mutex_unlock(&v14->lock);
+}
+
+/*
+ * Called by the release, under the HPD lock, once the sink is no longer
+ * marked inactive. Against DPMS off's look at the sink and its note
+ * (iomfb_v14_7_poweroff()), under kept_lock both: either that comes first,
+ * and the note is seen here, or this does, and DPMS off sees the sink gone
+ * and powers the display down itself.
+ */
+void iomfb_v14_7_external_sink_released(struct apple_dcp *dcp)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+	bool kept;
+
+	if (!dcp->external_native || !v14)
+		return;
+	mutex_lock(&v14->kept_lock);
+	v14->sink_gen++;
+	kept = v14->kept_on;
+	mutex_unlock(&v14->kept_lock);
+	if (kept)
+		schedule_work(&v14->kept_on_work);
+}
+
 /*
  * The firmware withdrew the timings of the attached display. An HPD bounce
  * withdraws the description, as can a connect or a mode set on the HDMI
@@ -821,6 +1054,26 @@ bool iomfb_v14_7_external_release(struct apple_dcp *dcp)
 	dev_info(dcp->dev, "display not described again: reporting it disconnected\n");
 	dcp_v14_external_hotplug(dcp, false);
 	return true;
+}
+
+/*
+ * The external role's catalog rules: the fw14 RGB8 profile, DSC-required
+ * colours the sink takes compressed, and the link's budget: the most lanes
+ * the PHY offers DP (not the active count a previous sink trained at), at
+ * the highest rate the port reports (HBR3 on every T6030 route). The J613
+ * panel pipe's Type-C display is described through the same callbacks
+ * (dcp_v14_description_tag()), but keeps the common rules: its catalog is
+ * not parsed as an external one.
+ */
+static void dcp_v14_catalog_profile(struct apple_dcp_v14 *v14, struct apple_dcp *dcp,
+				    struct dcp_parse_ctx *ctx)
+{
+	if (!v14->external)
+		return;
+	ctx->v14_7_rgb8 = true;
+	ctx->v14_7_dsc = true;
+	ctx->link_lanes = READ_ONCE(dcp->dptxport[0].max_lane_count);
+	ctx->link_rate = LINK_RATE_HBR3;
 }
 
 /*
@@ -892,6 +1145,7 @@ static void dcp_v14_external_published(struct apple_dcp_v14 *v14, const char *ke
 		ret = parse(raw->data, raw->size, &ctx);
 		if (!ret) {
 			ctx.dcp = dcp;
+			dcp_v14_catalog_profile(v14, dcp, &ctx);
 			ret = dcp_modes_replace(dcp, &ctx, generation);
 		}
 		if (ret) {
@@ -902,6 +1156,11 @@ static void dcp_v14_external_published(struct apple_dcp_v14 *v14, const char *ke
 			v14->described |= DCP_V14_DESC_TIMING;
 		wake_up_all(&v14->described_wait);
 		dev_info(dcp->dev, "display has %u usable modes\n", READ_ONCE(dcp->nr_modes));
+		/* A sink the firmware describes again is active: it reads only an active one. */
+		if (READ_ONCE(dcp->nr_modes) && dcp_v14_sink_inactive(dcp)) {
+			WRITE_ONCE(dcp->dptxport[0].sink_inactive, false);
+			dev_info(dcp->dev, "display sink described again: active\n");
+		}
 		dcp_v14_external_hotplug(dcp, READ_ONCE(dcp->nr_modes) > 0);
 	} else if (!strcmp(key, "DisplayAttributes") && !removed) {
 		ret = parse(raw->data, raw->size, &ctx);
@@ -967,7 +1226,8 @@ static int dcp_v14_external_callback(struct apple_dcp_v14 *v14, u32 tag, const u
 	if (tag == D(127) && SHAPE(4, 4)) {
 		count = get_unaligned_le32(in);
 		ret = -EINVAL;
-		if (!v14->chunk && count && count <= 0x100001) {
+		/* The announced count includes one byte that is never sent. */
+		if (!v14->chunk && count && count <= dcp_v14_raw_limit(v14) + 1) {
 			v14->chunk_size = count - 1;
 			v14->chunk_offset = 0;
 			v14->chunk = kvzalloc(max_t(u32, 1, v14->chunk_size), GFP_KERNEL);
@@ -1151,12 +1411,24 @@ static int dcp_v14_callback(void *cookie, u32 tag, const void *input, u32 in_siz
 			memcpy(out, in + 8, 76);
 		return 0;
 	}
-	if ((tag == D(577) && SHAPE(4, 0)) || (tag == D(300) && SHAPE(16, 0)))
+	if (tag == D(577) && SHAPE(4, 0))
 		return 0;
+	/* Runtime property publication: the panel level and its correction. */
+	if (tag == D(300) && SHAPE(16, 0)) {
+		u32 id = get_unaligned_le32(in), value = get_unaligned_le32(in + 4);
+
+		if (id == 19) {
+			v14->pr_nits = value;
+			v14->pr_nits_valid = true;
+		} else if (id == 18) {
+			v14->pr_correction = value;
+		}
+		return 0;
+	}
 	/* Chunked property transfer: start, chunk, end. */
 	if (tag == D(127) && SHAPE(4, 4)) {
 		count = get_unaligned_le32(in);
-		if (v14->chunk || !count || count > 0x100001)
+		if (v14->chunk || !count || count > dcp_v14_raw_limit(v14) + 1)
 			return -EINVAL;
 		v14->chunk_size = count - 1;
 		v14->chunk_offset = 0;
@@ -1431,7 +1703,13 @@ static void dcp_v14_idle(struct work_struct *work)
 	int ret = 0;
 
 	mutex_lock(&v14->lock);
-	while (!v14->failed && !ret)
+	/*
+	 * While the mailbox is held through system sleep the notifications
+	 * already queued stay queued: a callback that needs a call of its own
+	 * would be refused (dcp_v14_call_guarded()) and could not be
+	 * acknowledged. iomfb_v14_7_release_rx() runs this work again.
+	 */
+	while (!v14->failed && !v14->rx_held && !ret)
 		ret = dcp_v14_link_pump(&v14->link, 0, dcp_v14_callback, v14);
 	if (ret && ret != -ETIMEDOUT && ret != -EAGAIN) {
 		v14->failed = true;
@@ -1673,6 +1951,19 @@ const char *iomfb_v14_7_board_name(const struct dcp_v14_board *board)
 	return board->name;
 }
 
+/*
+ * Whether the CRTC may offer a colour matrix: only a panel whose board
+ * record names a tested matrix setter sends one (dcp_v14_ctm_locked()). On
+ * every other 14.7 pipe a matrix would be accepted and never applied, so
+ * userspace must not be offered one.
+ */
+bool iomfb_v14_7_ctm_supported(struct apple_dcp *dcp)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+
+	return v14 && v14->board && v14->board->ctm_set;
+}
+
 int iomfb_v14_7_probe(struct apple_dcp *dcp)
 {
 	struct device *dev = dcp->dev;
@@ -1723,6 +2014,7 @@ int iomfb_v14_7_probe(struct apple_dcp *dcp)
 	v14->board = board;
 	v14->dcp = dcp;
 	mutex_init(&v14->lock);
+	mutex_init(&v14->kept_lock);
 	mutex_init(&v14->present_lock);
 	init_waitqueue_head(&v14->described_wait);
 	INIT_WORK(&v14->idle_work, dcp_v14_idle);
@@ -2164,14 +2456,22 @@ static int dcpext_boot(struct apple_dcp *dcp)
 		v14->stride = DCP_V14_EXT_STRIDE;
 	}
 	mutex_init(&v14->lock);
+	mutex_init(&v14->kept_lock);
 	mutex_init(&v14->present_lock);
 	init_waitqueue_head(&v14->described_wait);
 	INIT_WORK(&v14->idle_work, dcp_v14_idle);
 	INIT_DELAYED_WORK(&v14->backlight_work, dcp_v14_backlight_work);
 	spin_lock_init(&v14->bl_gate_lock);
 	INIT_WORK(&v14->stopped_work, dcp_v14_stopped_work);
+	INIT_WORK(&v14->kept_on_work, dcp_v14_kept_on_work);
 	dcp->v14 = v14;
 	dcp_v14_link_init(&v14->link, dev, NULL);
+	/*
+	 * An external display's swaps can be dropped after a power-on. Only
+	 * where dcp_v14_swap() reports the drop (v14->external): on the manual
+	 * pipe a dropped swap must not pass as shown.
+	 */
+	v14->link.swaps_may_drop = v14->external;
 
 	rtk = apple_rtkit_init(dev, v14, "mbox", 0, &dcp_v14_rtkit_ops);
 	if (IS_ERR(rtk)) {
@@ -2398,6 +2698,7 @@ void iomfb_v14_7_unbind(struct apple_dcp *dcp)
 			apple_rtkit_flush_rx(v14->rtk);
 		flush_work(&v14->idle_work);
 		cancel_work_sync(&v14->stopped_work);
+		cancel_work_sync(&v14->kept_on_work);
 	} else {
 		/* No brightness-only present once the apple_dcp goes. */
 		dcp_v14_bl_shut(v14, true);
@@ -2448,8 +2749,10 @@ void iomfb_v14_7_remove(struct apple_dcp *dcp)
 	/* Their endpoints are freed with the apple_dcp too; nothing queues more now. */
 	dcp_v14_flush_endpoints(dcp);
 	cancel_work_sync(&v14->idle_work);
-	if (v14->external)
+	if (v14->external) {
 		cancel_work_sync(&v14->stopped_work);
+		cancel_work_sync(&v14->kept_on_work);
+	}
 }
 
 static int dcp_v14_status_show(struct seq_file *m, void *unused)
@@ -2476,6 +2779,13 @@ static int dcp_v14_status_show(struct seq_file *m, void *unused)
 		seq_printf(m, "nits sent %u presents %llu brightness-only %llu refused %llu gate %d\n",
 			   v14->nits_sent, v14->nits_presents, v14->brightness_presents,
 			   v14->nits_refused, v14->bl_gate);
+	seq_printf(m, "pr nits %u.%04u valid %d correction %#x\n", v14->pr_nits >> 16,
+		   (u32)(((u64)(v14->pr_nits & 0xffff) * 10000) >> 16), v14->pr_nits_valid,
+		   v14->pr_correction);
+	if (v14->external)
+		seq_printf(m, "swaps dropped %llu status waits %llu timeouts %llu last %#x\n",
+			   v14->swaps_dropped, v14->status_waits, v14->status_timeouts,
+			   v14->display_status);
 	seq_printf(m, "ctm valid %d disabled %d calls %llu setter %#x getter %#x\n",
 		   v14->ctm_valid, v14->ctm_disabled, v14->ctm_calls, v14->ctm_status,
 		   v14->ctm_get_status);
@@ -2709,7 +3019,7 @@ static bool dcp_v14_swap_admit(void *cookie)
 	if (!v14->external && !v14->typec)
 		return true;
 	if (!dcp || READ_ONCE(v14->failed) || !READ_ONCE(v14->powered) ||
-	    !READ_ONCE(v14->mode_live) ||
+	    !READ_ONCE(v14->mode_live) || dcp_v14_sink_inactive(dcp) ||
 	    admission->generation != v14->description_generation ||
 	    !dcp_v14_external_described(v14) || !READ_ONCE(dcp->mode_state.valid))
 		return false;
@@ -2804,7 +3114,7 @@ static int dcp_v14_swap(struct apple_dcp_v14 *v14, const u8 *surface, u64 iova,
 	 * firmware takes no swap for the panel now, and one it swallows never
 	 * completes. Nothing is sent; the caller drops the frame.
 	 */
-	if (dcp_v14_panel_dark(v14)) {
+	if (dcp_v14_panel_dark(v14) || v14->rx_held) {
 		mutex_unlock(&v14->lock);
 		kfree(swap);
 		return -EAGAIN;
@@ -2831,6 +3141,17 @@ static int dcp_v14_swap(struct apple_dcp_v14 *v14, const u8 *surface, u64 iova,
 		/* The swap status sits at byte 5 of the reply. */
 		if (!ret && get_unaligned_le32((u8 *)result + 5))
 			ret = -EIO;
+		/*
+		 * Status 0 with the flag at byte 0: the external firmware took
+		 * the swap and dropped it, as it does with one that arrives while
+		 * its timings are off after a power-on. No D589 follows (the link
+		 * knows); nothing was shown. Only the external role: the panel's
+		 * swaps are handled as before.
+		 */
+		if (!ret && v14->external && ((u8 *)result)[0]) {
+			v14->swaps_dropped++;
+			ret = -EAGAIN;
+		}
 		if (nits)
 			dcp_v14_swap_nits_done(v14, &present, !ret);
 	}
@@ -2880,11 +3201,12 @@ static bool __dcp_v14_present(struct apple_dcp_v14 *v14, struct drm_framebuffer 
 			   fb ? height : 0, dst_y, ctm_state);
 	elapsed = ktime_get_ns() - start;
 	if (ret && (v14->external || READ_ONCE(v14->typec)) && !READ_ONCE(v14->failed)) {
-		/* Refused before it was taken: the old framebuffer stays on screen. */
+		/* Refused, or dropped before it was shown: the old framebuffer stays. */
 		if (fb)
 			drm_framebuffer_put(fb);
 		WRITE_ONCE(v14->mode_swaps, 0);
-		dev_warn_ratelimited(v14->dev, "display refused a swap: %d\n", ret);
+		dev_warn_ratelimited(v14->dev, "display %s a swap: %d\n",
+				     ret == -EAGAIN ? "dropped" : "refused", ret);
 		return false;
 	}
 	/* Not sent, the lid is closed: the panel keeps what it showed. */
@@ -3094,12 +3416,86 @@ static int dcp_v14_set_mode(struct apple_dcp_v14 *v14, u32 color, u32 timing)
 	return ret ?: (le32_to_cpu(status) ? -EIO : 0);
 }
 
+/*
+ * A437, block 0x6e: the display status word the firmware checks
+ * before it programs a swap. The request is a token, the block and sub-block
+ * ids, eight arguments and their count, and the output length; the reply
+ * carries the block at 0 and a status at +0x1000.
+ */
+#define DCP_V14_GET_BLOCK_IN		0x5c
+#define DCP_V14_GET_BLOCK_OUT		0x1004
+#define DCP_V14_GET_BLOCK_ID		8
+#define DCP_V14_GET_BLOCK_OUT_LEN	0x54
+#define DCP_V14_GET_BLOCK_STATUS	0x1000
+#define DCP_V14_DISPLAY_STATUS_BLOCK	0x6e
+/* Pipe, can program a swap, soft and controller power, link, timings enabled. */
+#define DCP_V14_DISPLAY_READY		(BIT(0) | BIT(2) | BIT(3) | BIT(4) | BIT(6) | BIT(7))
+#define DCP_V14_DISPLAY_RUN_MODE_PENDING BIT(1)
+/* How long a display is given to enable its timings after A472 on. */
+#define DCP_V14_DISPLAY_READY_MS	2000
+
+static int dcp_v14_display_status(struct apple_dcp_v14 *v14, u32 *status)
+{
+	u8 request[DCP_V14_GET_BLOCK_IN] = {};
+	u8 *out;
+	int ret;
+
+	put_unaligned_le32(DCP_V14_DISPLAY_STATUS_BLOCK, request + DCP_V14_GET_BLOCK_ID);
+	put_unaligned_le64(4, request + DCP_V14_GET_BLOCK_OUT_LEN);
+	out = kzalloc(DCP_V14_GET_BLOCK_OUT, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+	ret = dcp_v14_call(v14, A(437), request, sizeof(request), out, DCP_V14_GET_BLOCK_OUT, 0);
+	if (!ret && get_unaligned_le32(out + DCP_V14_GET_BLOCK_STATUS)) {
+		dev_err(v14->dev, "display status query answered %#x\n",
+			get_unaligned_le32(out + DCP_V14_GET_BLOCK_STATUS));
+		ret = -EIO;
+	}
+	if (!ret)
+		*status = get_unaligned_le32(out);
+	kfree(out);
+	return ret;
+}
+
+/*
+ * After A472 on the firmware enables the display's timings asynchronously,
+ * and drops a swap that arrives before that (dcp_v14_swap_locked() ends such
+ * a swap, but shows nothing). Wait for the display status to report the pipe,
+ * link and timings up, polling while the callbacks keep running; bounded, and
+ * a display that went away ends the wait. Called with the lock held.
+ */
+static void dcp_v14_external_wait_ready(struct apple_dcp *dcp, struct apple_dcp_v14 *v14)
+{
+	unsigned long deadline = jiffies + msecs_to_jiffies(DCP_V14_DISPLAY_READY_MS);
+	u32 status = 0;
+	int ret;
+
+	lockdep_assert_held(&v14->lock);
+	v14->status_waits++;
+	for (;;) {
+		ret = dcp_v14_display_status(v14, &status);
+		if (ret)
+			return;
+		v14->display_status = status;
+		if ((status & DCP_V14_DISPLAY_READY) == DCP_V14_DISPLAY_READY &&
+		    !(status & DCP_V14_DISPLAY_RUN_MODE_PENDING))
+			return;
+		if (READ_ONCE(v14->failed) || !READ_ONCE(dcp->dptxport[0].connected) ||
+		    time_after(jiffies, deadline))
+			break;
+		usleep_range(1000, 2000);
+	}
+	v14->status_timeouts++;
+	dev_warn(dcp->dev, "display not ready after power-on: status %#x\n", status);
+}
+
 /* A472: the power state; its status sits at byte 4 of the reply. */
 static int dcp_v14_power_call(struct apple_dcp_v14 *v14, bool on)
 {
 	u8 in[12] = {}, out[8] = {};
 	int ret;
 
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_power_call, v14, on);
 	put_unaligned_le64(on, in);
 	ret = dcp_v14_call(v14, A(472), in, sizeof(in), out, sizeof(out), 0);
 	if (!ret && get_unaligned_le32(out + 4))
@@ -3112,6 +3508,11 @@ static int dcp_v14_set_power(struct apple_dcp_v14 *v14, bool on)
 {
 	int ret = dcp_v14_power_call(v14, on);
 
+	if (v14->external) {
+		mutex_lock(&v14->kept_lock);
+		v14->kept_on = false;
+		mutex_unlock(&v14->kept_lock);
+	}
 	/* A refused power-down leaves nothing on: the display is gone already. */
 	if (!ret || (!on && !READ_ONCE(v14->failed)))
 		v14->powered = on;
@@ -3205,15 +3606,45 @@ bool iomfb_v14_7_external_showing(struct apple_dcp *dcp,
 	return live;
 }
 
+bool iomfb_v14_7_external_powered(struct apple_dcp *dcp)
+{
+	struct apple_dcp_v14 *v14 = dcp->v14;
+
+	return dcp->external && v14 && READ_ONCE(v14->powered) && !READ_ONCE(v14->failed);
+}
+
+/* The sink's audio around an external mode set. */
+static void dcp_v14_audio_off(struct apple_dcp *dcp)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_audio_off, dcp);
+	av_service_disconnect(dcp);
+}
+
+static void dcp_v14_audio_on(struct apple_dcp *dcp)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_audio_on, dcp);
+	av_service_connect(dcp);
+}
+
 /* An external display: power down, set the new mode, power up. */
 static int dcp_v14_external_modeset(struct apple_dcp *dcp, struct drm_crtc_state *crtc_state)
 {
 	struct apple_dcp_v14 *v14 = dcp->v14;
 	struct dcp_display_mode mode = {};
+	bool audio_off = false;
 	int ret = 0;
 
 	if (!v14 || READ_ONCE(v14->failed) || !v14->opened)
 		return -EIO;
+	/*
+	 * The sink's audio stops before the display is powered down for the
+	 * mode change (as dcp_poweroff() has it), outside the RPC lock; it is
+	 * connected again once the display is on, below.
+	 */
+	if (READ_ONCE(v14->powered) && dcp->avep) {
+		dcp_v14_audio_off(dcp);
+		audio_off = true;
+	}
 	ret = dcp_v14_external_settle(dcp, v14);
 	if (ret)
 		goto out;
@@ -3234,6 +3665,8 @@ static int dcp_v14_external_modeset(struct apple_dcp *dcp, struct drm_crtc_state
 			 DRM_MODE_ARG(&crtc_state->mode), mode.timing_mode_id, mode.color_mode_id);
 		atomic_set(&dcp->external_retries, 0);
 		dcp_mode_set_valid(&dcp->mode_state, true);
+		if (dcp->avep)
+			dcp_v14_audio_on(dcp);
 		return 0;
 	}
 	if (v14->powered && dcp_v14_set_power(v14, false))
@@ -3247,22 +3680,35 @@ static int dcp_v14_external_modeset(struct apple_dcp *dcp, struct drm_crtc_state
 	if (!ret) {
 		v14->panel_width = mode.mode.hdisplay;
 		v14->panel_height = mode.mode.vdisplay;
+		/* D101: the default stride follows the mode from here on. */
+		v14->stride = mode.mode.hdisplay * 4;
 		v14->mode_timing = mode.timing_mode_id;
 		v14->mode_color = mode.color_mode_id;
 		v14->mode_swaps = 0;
 		v14->mode_live = true;
+		dcp_v14_external_wait_ready(dcp, v14);
 	}
 	mutex_unlock(&v14->lock);
 out:
 	dev_info(dcp->dev, "display mode " DRM_MODE_FMT " (timing %u, color %u): %d\n",
 		 DRM_MODE_ARG(&crtc_state->mode), mode.timing_mode_id, mode.color_mode_id, ret);
 	if (ret) {
-		/* A mode that is gone, or a description that never settled. */
+		/*
+		 * A mode that is gone, or a description that never settled:
+		 * nothing was powered down, and the display goes on in its old
+		 * mode. So does its audio; no plug event would bring it back
+		 * if the retries fail too.
+		 */
+		if (audio_off && iomfb_v14_7_external_powered(dcp))
+			dcp_v14_audio_on(dcp);
 		dcp_external_retry(dcp, "display mode not set", ret, 500);
 		return ret;
 	}
 	atomic_set(&dcp->external_retries, 0);
 	dcp_mode_set_valid(&dcp->mode_state, true);
+	/* A472 on: the sink's audio again. */
+	if (dcp->avep)
+		dcp_v14_audio_on(dcp);
 	return 0;
 }
 
@@ -3369,7 +3815,7 @@ void iomfb_v14_7_flush(struct apple_dcp *dcp, struct drm_crtc *crtc,
 	    (!dcp->v14 || !READ_ONCE(dcp->v14->powered) ||
 	     !dcp_v14_external_described(dcp->v14) ||
 	     !READ_ONCE(dcp->mode_state.valid) || !dcp->connector ||
-	     !READ_ONCE(dcp->connector->connected))) {
+	     !READ_ONCE(dcp->connector->connected) || dcp_v14_sink_inactive(dcp))) {
 		dcp_drm_crtc_vblank(dcp->crtc);
 		return;
 	}
@@ -3630,9 +4076,28 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 
 	/* An external display is powered down; the next enable sets its mode again. */
 	if (dcp->external) {
+		/* Audio stops with the display, as dcp_poweroff() has it. */
+		if (dcp->avep)
+			av_service_disconnect(dcp);
+		/*
+		 * An inactive sink's display stays powered: the firmware
+		 * retrains only a powered display's link, and that link-up is
+		 * how the sink comes back. Its release powers it off
+		 * (iomfb_v14_7_external_sink_released()).
+		 */
 		if (v14 && v14->opened && !READ_ONCE(v14->failed)) {
+			bool keep;
+
 			mutex_lock(&v14->lock);
-			if (v14->powered && dcp_v14_set_power(v14, false))
+			/* One step against the sink's release: see there. */
+			mutex_lock(&v14->kept_lock);
+			keep = dcp_v14_keep_for_sink(dcp);
+			if (keep) {
+				v14->kept_on = v14->powered;
+				v14->kept_gen = v14->sink_gen;
+			}
+			mutex_unlock(&v14->kept_lock);
+			if (!keep && v14->powered && dcp_v14_set_power(v14, false))
 				dev_warn(dcp->dev, "display did not power down\n");
 			mutex_unlock(&v14->lock);
 		}
@@ -3664,4 +4129,8 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 
 #if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
 #include "iomfb_v14_7_backlight_test.c"
+#include "iomfb_v14_7_sleep_test.c"
+#include "iomfb_v14_7_external_audio_test.c"
+#include "iomfb_v14_7_catalog_profile_test.c"
+#include "iomfb_v14_7_kept_on_test.c"
 #endif

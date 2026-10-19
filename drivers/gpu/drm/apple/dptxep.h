@@ -62,9 +62,16 @@ struct dptx_port {
 	struct phy *atcphy;
 	struct mux_control *mux;
 	u32 lane_count;
+	/*
+	 * The most lanes the PHY offers DP, as last reported to the firmware;
+	 * the active lane count set while a link trains does not change it.
+	 */
+	u32 max_lane_count;
 	u32 link_rate, pending_link_rate;
 	u32 drive_settings[2];
 	u32 trained_voltage[4], trained_pre[4];
+	/* The 14.7 external role: the sink is inactive (callback 20) until a link-up. */
+	bool sink_inactive;
 	/*
 	 * Per-boot invocation counters for the validate/connect/request/
 	 * release AFK calls, used together with the caller return address

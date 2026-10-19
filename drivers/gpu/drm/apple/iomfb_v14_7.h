@@ -19,6 +19,8 @@ struct drm_crtc_state;
  */
 const struct dcp_v14_board *iomfb_v14_7_board(struct device *dev);
 const char *iomfb_v14_7_board_name(const struct dcp_v14_board *board);
+/* The CRTC may offer a colour matrix: the firmware has a tested setter. */
+bool iomfb_v14_7_ctm_supported(struct apple_dcp *dcp);
 
 /* Platform probe: firmware identity, boot loader handoff, PMP acknowledgment. */
 int iomfb_v14_7_probe(struct apple_dcp *dcp);
@@ -33,6 +35,12 @@ bool iomfb_v14_7_panel_nits(struct apple_dcp *dcp);
  */
 void iomfb_v14_7_backlight_suspend(struct apple_dcp *dcp);
 void iomfb_v14_7_backlight_resume(struct apple_dcp *dcp);
+/*
+ * System sleep of an internal panel: its firmware's messages wait in the
+ * mailbox from _hold_rx() until _release_rx().
+ */
+void iomfb_v14_7_hold_rx(struct apple_dcp *dcp);
+void iomfb_v14_7_release_rx(struct apple_dcp *dcp);
 /* Component bind: the running DCP's RTKit session. */
 int iomfb_v14_7_bind(struct apple_dcp *dcp);
 int iomfb_v14_7_external_start(struct apple_dcp *dcp);
@@ -49,6 +57,8 @@ int iomfb_v14_7_external_open(struct apple_dcp *dcp);
 const char *iomfb_v14_7_external_busy(struct apple_dcp *dcp);
 /* The external session can no longer be used until reboot. */
 bool iomfb_v14_7_external_failed(struct apple_dcp *dcp);
+/* The attached display is powered (A472 on) in the mode last set. */
+bool iomfb_v14_7_external_powered(struct apple_dcp *dcp);
 /* The firmware runs this mode, set last, and shows swaps in it. */
 bool iomfb_v14_7_external_showing(struct apple_dcp *dcp,
 				  const struct drm_display_mode *mode);
@@ -59,6 +69,10 @@ bool iomfb_v14_7_external_showing(struct apple_dcp *dcp,
  * _holding() says whether one is kept connected now.
  */
 void dcp_v14_external_hotplug(struct apple_dcp *dcp, bool connected);
+/* The firmware reported the attached sink inactive, or active again. */
+void iomfb_v14_7_external_sink_active(struct apple_dcp *dcp, bool active);
+/* The sink was released: a display kept on only for it is powered down. */
+void iomfb_v14_7_external_sink_released(struct apple_dcp *dcp);
 void iomfb_v14_7_external_withdrawn(struct apple_dcp *dcp);
 bool iomfb_v14_7_external_release(struct apple_dcp *dcp);
 bool iomfb_v14_7_external_holding(struct apple_dcp *dcp);

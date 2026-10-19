@@ -60,6 +60,7 @@ pub(crate) mod glue {
         fn asahi_g15_board() -> bool;
         fn asahi_g15_machine(compatible: *const core::ffi::c_char) -> bool;
         fn asahi_g15_hold_power(dev: *mut core::ffi::c_void);
+        fn asahi_g15_release_power(dev: *mut core::ffi::c_void);
         fn asahi_g15_module_get();
         fn asahi_g15_adt_phram(start: *mut u64, size: *mut u64) -> core::ffi::c_int;
         fn asahi_g15_ram_disjoint(start: u64, size: u64) -> bool;
@@ -69,6 +70,7 @@ pub(crate) mod glue {
         fn asahi_g15_dma_coherent(dev: *mut core::ffi::c_void) -> bool;
         pub(crate) fn asahi_g15_pmp_prepare(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
         pub(crate) fn asahi_g15_pmp_get(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
+        pub(crate) fn asahi_g15_pmp_put(dev: *mut core::ffi::c_void);
         fn asahi_g15_reserved_uat(index: u32, start: u64, size: u64) -> bool;
     }
 
@@ -102,6 +104,12 @@ pub(crate) mod glue {
     pub(crate) fn hold_power(dev: &device::Device) {
         // SAFETY: `dev` is a valid device; runtime-PM accounting on it has no other requirement.
         unsafe { asahi_g15_hold_power(dev.as_raw().cast()) };
+    }
+
+    /// Gives the GFX power domain hold back after a start that touched nothing firmware-visible.
+    pub(crate) fn release_power(dev: &device::Device) {
+        // SAFETY: `dev` is the device `hold_power` was called with.
+        unsafe { asahi_g15_release_power(dev.as_raw().cast()) };
     }
 
     static RETAINED: AtomicBool = AtomicBool::new(false);
@@ -158,6 +166,26 @@ pub(crate) mod glue {
     pub(crate) fn ioremap_wc(start: u64, size: usize) -> *mut core::ffi::c_void {
         // SAFETY: Creates a new mapping of a device range; no other effect.
         unsafe { asahi_g15_ioremap_wc(start, size) }
+    }
+}
+
+/// The PMP AGX vote of a start, released on drop until the session is retained ([`Vote::keep`]).
+struct Vote(Option<ARef<device::Device>>);
+
+impl Vote {
+    /// The session is retained: the vote stays with it until reboot.
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Vote {
+    fn drop(&mut self) {
+        // The vote is a level, not a count: never give it back under a retained session.
+        if let Some(d) = self.0.take().filter(|_| !glue::retained()) {
+            // SAFETY: `d` is the device `asahi_g15_pmp_get` voted for.
+            unsafe { glue::asahi_g15_pmp_put(d.as_raw().cast()) };
+        }
     }
 }
 
@@ -575,6 +603,8 @@ pub(crate) fn start(
 ) -> Result<Booted> {
     let Admitted { regs, adt, board_images } = admitted;
     let d: ARef<device::Device> = shared.dev.clone();
+    // Released by an early failure below, until the session is retained.
+    let mut vote = Vote(None);
     if cfg.platform == hw::Platform::AdtWithPmp {
         // SAFETY: `d` is the bound GPU device.
         let ret = unsafe { glue::asahi_g15_pmp_get(d.as_raw().cast()) };
@@ -582,6 +612,7 @@ pub(crate) fn start(
             dev_err!(d, "PMP AGX vote failed: {}\n", ret);
             return Err(Error::from_errno(ret));
         }
+        vote = Vote(Some(d.clone()));
     }
     let id = regs.identity(cfg)?;
     dev_info!(
@@ -646,8 +677,9 @@ pub(crate) fn start(
         return Err(e);
     }
 
-    // From here on the firmware is touched: nothing it can reach is freed.
+    // From here on the firmware is touched: nothing it can reach is freed, the vote included.
     glue::retain_module();
+    vote.keep();
     // Full-stack T6030 synthesizes a named mailbox. The maintained T6030
     // DT instead has one unnamed mailbox, like the other device-tree GPUs.
     let named_mailbox = cfg.platform == hw::Platform::AdtWithPmp

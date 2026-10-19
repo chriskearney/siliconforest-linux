@@ -15,9 +15,11 @@
  * only once it is told that the sink raised one. This file tells it:
  *
  *  - for every short low pulse on the HPD GPIO while the HDMI link is up;
- *  - every 100 ms for a while after the firmware configured an HBR3 link,
- *    the rate those modes use, because not every request of the converter
- *    shows up as a pulse on the GPIO.
+ *  - every 100 ms while the firmware holds the sink (from its connection
+ *    to its release), because not every request of the converter shows up
+ *    as a pulse on the GPIO, and on a board whose HPD GPIO sleeps (the
+ *    J514S line is on the AOP) none does: without the service the firmware
+ *    never learns of the converter's events (sink metadata, FRL readiness).
  *
  * Only the T6030 external coprocessor with a fixed HDMI route uses this.
  */
@@ -32,6 +34,7 @@
 #include <linux/workqueue.h>
 
 #include <drm/drm_mode.h>
+#include <kunit/static_stub.h>
 
 #include "afk.h"
 #include "dcp-hdmi.h"
@@ -40,10 +43,10 @@
 
 /* Longest HPD low time still taken as a service request (DP: at most 1 ms). */
 #define DCP_HDMI_IRQ_HPD_MAX_NS		(2 * NSEC_PER_MSEC)
-/* Requests are polled this long after an HBR3 link configuration ... */
-#define DCP_HDMI_SERVICE_WINDOW_MS	10000
-/* ... at this period. */
+/* Requests are polled at this period while the sink is held. */
 #define DCP_HDMI_SERVICE_PERIOD_MS	100
+/* Requests refused in a row before the poll stops until the next sink. */
+#define DCP_HDMI_SERVICE_REFUSALS	3
 
 /* DPTX remote port call: the sink raised an IRQ_HPD service request. */
 #define DPTX_GROUP_HOTPLUG		8
@@ -57,8 +60,10 @@ struct dcp_hdmi {
 	u64 falling_ns;
 	/* Short pulses seen and not yet passed on. */
 	atomic_t pulses;
-	/* Poll requests until this time (jiffies); 0 when not polling. */
-	unsigned long poll_until;
+	/* The firmware holds the sink: requests are polled. */
+	bool armed;
+	/* Polls that the firmware refused, in a row. */
+	unsigned int refused;
 	/* The HPD GPIO can be read from hard IRQ context. */
 	bool timed_edges;
 	/* Work context only. */
@@ -82,6 +87,7 @@ static int dcp_hdmi_sink_irq(struct apple_dcp *dcp)
 {
 	struct apple_epic_service *service = READ_ONCE(dcp->dptxport[0].service);
 
+	KUNIT_STATIC_STUB_REDIRECT(dcp_hdmi_sink_irq, dcp);
 	if (!service)
 		return -ENODEV;
 	return afk_service_call(service, DPTX_GROUP_HOTPLUG, DPTX_CMD_SINK_IRQ,
@@ -94,9 +100,8 @@ static void dcp_hdmi_work(struct work_struct *work)
 	struct dcp_hdmi *hdmi = container_of(to_delayed_work(work),
 					     struct dcp_hdmi, work);
 	struct apple_dcp *dcp = hdmi->dcp;
-	unsigned long until = READ_ONCE(hdmi->poll_until);
 	bool pulse = atomic_xchg(&hdmi->pulses, 0) > 0;
-	bool poll = until && time_before(jiffies, until);
+	bool poll = READ_ONCE(hdmi->armed);
 	int ret;
 
 	if (!pulse && !poll)
@@ -110,21 +115,29 @@ static void dcp_hdmi_work(struct work_struct *work)
 		dev_warn_ratelimited(dcp->dev,
 				     "HDMI: converter service request not delivered: %d\n",
 				     ret);
-		/* Don't keep polling a firmware that refuses the request. */
-		cmpxchg(&hdmi->poll_until, until, 0);
-		return;
+		/*
+		 * Don't keep polling a firmware that refuses the request; one
+		 * that failed once is asked again at the next period. With a
+		 * sleeping HPD line nothing else would bring the poll back.
+		 */
+		if (++hdmi->refused >= DCP_HDMI_SERVICE_REFUSALS) {
+			WRITE_ONCE(hdmi->armed, false);
+			dev_warn(dcp->dev, "HDMI: converter service stopped until the next sink\n");
+		}
+		goto next;
 	}
+	hdmi->refused = 0;
 	if (!hdmi->announced) {
 		hdmi->announced = true;
 		dev_info(dcp->dev, "HDMI: forwarding converter service requests (%s)\n",
-			 pulse ? "HPD pulse" : "HBR3 link");
+			 pulse ? "HPD pulse" : "sink held");
 	} else {
 		dev_dbg(dcp->dev, "HDMI: converter service request (%s)\n",
 			pulse ? "HPD pulse" : "poll");
 	}
 
 next:
-	if (poll)
+	if (READ_ONCE(hdmi->armed))
 		mod_delayed_work(system_freezable_wq, &hdmi->work,
 				 msecs_to_jiffies(DCP_HDMI_SERVICE_PERIOD_MS));
 }
@@ -161,22 +174,36 @@ void dcp_hdmi_hpd_edge(struct apple_dcp *dcp)
 	mod_delayed_work(system_freezable_wq, &hdmi->work, 0);
 }
 
-/* From DPTX DidChangeLinkConfiguration, with the rate that is now set. */
+/*
+ * From DPTX DidChangeLinkConfiguration, with the rate that is now set: the
+ * converter trains an HDMI FRL link to the display behind an HBR3 link and
+ * raises its requests then, so one goes out at once.
+ */
 void dcp_hdmi_link_configured(struct apple_dcp *dcp, u32 link_rate)
 {
 	struct dcp_hdmi *hdmi = dcp->hdmi;
-	unsigned long until;
 
-	if (!hdmi)
+	if (!hdmi || !READ_ONCE(hdmi->armed) || link_rate != LINK_RATE_HBR3)
 		return;
-	if (link_rate != LINK_RATE_HBR3) {
-		WRITE_ONCE(hdmi->poll_until, 0);
-		return;
-	}
-
-	until = jiffies + msecs_to_jiffies(DCP_HDMI_SERVICE_WINDOW_MS);
-	WRITE_ONCE(hdmi->poll_until, until ?: 1);
 	mod_delayed_work(system_freezable_wq, &hdmi->work, 0);
+}
+
+/*
+ * The firmware holds the sink (from REQUEST_DISPLAY to its release): its
+ * requests are polled meanwhile. The first poll goes out once the link is up
+ * (dcp_hdmi_link_up()); the work re-arms itself until the sink is released.
+ */
+void dcp_hdmi_sink_held(struct apple_dcp *dcp, bool held)
+{
+	struct dcp_hdmi *hdmi = dcp->hdmi;
+
+	if (!hdmi || READ_ONCE(hdmi->armed) == held)
+		return;
+	WRITE_ONCE(hdmi->armed, held);
+	hdmi->refused = 0;
+	if (held)
+		mod_delayed_work(system_freezable_wq, &hdmi->work,
+				 msecs_to_jiffies(DCP_HDMI_SERVICE_PERIOD_MS));
 }
 
 void dcp_hdmi_enable(struct apple_dcp *dcp)
@@ -235,3 +262,7 @@ int dcp_hdmi_init(struct apple_dcp *dcp)
 		dev_info(dcp->dev, "HDMI: HPD GPIO can sleep, converter requests are polled only\n");
 	return 0;
 }
+
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+#include "dcp-hdmi-test.c"
+#endif

@@ -14,6 +14,8 @@
 
 #define DCP_V14_LINK_MAX_EVENTS		32
 #define DCP_V14_LINK_MAX_CALLBACKS	8
+/* Dropped swaps remembered, for a D589 that comes for one after all. */
+#define DCP_V14_LINK_DROPPED		4
 
 /* Method and callback tags: 'A' or 'D' followed by three decimal digits. */
 #define DCP_V14_TAG(c, n) (((u32)(c) << 24) | ((u32)('0' + (n) / 100) << 16) | \
@@ -52,6 +54,19 @@ struct dcp_v14_link {
 
 	struct completion ready;
 	int ready_result;
+	/*
+	 * An external session: its firmware can report a swap dropped in
+	 * the A407 reply, and then sends no D589 for it.
+	 */
+	bool swaps_may_drop;
+	/*
+	 * The swaps the firmware dropped, the last DCP_V14_LINK_DROPPED: a
+	 * D589 for one of them, if any, completes nothing. One slot is not
+	 * enough: a second drop would turn the first one's D589 into an
+	 * unexpected completion during the next swap, and stop the session.
+	 */
+	u32 dropped[DCP_V14_LINK_DROPPED];
+	unsigned int dropped_next;
 
 	/* Our calls: [0] outer, [1] made from inside a callback. */
 	struct {
@@ -78,6 +93,10 @@ struct dcp_v14_link {
 	u64 handling[DCP_V14_LINK_MAX_CALLBACKS];
 };
 
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+void dcp_v14_link_test_callback(struct dcp_v14_link *link, u64 message,
+				const void *data, u32 size);
+#endif
 void dcp_v14_link_init(struct dcp_v14_link *link, struct device *dev,
 		       struct apple_rtkit *rtk);
 int dcp_v14_link_start(struct dcp_v14_link *link);

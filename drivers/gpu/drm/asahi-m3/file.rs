@@ -553,7 +553,7 @@ impl File {
 
     /// IOCTL: vm_destroy: Destroy a `Vm`.
     pub(crate) fn vm_destroy(
-        _device: &AsahiDevice,
+        device: &AsahiDevice,
         data: &mut uapi::drm_asahi_vm_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
@@ -562,10 +562,15 @@ impl File {
         }
         let vm = file.inner().vms().remove(data.vm_id as usize);
         if vm.is_none() {
-            Err(ENOENT)
-        } else {
-            Ok(0)
+            return Err(ENOENT);
         }
+        drop(vm);
+        // The generation may release per-VM state now that the client's handle is gone. The
+        // ioctl's result does not depend on it.
+        if let Ok(gpu) = device.gpu() {
+            gpu.vm_closed();
+        }
+        Ok(0)
     }
 
     /// IOCTL: gem_create: Create a new GEM object.
