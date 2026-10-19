@@ -511,6 +511,28 @@ static void catalog_profile_scope_test(struct kunit *test)
 	kfree(modes);
 }
 
+/*
+ * The fw14 profile on a catalog whose PixelRepetition was not read (not
+ * the external parse): an undescribed repetition is none, not a refusal.
+ */
+static void catalog_undescribed_repetition_test(struct kunit *test)
+{
+	struct dcp_display_mode *modes;
+	struct dcp_parse_ctx ctx;
+	unsigned int count;
+	size_t size;
+	void *blob;
+
+	blob = build_catalog(test, &catalog[0], 1, &size);
+	KUNIT_ASSERT_EQ(test, parse(blob, size, &ctx), 0);
+	ctx.v14_7_rgb8 = true;
+	modes = enumerate_modes(&ctx, &count, 0, 0, 0, false, false);
+	KUNIT_ASSERT_FALSE(test, IS_ERR_OR_NULL(modes));
+	KUNIT_EXPECT_EQ(test, count, 1);
+	KUNIT_EXPECT_NOT_NULL(test, find_timing(modes, count, 60));
+	kfree(modes);
+}
+
 /* Equal scores: the lower colour ID wins. */
 static void catalog_color_tie_test(struct kunit *test)
 {
@@ -627,6 +649,7 @@ static struct kunit_case catalog_cases[] = {
 	KUNIT_CASE(catalog_budget_test),
 	KUNIT_CASE(catalog_preferred_test),
 	KUNIT_CASE(catalog_profile_scope_test),
+	KUNIT_CASE(catalog_undescribed_repetition_test),
 	KUNIT_CASE(catalog_color_tie_test),
 	KUNIT_CASE(catalog_fallback_test),
 	KUNIT_CASE(catalog_dsc_test),

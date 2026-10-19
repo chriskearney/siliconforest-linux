@@ -929,10 +929,13 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 	if (is_virtual)
 		return -EINVAL;
 
-	/* fw14 external: progressive, unsplit, one pipe, no pixel repetition. */
+	/*
+	 * fw14 external: progressive, unsplit, one pipe, no pixel repetition.
+	 * A repetition that was not described (< 0) is none.
+	 */
 	if (handle->v14_7_rgb8 &&
 	    (interlaced || split || !single_pipe ||
-	     horiz.pixel_repetition != 0 || vert.pixel_repetition != 0))
+	     horiz.pixel_repetition > 0 || vert.pixel_repetition > 0))
 		return -EINVAL;
 
 	/*
