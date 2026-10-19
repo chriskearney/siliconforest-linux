@@ -5,8 +5,11 @@
 //! The firmware asks for more PB with an event of type 7 naming PB slot 0, the context of a
 //! published render, its request counter (P+0x60 before its increment), the TA position and the
 //! halt epoch; the host appends at most ten blocks of the mapped heap to the block list and
-//! advances the block_ctl+4 producer (modulo K), then replies with DEVCTL 7. At the maximum the
-//! reply refuses, and the firmware finishes the scene with partial renders. A request from
+//! advances the block_ctl+4 producer (modulo K), then replies with DEVCTL 7. At the ledger's
+//! maximum the reply refuses; after [`MAX_REFUSALS`] refusals since the last initialization,
+//! later requests are left unanswered. That bounds the poll pass. It does not make the scene
+//! finish: a refused or unanswered request can leave the TA stalled, and the host deadline and
+//! its recovery path then apply, without a guarantee that they end the stall. A request from
 //! before a halt (epoch) or not matching a published render prefix is left unanswered.
 //!
 //! Core-only (no `kernel` imports): this file is compiled by the host test harness as well.
@@ -18,7 +21,8 @@ use crate::g15::fw::buffer::{grow_request, BLOCK_LIST_RECORDS, GROW_STEP, MAX_BL
 pub(crate) struct Ledger {
     /// Initial blocks (the C1 pages, InitBM blocks and TA register #33 name them).
     pub(crate) initial: u32,
-    /// Maximum blocks (P+0x70/+0x74 = 4 * max pages).
+    /// The most blocks posted, at most [`MAX_POSTED`]. The PB manager's P+0x70/+0x74 hold
+    /// 4 * the firmware's growth maximum (`Pools::soft_max()`) in pages, which may be lower.
     pub(crate) max: u32,
     /// Blocks posted to the block list, cumulative (the block_ctl+4 producer is this modulo K).
     pub(crate) posted: u32,
@@ -26,17 +30,34 @@ pub(crate) struct Ledger {
     pub(crate) next_request: u32,
     /// A refusal at the maximum was logged since the last initialization.
     pub(crate) refusal_logged: bool,
+    /// Refusals answered at the maximum since the last initialization. After
+    /// [`MAX_REFUSALS`] further requests are left unanswered: a firmware that keeps asking at
+    /// the maximum would otherwise be answered forever, under the device lock (ticket
+    /// malik-na/linux-aurora#69). Unanswered, the poll pass returns, and the host deadline and
+    /// its recovery path apply.
+    pub(crate) refusals: u32,
 }
 
+/// Refusals answered at the maximum before requests are left to the deadline.
+pub(crate) const MAX_REFUSALS: u32 = 2;
+
+/// The most blocks a ledger posts: the mapped heap, and below K, so that the block_ctl+4
+/// producer (posted modulo K) is never 0, the value of an empty block list.
+pub(crate) const MAX_POSTED: u32 = if MAX_BLOCKS < BLOCK_LIST_RECORDS {
+    MAX_BLOCKS
+} else {
+    BLOCK_LIST_RECORDS - 1
+};
+
 impl Ledger {
-    /// A fresh ledger. With growth, the initial size is clamped to 64..=2048 blocks and the
-    /// maximum to initial..=2048; without, both are the fixed 2048-block PB.
+    /// A fresh ledger. With growth, the initial size is clamped to 64..=[`MAX_POSTED`] blocks
+    /// and the maximum to initial..=[`MAX_POSTED`]; without, both are [`MAX_POSTED`].
     pub(crate) const fn new(grow: bool, blocks: u32, max_blocks: u32) -> Self {
         let (initial, max) = if grow {
-            let nb = clamp(blocks, MIN_BLOCKS, MAX_BLOCKS);
-            (nb, clamp(max_blocks, nb, MAX_BLOCKS))
+            let nb = clamp(blocks, MIN_BLOCKS, MAX_POSTED);
+            (nb, clamp(max_blocks, nb, MAX_POSTED))
         } else {
-            (MAX_BLOCKS, MAX_BLOCKS)
+            (MAX_POSTED, MAX_POSTED)
         };
         Self {
             initial,
@@ -44,6 +65,7 @@ impl Ledger {
             posted: initial,
             next_request: 0,
             refusal_logged: false,
+            refusals: 0,
         }
     }
 
@@ -52,11 +74,18 @@ impl Ledger {
         self.posted % BLOCK_LIST_RECORDS
     }
 
+    /// Whether the refusals at the maximum are used up: further requests go unanswered.
+    pub(crate) const fn exhausted(&self) -> bool {
+        self.refusals >= MAX_REFUSALS
+    }
+
     /// Whether `request` may be answered: growth on, an event of type 7 for PB slot 0 from a
     /// context with a published render prefix (`live`), a counter not below the next expected
-    /// one and the current halt epoch.
+    /// one, the current halt epoch, and refusals at the maximum not used up.
     pub(crate) fn admits(&self, request: &[u32; 14], grow: bool, live: bool, epoch: u64) -> bool {
-        grow && request[grow_request::TYPE] == 7
+        !self.exhausted()
+            && grow
+            && request[grow_request::TYPE] == 7
             && request[grow_request::SLOT] == 0
             && live
             && request[grow_request::COUNTER] >= self.next_request
@@ -68,7 +97,11 @@ impl Ledger {
     /// refusal at the maximum.
     pub(crate) fn accept(&mut self, request: &[u32; 14]) -> (u32, u32) {
         self.next_request = request[grow_request::COUNTER].wrapping_add(1);
-        (self.posted, GROW_STEP.min(self.max - self.posted))
+        let count = GROW_STEP.min(self.max - self.posted);
+        if count == 0 {
+            self.refusals += 1;
+        }
+        (self.posted, count)
     }
 
     /// Records `count` blocks as posted after their records were written and returns the new
@@ -135,11 +168,68 @@ mod tests {
         assert_eq!(l.producer(), 1024);
         assert_eq!(Ledger::new(true, 10, 20).initial, 64);
         assert_eq!(Ledger::new(true, 10, 20).max, 64);
-        assert_eq!(Ledger::new(true, 4000, 100).initial, 2048);
+        assert_eq!(Ledger::new(true, 5000, 100).initial, 4095);
         assert_eq!(Ledger::new(true, 512, 1024).max, 1024);
         assert_eq!(Ledger::new(true, 512, 100).max, 512);
         let fixed = Ledger::new(false, 512, 1024);
-        assert_eq!((fixed.initial, fixed.max, fixed.posted), (2048, 2048, 2048));
+        assert_eq!((fixed.initial, fixed.max, fixed.posted), (4095, 4095, 4095));
+        // The values the driver passes (tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS) are kept.
+        let l = Ledger::new(true, 1024, 4095);
+        assert_eq!(
+            (l.initial, l.max, l.posted, l.producer()),
+            (1024, 4095, 1024, 1024)
+        );
+    }
+
+    #[test]
+    fn producer_never_returns_to_zero() {
+        assert_eq!(MAX_POSTED, 4095);
+        assert!(MAX_POSTED <= MAX_BLOCKS && MAX_POSTED < BLOCK_LIST_RECORDS);
+        let values = [
+            0,
+            1,
+            MIN_BLOCKS - 1,
+            MIN_BLOCKS,
+            MIN_BLOCKS + 1,
+            1023,
+            1024,
+            1025,
+            3071,
+            3072,
+            3073,
+            MAX_POSTED - 1,
+            MAX_POSTED,
+            MAX_BLOCKS,
+            MAX_BLOCKS + 1,
+            BLOCK_LIST_RECORDS,
+            2 * BLOCK_LIST_RECORDS,
+            u32::MAX,
+        ];
+        for grow in [true, false] {
+            for blocks in values {
+                for max_blocks in values {
+                    let mut l = Ledger::new(grow, blocks, max_blocks);
+                    assert!(MIN_BLOCKS <= l.initial && l.initial <= l.max && l.max <= MAX_POSTED);
+                    assert_eq!(l.posted, l.initial);
+                    assert!((1..=MAX_POSTED).contains(&l.producer()));
+                    // Every producer of a growth to the maximum stays in 1..=4095.
+                    let mut counter = 0;
+                    loop {
+                        let (first, n) = l.accept(&request(5, counter, 1));
+                        assert_eq!(first, l.posted);
+                        if n == 0 {
+                            break;
+                        }
+                        let producer = l.post(n);
+                        assert!((1..=MAX_POSTED).contains(&producer));
+                        assert_eq!(producer, l.posted);
+                        counter += 1;
+                    }
+                    assert_eq!(l.posted, l.max);
+                    assert_eq!(l.refusals, 1);
+                }
+            }
+        }
     }
 
     #[test]
@@ -189,6 +279,15 @@ mod tests {
         // A stale (repeated) counter is refused, a later one accepted.
         assert!(!l.admits(&request(5, counter - 1, 1), true, true, 1));
         assert!(l.admits(&request(5, counter + 3, 1), true, true, 1));
+        // One refusal was answered above; one more is, then requests go unanswered.
+        assert_eq!(l.refusals, 1);
+        assert!(!l.exhausted());
+        let q = request(5, counter + 3, 1);
+        assert_eq!(l.accept(&q), (1024, 0));
+        assert!(l.exhausted());
+        assert!(!l.admits(&request(5, counter + 4, 1), true, true, 1));
+        // A fresh ledger starts over.
+        assert!(!Ledger::new(true, 512, 1024).exhausted());
     }
 
     #[test]

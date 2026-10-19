@@ -3,6 +3,11 @@
 **Approved for source integration as an off-by-default development variant.
 This is not a qualified kernel release or an installation recommendation.**
 
+The sections below through “Requirements before a public M3 release” record the
+original October 18 full-display-variant review. Later native-GPU releases reuse
+the isolated GPU driver with the normal display stack. See the dated follow-up
+at the end for the shared allocator changes; it does not qualify a new release.
+
 ## Sources and integration decision
 
 | Author | Original PR | Reviewed head |
@@ -169,3 +174,66 @@ required boot handoff, board data or userspace.
 
 Source integration does not remove these release requirements. The archived
 historical kernel repository is outside this workflow and remains untouched.
+
+
+## 2026-10-19: PR363 parameter-buffer follow-up
+
+Reviewed public upstream head `027bd7623f370e264c8dd056c71a00e1df6bc8a6`.
+Four carries, beginning with `97f81d57022c`, retain Naeem Malik's authorship
+and supplied sign-offs. Their only adaptation is the `asahi/` to `asahi-m3/`
+path mapping. Separate Chris-authored commits contain the review fixes and tests.
+The frozen code snapshot is `709f0f08316ad528181027abe1cf00b3083b9bf0`, on
+SiliconForest `0e1f466613761fecbe71ba8ca25f8b3598577062` (Linux 7.2.11).
+
+These changes affect the shared G15 allocator on **T6030 and T6031**, including
+the native-GPU profile. They seed all 22 already-allocated compute pools (22528
+pages), bound the growth-answer loop to its starting queue, limit hard-maximum
+refusals, reserve blocks beyond the firmware growth maximum, and map a 512 MiB
+parameter buffer. Default initial/firmware-maximum/posted-maximum sizes are
+1024/3072/4095 blocks. The 4096th mapped block is not posted: the block-list
+producer must stay below its 4096-entry wrap point.
+
+Review changes:
+
+- `Ledger::new` now caps both growing and fixed configurations at
+  `min(mapped blocks, block-list entries - 1)`. The upstream helper accepted
+  4096, producing an empty-looking producer index of zero. Its current default
+  caller already passes 1024/4095; this is defensive hardening, not a reproduced
+  default boot fault. Compile-time bounds and constructor/growth tests cover it.
+- Comments distinguish the physical heap, the firmware soft maximum and the
+  posted maximum. They no longer promise that a refused request completes the
+  scene or that the deadline path successfully recovers the GPU.
+- The host harness extracts the actual growth answer, request handler, clamp,
+  constants and constructor, and models ordered firmware-object accesses.
+  Requests arriving during a reply wait must remain queued for the next poll.
+  Receipts hash all eight source inputs as well as the extracted test bodies.
+
+Host checks at the frozen code snapshot (Rust 1.93.1):
+
+- G15 selftests: 55 Rust passed, 2 private-fixture cases ignored; 26 C/UAPI passed.
+- PB-growth harness: 10 passed; all 11 deliberate regressions fail the intended
+  assertions. Constructor comparison covers 35,364,050 inputs. The default trace
+  reaches 4095, attempts two refusals, then leaves requests unanswered. The
+  whole-heap tuning control is model-only: production static assertions reject it.
+- Existing statistics-drain harness passes with all seven regressions detected.
+- Independent constructor/default-trace and queue-extraction checks also pass;
+  removing the constructor cap or restoring drain-until-empty makes them fail.
+
+The normal GPU driver, both display drivers, DTs, UAPI, Rust core and build
+scripts are byte-identical to the base. Native render/compute ABI sizes remain
+384/136. Existing board admission, checked arithmetic, per-instance J516C
+panel scope and the statistics-consumer full barrier are retained.
+
+Build validation is recorded in the integration PR after the final native build.
+Host models establish neither firmware behavior nor DMA ordering on hardware.
+
+Limits: the 512 MiB heap is backed and DMA-mapped when allocated, an extra
+256 MiB on T6030 too. `g15_pb_max_blocks` changes the firmware soft limit, not
+that allocation. Refusal accounting bounds attempts; a failed reply transport
+can consume the budget. Physical exhaustion can still reach a fail-stop state
+until reboot. No T6030/T6031 workload, boot, thermal or power qualification is
+claimed for these additions. Naeem's J516C workload report is upstream evidence,
+not a SiliconForest hardware test.
+
+This source carry changes no installed Mac, signed release or catalog. Public
+`v2026.10.19.2` remains at `0e1f46661376` until a separately qualified release.

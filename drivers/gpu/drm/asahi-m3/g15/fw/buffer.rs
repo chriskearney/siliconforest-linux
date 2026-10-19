@@ -2,15 +2,15 @@
 
 //! Parameter-buffer and UMA allocator records of the 2419 firmware.
 //!
-//! The PB is one 256 MiB heap of [`MAX_PAGES`] pages of 0x8000 bytes in [`MAX_BLOCKS`] blocks of
+//! The PB is one 512 MiB heap of [`MAX_PAGES`] pages of 0x8000 bytes in [`MAX_BLOCKS`] blocks of
 //! four pages. The firmware sees it through the page list (u32 records `G >> 15` of compact
 //! addresses `G = gva - 0x1000000000`, one per page), the block list (8-byte records, the low
 //! word `G >> 15` of the block's first page) and the PB manager P: P+0x28 = 4 * blocks pages,
 //! P+0x2c K = 4096 (truthful: 8 * K bytes is the block-list span the firmware synchronizes on
 //! PB reconstruction, also during recovery), P+0x30 = blocks, P+0x48 = 4 * blocks - 1,
-//! P+0x70/+0x74 = 4 * maximum pages (the firmware asks to grow only while its current size is
-//! below them). block_ctl +0 = blocks, +4 = the host producer of block-list records, modulo K,
-//! advanced by every growth answer.
+//! P+0x70/+0x74 = 4 * the firmware's growth maximum in pages (its asynchronous growth stops
+//! there; a partial render may still ask for more). block_ctl +0 = blocks, +4 = the host
+//! producer of block-list records, modulo K, advanced by every growth answer.
 //!
 //! Nothing here allocates, locks or publishes: the functions build the exact record bytes (a
 //! zero fill followed by the field stores) and are host-tested.
@@ -20,9 +20,9 @@ pub(crate) const PAGE_BYTES: u64 = 0x8000;
 /// Pages per block, and bytes of one block.
 pub(crate) const PAGES_PER_BLOCK: u32 = 4;
 pub(crate) const BLOCK_BYTES: u64 = 0x20000;
-/// Blocks and pages of the mapped 256 MiB heap.
-pub(crate) const MAX_BLOCKS: u32 = 2048;
-pub(crate) const MAX_PAGES: u32 = 8192;
+/// Blocks and pages of the mapped 512 MiB heap.
+pub(crate) const MAX_BLOCKS: u32 = 4096;
+pub(crate) const MAX_PAGES: u32 = 16384;
 /// Records of the 0x8000-byte block list: the truthful K.
 pub(crate) const BLOCK_LIST_RECORDS: u32 = 4096;
 /// Sizes of the page list and the block list.
@@ -141,7 +141,7 @@ pub(crate) const SCENE_LIST_SIZE: usize = 0xc0;
 /// PB growth reply (DEVCTL 7) words.
 pub(crate) mod grow_reply {
     pub(crate) const OPCODE: usize = 0;
-    /// 1: grown, 0: refused (the firmware then renders partially).
+    /// 1: grown, 0: refused (no new pages).
     pub(crate) const GREW: usize = 1;
     pub(crate) const SLOT: usize = 2;
     pub(crate) const CONTEXT: usize = 3;
@@ -274,8 +274,8 @@ mod tests {
         assert_eq!(block_record(HEAP, 0), 0xc18000);
         assert_eq!(block_record(HEAP, 1), 0xc18004);
         assert_eq!(block_record(HEAP, 2047), 0xc18000 + 4 * 2047);
-        // The last page of the 256 MiB heap.
-        assert_eq!(page_record(HEAP, MAX_PAGES - 1), 0xc18000 + 8191);
+        // The last page of the 512 MiB heap.
+        assert_eq!(page_record(HEAP, MAX_PAGES - 1), 0xc18000 + 16383);
         assert_eq!(block_record_offset(0), 0);
         assert_eq!(block_record_offset(1023), 8 * 1023);
         assert_eq!(block_record_offset(4096), 0);
@@ -287,7 +287,7 @@ mod tests {
         );
         // The page list holds every page of the heap.
         assert!(MAX_PAGES as usize * 4 <= PAGE_LIST_SIZE);
-        assert_eq!(MAX_BLOCKS as u64 * BLOCK_BYTES, 0x10000000);
+        assert_eq!(MAX_BLOCKS as u64 * BLOCK_BYTES, 0x20000000);
     }
 
     #[test]

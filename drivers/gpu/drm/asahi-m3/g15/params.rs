@@ -61,6 +61,14 @@ pub(crate) fn accept_text_prefix() -> u64 {
     *module_parameters::g15_accept_text_prefix.value()
 }
 
+/// The parameter for the PB growth maximum the firmware is given, in blocks, clamped to
+/// 64..=4095. [`super::pools::Pools::soft_max`] raises it to at least the initial 1024 blocks;
+/// the blocks above it, up to the 4095 posted at most, answer the synchronous requests of
+/// partial renders. It is read-only after boot and does not change the 512 MiB heap.
+pub(crate) fn pb_max_blocks() -> u32 {
+    (*module_parameters::g15_pb_max_blocks.value()).clamp(64, super::hw::tuning::PB_MAX_BLOCKS)
+}
+
 /// Whether FRAGMENT_BARRIERS is advertised and mapped to early tiling.
 pub(crate) fn early_tiling() -> bool {
     *module_parameters::g15_early_tiling.value() != 0

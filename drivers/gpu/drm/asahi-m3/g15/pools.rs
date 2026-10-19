@@ -5,18 +5,25 @@
 //! Record layouts: [`super::fw::buffer`]; the ledger and request checks: [`growth`]
 //! (host-tested).
 //!
-//! - One 256 MiB PB heap at [`super::hw::client::PB_HEAP`] (2048 blocks of 128 KiB); initial
-//!   [`super::hw::tuning::PB_BLOCKS`] (1024), maximum 2048; truthful K = 4096 in every profile
-//!   (PB reconstruction, also in recovery, synchronizes 8 * K bytes of the block list: K =
-//!   0x26cd overran the 0x8000-byte list and crashed the second recovery).
+//! - One 512 MiB PB heap at [`super::hw::client::PB_HEAP`] (4096 blocks of 128 KiB), populated
+//!   and mapped when the GPU starts on every G15 SoC, whatever `g15_pb_max_blocks` says; initial
+//!   [`super::hw::tuning::PB_BLOCKS`] (1024), at most [`super::hw::tuning::PB_MAX_BLOCKS`]
+//!   (4095) posted, so the producer never returns to 0; the firmware is given
+//!   [`Pools::soft_max`] (default 3072) as its growth maximum. Truthful K = 4096 in every
+//!   profile (PB reconstruction, also in recovery, synchronizes 8 * K bytes of the block list:
+//!   K = 0x26cd overran the 0x8000-byte list and crashed the second recovery).
 //! - Growth: the event drain queues type-7 requests; [`Firmware::answer_growth`] answers each
 //!   one in the poll pass: type 7, PB slot 0, the context of a live published render prefix,
 //!   counter >= next expected, epoch == current halt count; write records `(G - 0x1000000000)
 //!   >> 15` at producer % K, barrier, block_ctl+4, barrier, then DEVCTL 7 with +4 = 1 echoing
-//!   slot, context, counter, position and epoch; +10 blocks per request. At the maximum, reply
-//!   +4 = 0: the firmware finishes with partial renders (Mesa's partial background/EOT
-//!   programs). Invalid requests are logged and left unanswered, so the host deadline applies.
-//!   Recovery drops pending requests (epoch gate).
+//!   slot, context, counter, position and epoch; +10 blocks per request. Above the firmware's
+//!   growth maximum the requests are answered as before, for the synchronous growth of partial
+//!   renders (Mesa's partial background/EOT programs). At the ledger's maximum the reply is +4
+//!   = 0, a refusal, twice per initialization; later requests are left unanswered. A refusal
+//!   gives no pages and can leave the TA stalled; the poll pass returns, and the host deadline
+//!   and its recovery path apply, without a guarantee that they end the stall. Invalid requests
+//!   are logged and left unanswered, so the host deadline applies. Recovery drops pending
+//!   requests (epoch gate).
 //! - Managers ASC-cached with an uncached spare set allocated with the graph; the first
 //!   recovered render abort swaps to the spare and never rewrites the cached set (the ASC may
 //!   still hold dirty lines of it); later aborts rewrite the spare in place. block_ctl stays
@@ -54,6 +61,10 @@ static_assert!(buffer::MAX_BLOCKS as u64 * buffer::BLOCK_BYTES == client::PB_HEA
 static_assert!(buffer::PAGE_LIST_SIZE as u64 == client::PB_PAGE_LIST_SIZE);
 static_assert!(uma_manager::SEEDS == sizes::FREELIST_SEED);
 static_assert!(uma_pools::POOL_SIZE == sizes::POOL_SIZE);
+// The ledger keeps the driver's PB sizes: neither is capped by [`growth::MAX_POSTED`].
+static_assert!(tuning::PB_MAX_BLOCKS <= growth::MAX_POSTED);
+static_assert!(buffer::MIN_BLOCKS <= tuning::PB_BLOCKS);
+static_assert!(tuning::PB_BLOCKS <= tuning::PB_MAX_BLOCKS);
 
 /// The allocator state a rebuild after an abort moves to the spare.
 struct AllocatorSet {
@@ -118,6 +129,8 @@ pub(crate) struct Pools {
     pub(crate) ledger: Ledger,
     /// C1 names the current initial pages.
     c1_written: bool,
+    /// The unanswered-at-the-maximum warning was given since the last initialization.
+    exhausted_logged: bool,
     pub(crate) stats: PbStats,
 }
 
@@ -324,6 +337,7 @@ impl Pools {
             pb_heap,
             ledger: Ledger::new(tuning::PB_GROW, tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS),
             c1_written: false,
+            exhausted_logged: false,
             stats: PbStats::default(),
         })
     }
@@ -379,10 +393,11 @@ impl Pools {
             count.w32(0, 1)?;
         }
 
-        // PB: 8192 pages of 0x8000 in 2048 blocks of 0x20000; with growth the first initial
-        // blocks of them and page limits at the maximum. In every profile the block list
-        // declares its real 4096-record capacity.
+        // PB: 16384 pages of 0x8000 in 4096 blocks of 0x20000; with growth the first initial
+        // blocks of them, at most 4095 posted, and page limits at the firmware's growth maximum.
+        // In every profile the block list declares its real 4096-record capacity.
         self.ledger = Ledger::new(tuning::PB_GROW, tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS);
+        self.exhausted_logged = false;
         if tuning::PB_GROW {
             // C1 names the initial pages again.
             self.c1_written = false;
@@ -411,9 +426,13 @@ impl Pools {
         })?;
         set.pb_manager.write(
             0,
+            // The maximum the firmware sees is the asynchronous growth limit, below the mapped
+            // heap: the blocks above it answer the synchronous requests a partial render makes
+            // (the firmware cannot finish a scene at its maximum without them; refused, its TA
+            // stalls and no kill ends it: ticket malik-na/linux-aurora#69).
             &buffer::pb_manager_image(
                 initial,
-                self.ledger.max,
+                self.soft_max(),
                 gva(&self.pb_pages)?,
                 gva(&self.pb_blocks)?,
                 set.block_ctl.va,
@@ -440,13 +459,20 @@ impl Pools {
         }
     }
 
-    /// The debugfs line `pb: blocks initial/posted/max requests grown refused bad`.
+    /// The firmware's growth maximum in blocks (`g15_pb_max_blocks`), at least the initial size
+    /// and at most the mapped heap.
+    pub(crate) fn soft_max(&self) -> u32 {
+        super::params::pb_max_blocks().clamp(self.ledger.initial, self.ledger.max)
+    }
+
+    /// The debugfs line `pb: blocks initial/posted/firmware-max/max requests grown refused bad`.
     pub(crate) fn write_stats(&self, f: &mut impl fmt::Write) -> fmt::Result {
         writeln!(
             f,
-            "pb: blocks {}/{}/{} requests {} grown {} refused {} bad {}",
+            "pb: blocks {}/{}/{}/{} requests {} grown {} refused {} bad {}",
             self.ledger.initial,
             self.ledger.posted,
+            self.soft_max(),
             self.ledger.max,
             self.stats.requests,
             self.stats.grown,
@@ -484,13 +510,18 @@ impl Firmware {
     /// request counter; anything else is logged and left unanswered (its TA then stays stalled
     /// and the deadline applies). With growth up to ten more blocks of the mapped heap are
     /// written to unposted block-list records, then the live block_ctl+4 producer advances and
-    /// DEVCTL 7 reports success; at the maximum the reply is the refusal (+4 = 0), which lets
-    /// the firmware continue without new pages. The firmware imports the blocks itself: P is
-    /// never rewritten. A failed reply is logged; a request that cannot be processed at all (a
-    /// firmware object access failed) is logged and left unanswered like an invalid one. Never
-    /// fails: the poll pass continues.
+    /// DEVCTL 7 reports success; at the ledger's maximum the reply is the refusal (+4 = 0),
+    /// which gives the firmware no new pages, and after two refusals requests are left
+    /// unanswered. The firmware imports the blocks itself: P is never rewritten. Only the
+    /// requests queued before the pass are taken. A failed reply is logged; a request that
+    /// cannot be processed at all (a firmware object access failed) is logged and left
+    /// unanswered like an invalid one. Never fails: the poll pass continues.
     pub(crate) fn answer_growth(&mut self) -> Result {
-        while !self.events.grow.is_empty() {
+        // Only the requests queued before this pass: a reply's wait drains the rings and may
+        // queue the next request, which the next pass answers (the device lock is released in
+        // between).
+        let queued = self.events.grow.len();
+        for _ in 0..queued {
             let Ok(request) = self.events.grow.remove(0) else {
                 break;
             };
@@ -521,6 +552,23 @@ impl Firmware {
             .iter()
             .enumerate()
             .any(|(i, f)| self.receipts(i).renders != 0 && f.job.vm.slot == ctx);
+        // At the maximum, after the refusals, the request is left unanswered: the poll pass
+        // returns, and the host deadline and its recovery path apply to a stalled TA.
+        if self.pools.ledger.exhausted() {
+            self.pools.stats.bad += 1;
+            if !self.pools.exhausted_logged {
+                self.pools.exhausted_logged = true;
+                dev_warn!(
+                    self.dev(),
+                    "PB growth request {} ctx {} left unanswered: {} refusals at the maximum ({} blocks); the host deadline applies\n",
+                    request[buffer::grow_request::COUNTER],
+                    ctx,
+                    self.pools.ledger.refusals,
+                    self.pools.ledger.max
+                );
+            }
+            return Ok(());
+        }
         // A request from before a halt has no authority over the PB now.
         if !self
             .pools
@@ -569,7 +617,11 @@ impl Firmware {
         };
         let ret = self.devctl(&reply, true);
         let ledger = self.pools.ledger;
-        let info = self.pools.ledger.log_answer(request, n, ret.is_err());
+        let soft = self.pools.soft_max();
+        // Every answer past the firmware's maximum is logged with its TA position: a scene
+        // that keeps asking at one position is a runaway, one that advances is large.
+        let past_soft = n != 0 && ledger.posted > soft;
+        let info = self.pools.ledger.log_answer(request, n, ret.is_err()) || past_soft;
         let (counter, position) = (
             request[buffer::grow_request::COUNTER],
             request[buffer::grow_request::POSITION],

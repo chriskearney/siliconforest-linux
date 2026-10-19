@@ -81,6 +81,46 @@
           "review_fixes": [
             "Complete statistics-record loads with a full barrier before publishing the consumer index; the prior write barrier after the store did not order those reads."
           ]
+        },
+        {
+          "reviewed_head": "027bd7623f370e264c8dd056c71a00e1df6bc8a6",
+          "siliconforest_base": "0e1f466613761fecbe71ba8ca25f8b3598577062",
+          "selected_upstream_commits": [
+            "97f81d57022c582610efad0bfd05e6fed5573f6b",
+            "a7aa69120a6e33eee75d20f3635459dd362fc0fb",
+            "b4a6b325e2ac6e363137c9950df6f4812fa5d219",
+            "027bd7623f370e264c8dd056c71a00e1df6bc8a6"
+          ],
+          "scope": "Native G15 allocator changes shared by T6030 and T6031: seed every allocated compute pool; bound growth replies per poll and at the physical maximum; reserve blocks beyond the firmware soft maximum; map a 512 MiB parameter buffer. This is not a J516C-only change.",
+          "allocator_defaults": {
+            "compute_pools": 22,
+            "compute_seed_pages": 22528,
+            "physical_PB_MiB": 512,
+            "mapped_blocks": 4096,
+            "initial_blocks": 1024,
+            "firmware_soft_max_blocks": 3072,
+            "posted_max_blocks": 4095
+          },
+          "review_fixes": [
+            "Cap ledger construction below the block-list wrap point; default 1024/4095 behavior is unchanged.",
+            "Exercise the actual growth-answer loop with requests arriving during firmware reply waits, including regression mutations.",
+            "Correct stale allocator sizing comments and avoid promising successful recovery after physical exhaustion."
+          ],
+          "preserved_contracts": [
+            "Full statistics-read barrier before publishing the consumer index.",
+            "Checked DT arithmetic, pre-wake board admission and cached board images.",
+            "J516C-only opt-in board admission and internal-panel display scope.",
+            "Native userspace ABI remains render 384 / compute 136; normal GPU, display, DTs and UAPI are unchanged."
+          ],
+          "validation_limits": [
+            "Source and host/build gates do not establish T6030 or T6031 hardware behavior for these additions.",
+            "The heap is eagerly backed at allocation: an extra 256 MiB on T6030 too. The firmware soft-limit parameter does not reduce that allocation.",
+            "After two hard-limit refusals, requests are left unanswered and the deadline path applies; successful GPU recovery is not guaranteed.",
+            "Current public v2026.10.19.2 remains at Linux 0e1f46661376. No target install, reboot, release or private fixture publication is part of this source carry."
+          ],
+          "upstream_hardware_report": "https://github.com/aurora-silicon/linux/pull/363#issuecomment-6277356385",
+          "provenance": "Faithful carries retain Naeem Malik as author and his supplied sign-off; SiliconForest guard, tests and comments are separate Chris-authored commits.",
+          "siliconforest_tested_head": "709f0f08316ad528181027abe1cf00b3083b9bf0"
         }
       ]
     }
