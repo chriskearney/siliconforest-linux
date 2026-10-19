@@ -21,6 +21,10 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: 1.93.1
         run: python3 tools/asahi/g15-zero-words-tests.py --mutations
+      - name: G15 statistics drain ordering controls
+        env:
+          RUSTUP_TOOLCHAIN: 1.93.1
+        run: python3 tools/asahi/g15-stats-drain-tests.py --mutations --output "$RUNNER_TEMP/stats-drain"
       - name: GPU accounting and telemetry host controls
         env:
           RUSTUP_TOOLCHAIN: 1.93.1
