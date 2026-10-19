@@ -3171,6 +3171,12 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 		ret = iomfb_v14_7_probe(dcp);
 		if (ret)
 			return ret;
+		/* The T6030 panel's level policy (dcp_backlight.c), in nits. */
+		if (iomfb_v14_7_panel_nits(dcp)) {
+			ret = dcp_backlight_init(dcp, dev);
+			if (ret)
+				return ret;
+		}
 	}
 	if (dcp->external)
 		dcp->hw.num_dptx_ports = 2;
@@ -3649,6 +3655,8 @@ static int dcp_platform_suspend(struct device *dev)
 		return dcp_platform_suspend_h17p(dev);
 	if (READ_ONCE(dcp->ext_dead))
 		return 0;
+	/* No brightness-only present while the 14.7 panel sleeps. */
+	iomfb_v14_7_backlight_suspend(dcp);
 
 	/* Serialize PM against explicit bring-up, including queued startup work.
 	 * Before a startup attempt the device remains suspendable. After any
@@ -3707,6 +3715,7 @@ static int dcp_platform_resume(struct device *dev)
 		return dcp_platform_resume_h17p(dev);
 	if (READ_ONCE(dcp->ext_dead))
 		return 0;
+	iomfb_v14_7_backlight_resume(dcp);
 
 	dcp_enable_typec_work(dcp);
 	/* The HDMI output's PHY and crossbar may have lost their setup in sleep. */
