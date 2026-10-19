@@ -768,10 +768,10 @@ unsafe impl Send for SepData {}
 unsafe impl Sync for SepData {}
 
 impl SepData {
-    fn new(pdev: &platform::Device<device::Core>) -> Result<Arc<SepData>> {
+    fn new(pdev: &platform::Device<device::Core<'_>>) -> Result<Arc<SepData>> {
         let profile = profile::detect()?;
         let built = shmem::build(pdev, profile.shmem_capacity, profile.shmem_first_item)?;
-        let dev: &device::Device<device::Core> = pdev.as_ref();
+        let dev: &device::Device<device::Core<'_>> = pdev.as_ref();
         dev_info!(dev, "SEP platform profile: {}\n", profile.name);
 
         let buf = built.buf;
@@ -1265,7 +1265,7 @@ impl SepData {
 
 
     fn alloc_ool(
-        dev: &device::Device<device::Core>,
+        dev: &device::Device<device::Core<'_>>,
         endpoint: u8,
         allocated: usize,
         declared: (usize, usize),
@@ -2343,14 +2343,15 @@ const OF_TABLE: kernel::device_id::IdArray<of::DeviceId, (), 1> =
 
 impl platform::Driver for SepDriver {
     type IdInfo = ();
+    type Data<'bound> = Self;
 
     const OF_ID_TABLE: Option<of::IdTable<()>> = Some(&OF_TABLE);
 
-    fn probe(
-        pdev: &platform::Device<device::Core>,
-        _info: Option<&()>,
-    ) -> impl PinInit<Self, Error> {
-        let dev: &device::Device<device::Core> = pdev.as_ref();
+    fn probe<'bound>(
+        pdev: &'bound platform::Device<device::Core<'_>>,
+        _info: Option<&'bound ()>,
+    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
+        let dev: &device::Device<device::Core<'_>> = pdev.as_ref();
         if *module_parameters::provision_keybag.value() != 0
             && *module_parameters::xart_writes.value() == 0
         {
