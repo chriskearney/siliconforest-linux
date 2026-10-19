@@ -722,6 +722,8 @@ struct atcphy_hw {
  * @dp_t8122.pairs: Lane pairs (bit mask) whose DisplayPort transmitters run
  * @dp_t8122.rate: Main link rate in Mb/s per lane, 0 while stopped
  * @pipe_state: Backend the PIPE mux ("pipehandler") is routed to
+ * @t8103_dummy_pending: A live T8103 dummy handoff still needs its unlock ACK
+ * @t8103_usb3_retry: A parked T8103 backend may need reconnecting after a canceled lane change
  * @pd_nb: Power domain notifier, registered with restore_after_pd_off
  * @pd_was_off: The power domain was switched off since the state was last
  *              brought back; set from the notifier, cleared under @lock
@@ -786,6 +788,8 @@ struct apple_atcphy {
 	int dp_link_rate;
 	bool swap_lanes;
 	enum atcphy_pipehandler_state pipe_state;
+	bool t8103_dummy_pending;
+	bool t8103_usb3_retry;
 
 	struct notifier_block pd_nb;
 	bool pd_was_off;
@@ -1154,26 +1158,38 @@ static void atcphy_apply_tunables(struct apple_atcphy *atcphy, enum atcphy_mode 
 
 static int atcphy_pipehandler_lock(struct apple_atcphy *atcphy)
 {
+	unsigned int attempts = atcphy->hw->gen == ATCPHY_GENERATION_T8103 ? 10 : 1;
+	bool requested;
 	int ret;
 	u32 reg;
 
-	if (readl(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_REQ) & PIPEHANDLER_LOCK_EN) {
-		/* T8140: a request left behind does not prove the ACK; wait for it. */
-		if (!atcphy->hw->has_t8140_dp) {
+	requested = readl(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_REQ) &
+		    PIPEHANDLER_LOCK_EN;
+	if (requested) {
+		/* T8103 retries and T8140 both need the ACK, not just a request. */
+		if (atcphy->hw->gen != ATCPHY_GENERATION_T8103 &&
+		    !atcphy->hw->has_t8140_dp) {
 			dev_warn(atcphy->dev, "Pipehandler already locked\n");
 			return 0;
 		}
-	} else {
-		set32(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_REQ, PIPEHANDLER_LOCK_EN);
 	}
 
-	ret = readl_poll_timeout(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_ACK, reg,
-				 reg & PIPEHANDLER_LOCK_EN, 10, PIPEHANDLER_LOCK_ACK_TIMEOUT_US);
-	if (ret) {
-		clear32(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_REQ, 1);
-		dev_warn(atcphy->dev, "Pipehandler lock not acked.\n");
+	for (unsigned int attempt = 0; attempt < attempts; attempt++) {
+		if (!requested || attempt)
+			set32(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_REQ,
+			      PIPEHANDLER_LOCK_EN);
+		ret = readl_poll_timeout(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_ACK,
+					 reg, reg & PIPEHANDLER_LOCK_EN, 10,
+					 PIPEHANDLER_LOCK_ACK_TIMEOUT_US);
+		if (!ret)
+			return 0;
+		clear32(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_REQ,
+			PIPEHANDLER_LOCK_EN);
+		/* Keep the retry bounded and do not sleep after the last poll. */
+		if (attempt + 1 < attempts)
+			usleep_range(5000, 10000);
 	}
-
+	dev_warn(atcphy->dev, "Pipehandler lock not acked.\n");
 	return ret;
 }
 
@@ -1402,6 +1418,10 @@ static int atcphy_configure_pipehandler_usb3(struct apple_atcphy *atcphy, bool h
 		ret = atcphy_pipehandler_lock(atcphy);
 		if (ret) {
 			dev_err(atcphy->dev, "Failed to lock pipehandler");
+			if (atcphy->hw->gen == ATCPHY_GENERATION_T8103)
+				clear32(atcphy->regs.pipehandler + PIPEHANDLER_OVERRIDE,
+					PIPEHANDLER_OVERRIDE_RXVALID |
+					PIPEHANDLER_OVERRIDE_RXDETECT);
 			return ret;
 		}
 
@@ -1585,9 +1605,9 @@ static int atcphy_configure_pipehandler_dummy(struct apple_atcphy *atcphy, bool 
 }
 
 /*
- * Route the PIPE to the backend the current mode needs. The state is recorded
- * whether or not the sequence succeeded: the PIPE is configured once per mode,
- * and a failed attempt is not retried on the next set_mode call.
+ * Route the PIPE to the backend the current mode needs. T8103 USB3 and T8140
+ * retain failed setup for retry; the other legacy paths keep their once-per-mode
+ * behavior. Helpers record a moved physical mux even if completion then fails.
  */
 static int atcphy_configure_pipehandler(struct apple_atcphy *atcphy, bool host)
 {
@@ -1595,6 +1615,8 @@ static int atcphy_configure_pipehandler(struct apple_atcphy *atcphy, bool host)
 	int ret = -EINVAL;
 
 	lockdep_assert_held(&atcphy->lock);
+	if (atcphy->t8103_dummy_pending)
+		return -EBUSY;
 
 	switch (state) {
 	case ATCPHY_PIPEHANDLER_STATE_USB3:
@@ -1621,13 +1643,77 @@ static int atcphy_configure_pipehandler(struct apple_atcphy *atcphy, bool host)
 			readl(atcphy->regs.pipehandler + PIPEHANDLER_LOCK_ACK),
 			readl(atcphy->regs.pipehandler + PIPEHANDLER_AON_GEN),
 			readl(atcphy->regs.pipehandler + PIPEHANDLER_NONSELECTED_OVERRIDE));
-	/* T8140 keeps a failed attempt retryable; other PHYs configure once per mode. */
-	if (!ret || !atcphy->hw->has_t8140_dp) {
+	/* A failed T8103 USB3 attempt must not suppress the next set_mode retry. */
+	if (!ret || (!atcphy->hw->has_t8140_dp &&
+		     !(atcphy->hw->gen == ATCPHY_GENERATION_T8103 &&
+		       state == ATCPHY_PIPEHANDLER_STATE_USB3))) {
 		atcphy->pipe_state = state;
 		atcphy->pipe_pending = false;
 	}
+	if (!ret && atcphy->hw->gen == ATCPHY_GENERATION_T8103 &&
+	    state == ATCPHY_PIPEHANDLER_STATE_USB3)
+		atcphy->t8103_usb3_retry = false;
 
 	return ret;
+}
+
+/*
+ * Park a live T8103 USB3 backend before a Type-C lane change. Unlike legacy
+ * shutdown, an unacknowledged handoff must not let the lane change continue.
+ */
+static int atcphy_park_live_t8103_pipehandler(struct apple_atcphy *atcphy)
+{
+	const u32 override_mask = PIPEHANDLER_OVERRIDE_RXVALID |
+				  PIPEHANDLER_OVERRIDE_RXDETECT;
+	const u32 value_mask = PIPEHANDLER_OVERRIDE_VAL_RXDETECT0 |
+			      PIPEHANDLER_OVERRIDE_VAL_RXDETECT1;
+	void __iomem *pipe = atcphy->regs.pipehandler;
+	u32 overrides, values;
+	int ret;
+
+	lockdep_assert_held(&atcphy->lock);
+	if (atcphy->hw->gen != ATCPHY_GENERATION_T8103)
+		return -EOPNOTSUPP;
+
+	if (!atcphy->t8103_dummy_pending) {
+		if (atcphy->pipe_state == ATCPHY_PIPEHANDLER_STATE_DUMMY)
+			return 0;
+		if (atcphy->pipe_state != ATCPHY_PIPEHANDLER_STATE_USB3)
+			return -EBUSY;
+		ret = atcphy_pipehandler_check(atcphy);
+		if (ret)
+			return ret;
+		overrides = readl(pipe + PIPEHANDLER_OVERRIDE);
+		values = readl(pipe + PIPEHANDLER_OVERRIDE_VALUES);
+		clear32(pipe + PIPEHANDLER_OVERRIDE_VALUES, value_mask);
+		set32(pipe + PIPEHANDLER_OVERRIDE, override_mask);
+
+		ret = atcphy_pipehandler_lock(atcphy);
+		if (ret) {
+			/* The mux did not move: restore only the fields we touched. */
+			mask32(pipe + PIPEHANDLER_OVERRIDE_VALUES, value_mask,
+			       values & value_mask);
+			mask32(pipe + PIPEHANDLER_OVERRIDE, override_mask,
+			       overrides & override_mask);
+			return ret;
+		}
+		atcphy_pipehandler_set_mux(atcphy, PIPEHANDLER_MUX_CTRL_DATA_DUMMY,
+					   PIPEHANDLER_MUX_CTRL_CLK_DUMMY);
+		/* The physical mux moved even if completion now fails. */
+		atcphy->pipe_state = ATCPHY_PIPEHANDLER_STATE_DUMMY;
+		atcphy->t8103_dummy_pending = true;
+		atcphy->t8103_usb3_retry = true;
+	}
+
+	/* Retry completion without requesting another lock on the dummy clock. */
+	ret = atcphy_pipehandler_unlock(atcphy);
+	if (ret)
+		return ret;
+	mask32(pipe + PIPEHANDLER_NONSELECTED_OVERRIDE,
+	       PIPEHANDLER_NATIVE_POWER_DOWN, FIELD_PREP(PIPEHANDLER_NATIVE_POWER_DOWN, 2));
+	set32(pipe + PIPEHANDLER_NONSELECTED_OVERRIDE, PIPEHANDLER_NATIVE_RESET);
+	atcphy->t8103_dummy_pending = false;
+	return 0;
 }
 
 /*
@@ -1645,6 +1731,8 @@ static int atcphy_park_pipehandler(struct apple_atcphy *atcphy, bool stopped)
 
 	lockdep_assert_held(&atcphy->lock);
 
+	if (atcphy->t8103_dummy_pending)
+		return atcphy_park_live_t8103_pipehandler(atcphy);
 	if (atcphy->pipe_state == ATCPHY_PIPEHANDLER_STATE_DUMMY && !atcphy->pipe_pending)
 		return 0;
 
@@ -1670,6 +1758,8 @@ static void atcphy_setup_pipehandler(struct apple_atcphy *atcphy)
 				   PIPEHANDLER_MUX_CTRL_CLK_DUMMY);
 	atcphy->pipe_state = ATCPHY_PIPEHANDLER_STATE_DUMMY;
 	atcphy->pipe_pending = false;
+	atcphy->t8103_dummy_pending = false;
+	atcphy->t8103_usb3_retry = false;
 	if (atcphy_needs_dummy_phy(atcphy))
 		atcphy_enable_dummy_phy(atcphy);
 }
@@ -3261,6 +3351,9 @@ static int atcphy_configure(struct apple_atcphy *atcphy, enum atcphy_mode mode)
 	u32 reg;
 
 	lockdep_assert_held(&atcphy->lock);
+	/* A live T8103 handoff must finish before any lane or power change. */
+	if (atcphy->t8103_dummy_pending)
+		return -EBUSY;
 	/* The T8140 transition state is never set on other PHYs. */
 	if (atcphy->pipe_pending)
 		return -EBUSY;
@@ -3609,10 +3702,11 @@ static int atcphy_usb3_power_off(struct phy *phy)
 	guard(mutex)(&atcphy->lock);
 	atcphy_restore_after_pd_off(atcphy);
 
-	/* Only T8140 reports a failed park, and then keeps the controller's PIPE. */
+	/* Finish an outstanding handoff before stopping the controller's PIPE. */
 	ret = atcphy_park_pipehandler(atcphy, true);
 	if (ret)
 		return ret;
+	atcphy->t8103_usb3_retry = false;
 	atcphy->host_active = false;
 
 	/*
@@ -3641,6 +3735,13 @@ static int atcphy_usb3_set_mode(struct phy *phy, enum phy_mode mode, int submode
 
 	guard(mutex)(&atcphy->lock);
 	atcphy_restore_after_pd_off(atcphy);
+
+	if (atcphy->t8103_dummy_pending) {
+		int ret = atcphy_park_live_t8103_pipehandler(atcphy);
+
+		if (ret)
+			return ret;
+	}
 
 	if (atcphy->usb_off_pending)
 		return -EBUSY;
@@ -3673,10 +3774,23 @@ static int atcphy_usb3_set_mode(struct phy *phy, enum phy_mode mode, int submode
 		if (ret)
 			return ret;
 	}
+	/* xHCI can select a role before the Type-C mux's debounced update. */
+	if (atcphy->hw->gen == ATCPHY_GENERATION_T8103 &&
+	    atcphy->mode == APPLE_ATCPHY_MODE_OFF) {
+		int ret;
+
+		if (atcphy->dp_only || !atcphy->ss_tunables)
+			return -EOPNOTSUPP;
+		ret = atcphy_configure(atcphy, APPLE_ATCPHY_MODE_USB3);
+		if (ret)
+			return ret;
+	}
 	if (atcphy->pipe_state == atcphy_modes[atcphy->mode].pipehandler_state)
 		return 0;
 
-	return atcphy_configure_pipehandler(atcphy, mode == PHY_MODE_USB_HOST);
+	/* T8103 host BIST can leave RXDETECT forced during xHCI's first scan. */
+	return atcphy_configure_pipehandler(atcphy, mode == PHY_MODE_USB_HOST &&
+					   atcphy->hw->gen != ATCPHY_GENERATION_T8103);
 }
 
 static const struct phy_ops apple_atc_usb3_phy_ops = {
@@ -3973,8 +4087,8 @@ static int atcphy_dwc3_reset_assert(struct reset_controller_dev *rcdev, unsigned
 	guard(mutex)(&atcphy->lock);
 	atcphy_restore_after_pd_off(atcphy);
 
-	/* T8140: do not reset the controller or USB2 PHY if PIPE parking fails. */
-	if (atcphy->hw->has_t8140_dp) {
+	/* Keep the controller clock until an outstanding handoff is complete. */
+	if (atcphy->hw->has_t8140_dp || atcphy->t8103_dummy_pending) {
 		ret = atcphy_park_pipehandler(atcphy, true);
 		if (ret)
 			return ret;
@@ -3982,6 +4096,7 @@ static int atcphy_dwc3_reset_assert(struct reset_controller_dev *rcdev, unsigned
 
 	_atcphy_dwc3_reset_assert(atcphy);
 	atcphy_park_pipehandler(atcphy, true);
+	atcphy->t8103_usb3_retry = false;
 	atcphy->host_active = false;
 	atcphy_usb2_power_off(atcphy);
 
@@ -3994,6 +4109,8 @@ static int atcphy_dwc3_reset_deassert(struct reset_controller_dev *rcdev, unsign
 
 	guard(mutex)(&atcphy->lock);
 	atcphy_restore_after_pd_off(atcphy);
+	if (atcphy->t8103_dummy_pending)
+		return -EBUSY;
 
 	clear32(atcphy->regs.pipehandler + PIPEHANDLER_AON_GEN,
 		PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN);
@@ -4283,6 +4400,13 @@ static int atcphy_mux_set_locked(struct typec_mux_dev *mux, struct typec_mux_sta
 	guard(mutex)(&atcphy->lock);
 	atcphy_restore_after_pd_off(atcphy);
 
+	if (atcphy->t8103_dummy_pending) {
+		int ret = atcphy_park_live_t8103_pipehandler(atcphy);
+
+		if (ret)
+			return ret;
+	}
+
 	if (state->mode == TYPEC_STATE_SAFE) {
 		target_mode = APPLE_ATCPHY_MODE_OFF;
 	} else if (state->mode == TYPEC_STATE_USB) {
@@ -4348,6 +4472,10 @@ static int atcphy_mux_set_locked(struct typec_mux_dev *mux, struct typec_mux_sta
 		return -EOPNOTSUPP;
 
 	if (atcphy->mode == target_mode && !atcphy->mode_dirty) {
+		/* A canceled lane change must reconnect the backend we just parked. */
+		if (atcphy->t8103_usb3_retry &&
+		    atcphy_modes[target_mode].pipehandler_state == ATCPHY_PIPEHANDLER_STATE_USB3)
+			return atcphy_configure_pipehandler(atcphy, false);
 		/* T8140: retry a failed PIPE setup without disturbing the configured lanes. */
 		if (atcphy->hw->has_t8140_dp && atcphy->fixed_usb2 && atcphy->host_active &&
 		    (atcphy->pipe_state != atcphy_modes[target_mode].pipehandler_state ||
@@ -4427,13 +4555,29 @@ static int atcphy_mux_set_locked(struct typec_mux_dev *mux, struct typec_mux_sta
 			return ret;
 	}
 
-	/*
-	 * If the pipehandler is still/already up here there's a bug somewhere so make sure to
-	 * complain loudly. We can still try to switch modes and hope for the best though,
-	 * in the worst case the hardware will fall back to USB2-only.
-	 */
-	WARN_ON_ONCE(atcphy->pipe_state != ATCPHY_PIPEHANDLER_STATE_DUMMY);
-	return atcphy_configure(atcphy, target_mode);
+	if (atcphy->hw->gen == ATCPHY_GENERATION_T8103) {
+		/* Pin assignment D retains USB3; four-lane DP must park it first. */
+		if (atcphy->pipe_state == ATCPHY_PIPEHANDLER_STATE_USB3 &&
+		    atcphy_modes[target_mode].pipehandler_state == ATCPHY_PIPEHANDLER_STATE_DUMMY) {
+			ret = atcphy_park_live_t8103_pipehandler(atcphy);
+			if (ret)
+				return ret;
+		}
+		WARN_ON_ONCE(atcphy->pipe_state != ATCPHY_PIPEHANDLER_STATE_DUMMY &&
+			     atcphy_modes[target_mode].pipehandler_state == ATCPHY_PIPEHANDLER_STATE_DUMMY);
+	} else {
+		WARN_ON_ONCE(atcphy->pipe_state != ATCPHY_PIPEHANDLER_STATE_DUMMY);
+	}
+	ret = atcphy_configure(atcphy, target_mode);
+	if (ret)
+		return ret;
+	if (atcphy->t8103_usb3_retry) {
+		if (atcphy_modes[target_mode].pipehandler_state == ATCPHY_PIPEHANDLER_STATE_USB3)
+			return atcphy_configure_pipehandler(atcphy, false);
+		/* The requested non-USB3 lane change is now committed. */
+		atcphy->t8103_usb3_retry = false;
+	}
+	return 0;
 }
 
 static int atcphy_mux_set(struct typec_mux_dev *mux, struct typec_mux_state *state)
