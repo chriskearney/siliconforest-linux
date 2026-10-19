@@ -4,7 +4,9 @@
 
 Uses synthetic public data and temporary host copies of production Rust modules.
 No GPU, firmware file, private fixture, kernel build or hardware access. The
-golden T6030 inputs below are from SiliconForest 9f09c85f8d3b.
+golden T6030 inputs below are from SiliconForest 9f09c85f8d3b, except the full
+hw.rs file refreshed at 709f0f08316a for the reviewed shared PB allocator changes.
+Its T6030 configuration module is independently pinned to the original bytes.
 """
 
 import argparse
@@ -20,10 +22,11 @@ G15 = "drivers/gpu/drm/asahi-m3/g15"
 GOLDEN_FILES = {
     "board/data.rs": "7c5ff1077ca3296cbfc9e7144294162b6dea78a3774c38eeed4b0f59a14d7a5c",
     "board/template.rs": "286872f5474a67534f214e83e659253299f85143f3dc59035fa80894022e2549",
-    "hw.rs": "7a08c0fe54c3ca0e3faf42db5d007eddfc5f5a6c91ab7e46441b9b067ed49cdf",
+    "hw.rs": "283c6f0697ca7922057ed22792d37add0f99b332619985822b8c3af0766673f8",
     "power/idle.rs": "4928ecf7699b3ca85ff5143eb6e996efd40d47321e29a238a02c8873bc9f102c",
 }
 GOLDEN_FUNCTIONS = {
+    ("hw.rs", "pub(crate) mod t6030 {"): "42271b9dc38c78b22c777f6fc84c6c7d1b2fa4ac1e1d4e80f896bd1a96429c07",
     ("initdata.rs", "fn templates("): "c3115c9926d3d7d93317cb8510e93b04f30b0c256811d7137568e822dd93b8ee",
     ("initdata.rs", "pub(crate) fn prepare_board("): "c59f968f125397efc63f75a49d3a8543c15c1fd4d50362f15683563398e64bc6",
     ("board.rs", "pub(crate) fn from_adt("): "cecd0b28db5bd94d3b75c1bbb5f35204e8bf0699f74e5b3d08228c59025f6ac2",
