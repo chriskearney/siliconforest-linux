@@ -151,7 +151,7 @@ impl<T: Default> DriverGpuVmBo for T {
 }
 
 /// A convenience type for the driver's GEM object.
-type Object<T> = <<T as DriverGpuVm>::Driver as drm::driver::Driver>::Object;
+type Object<T> = <<T as DriverGpuVm>::Driver as drm::driver::Driver>::Object<drm::Registered>;
 
 #[repr(transparent)]
 pub struct OpMap<T: DriverGpuVm>(bindings::drm_gpuva_op_map, PhantomData<T>);
