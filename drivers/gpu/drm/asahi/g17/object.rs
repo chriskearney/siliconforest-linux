@@ -199,12 +199,6 @@ impl KernelObject {
         self.obj.gem.owned_vmap()
     }
 
-    /// Transfers an unpublished object's GPU mapping to a longer-lived owner.
-    /// The CPU view remains valid; gpu_va returns zero after this transfer.
-    pub(crate) fn take_mapping(&mut self) -> Result<mmu::KernelMapping> {
-        self.mapping.take().ok_or(EINVAL)
-    }
-
     /// Returns the GPU address of the object.
     pub(crate) fn gpu_va(&self) -> u64 {
         self.mapping.as_ref().map_or(0, |mapping| mapping.iova())

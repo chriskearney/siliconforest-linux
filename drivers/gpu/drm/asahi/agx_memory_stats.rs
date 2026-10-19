@@ -167,8 +167,8 @@ impl Allocation {
     pub(crate) fn gem(size: usize, kernel: bool) -> Result<Self> {
         let allocation = Self::new(if kernel { &KERNEL_GEM } else { &USER_GEM }, size)?;
         if kernel {
-            Self::add_category(0, allocation.bytes);
-            allocation.kernel_category.store(0, Ordering::Relaxed);
+            Self::add_category(KernelCategory::Other as usize, allocation.bytes);
+            allocation.kernel_category.store(KernelCategory::Other as u32, Ordering::Relaxed);
         }
         Ok(allocation)
     }
