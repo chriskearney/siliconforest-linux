@@ -90,11 +90,11 @@ static struct atcphy_hw hw;
 static struct apple_atcphy p;
 static struct phy phy;
 static unsigned polls, sleeps, sets, clears, muxes, bist_old, bist_new;
-static unsigned configure_calls, restore_calls, other_calls, unlocks, warnings;
+static unsigned configure_calls, restore_calls, unlocks, warnings;
 static unsigned dummy_muxes, pending_seen_at_unlock;
 static unsigned usb2_power_off_calls;
 static unsigned ack_on;
-static int check_ret, bist_ret, unlock_ret, configure_ret, other_ret;
+static int check_ret, bist_ret, unlock_ret, configure_ret;
 static bool concurrent_override_change;
 static u32 readl(const void *ptr) { u32 v; memcpy(&v, ptr, sizeof(v)); return v; }
 static void writel(u32 val, void *ptr) { memcpy(ptr, &val, sizeof(val)); }
@@ -141,15 +141,10 @@ static int atcphy_configure_pipehandler_usb3_host_t8122(struct apple_atcphy *a) 
 static void atcphy_pipehandler_set_mux(struct apple_atcphy *a, u32 data, u32 clk) {
     (void)a;
     assert((data == PIPEHANDLER_MUX_CTRL_DATA_USB3 && clk == PIPEHANDLER_MUX_CTRL_CLK_USB3) ||
-           (data == PIPEHANDLER_MUX_CTRL_DATA_DUMMY && clk == PIPEHANDLER_MUX_CTRL_CLK_DUMMY));
+           (data == PIPEHANDLER_MUX_CTRL_DATA_DUMMY && clk == PIPEHANDLER_MUX_CTRL_CLK_DUMMY) ||
+           (data == PIPEHANDLER_MUX_CTRL_DATA_USB4 && clk == PIPEHANDLER_MUX_CTRL_CLK_USB4));
     if (data == PIPEHANDLER_MUX_CTRL_DATA_DUMMY) dummy_muxes++;
     muxes++;
-}
-static int atcphy_configure_pipehandler_usb4(struct apple_atcphy *a) {
-    (void)a; other_calls++; return other_ret;
-}
-static int atcphy_configure_pipehandler_dummy(struct apple_atcphy *a, bool force) {
-    (void)a; assert(force); other_calls++; return other_ret;
 }
 static struct apple_atcphy *phy_get_drvdata(struct phy *f) { return f->data; }
 static struct apple_atcphy *typec_mux_get_drvdata(struct typec_mux_dev *m) { return m->data; }
@@ -172,11 +167,11 @@ static void reset(enum atcphy_generation generation, bool t8140) {
         .mode = APPLE_ATCPHY_MODE_OFF, .ss_tunables = true };
     phy.data = &p;
     polls = sleeps = sets = clears = muxes = bist_old = bist_new = 0;
-    configure_calls = restore_calls = other_calls = unlocks = warnings = 0;
+    configure_calls = restore_calls = unlocks = warnings = 0;
     dummy_muxes = pending_seen_at_unlock = 0;
     usb2_power_off_calls = 0;
     ack_on = 1;
-    check_ret = bist_ret = unlock_ret = configure_ret = other_ret = 0;
+    check_ret = bist_ret = unlock_ret = configure_ret = 0;
     concurrent_override_change = false;
 }
 '''
@@ -187,44 +182,44 @@ static unsigned tests;
 static void lock_retry_last_success(void) {
     reset(ATCPHY_GENERATION_T8103, false); ack_on = 10;
     writel(BIT(7), memory + PIPEHANDLER_LOCK_REQ);
-    assert(!atcphy_pipehandler_lock(&p));
+    assert(!atcphy_pipehandler_lock(&p, true));
     assert(polls == 10 && sleeps == 9 && sets == 10 && clears == 9);
     assert(readl(memory + PIPEHANDLER_LOCK_REQ) == (BIT(7) | PIPEHANDLER_LOCK_EN));
 }
 static void lock_retry_exhausted(void) {
     reset(ATCPHY_GENERATION_T8103, false); ack_on = 0;
     writel(BIT(7), memory + PIPEHANDLER_LOCK_REQ);
-    assert(atcphy_pipehandler_lock(&p) == -ETIMEDOUT);
+    assert(atcphy_pipehandler_lock(&p, true) == -ETIMEDOUT);
     assert(polls == 10 && sleeps == 9 && sets == 10 && clears == 10);
     assert(readl(memory + PIPEHANDLER_LOCK_REQ) == BIT(7));
 }
 static void lock_requested_is_not_ack(void) {
     reset(ATCPHY_GENERATION_T8103, false); ack_on = 2;
     writel(BIT(7) | PIPEHANDLER_LOCK_EN, memory + PIPEHANDLER_LOCK_REQ);
-    assert(!atcphy_pipehandler_lock(&p));
+    assert(!atcphy_pipehandler_lock(&p, true));
     assert(polls == 2 && sleeps == 1 && sets == 1 && clears == 1);
 }
 static void lock_requested_ack_immediate(void) {
     reset(ATCPHY_GENERATION_T8103, false);
     writel(BIT(7) | PIPEHANDLER_LOCK_EN, memory + PIPEHANDLER_LOCK_REQ);
-    assert(!atcphy_pipehandler_lock(&p));
+    assert(!atcphy_pipehandler_lock(&p, true));
     assert(polls == 1 && !sleeps && !sets && !clears);
     assert(readl(memory + PIPEHANDLER_LOCK_REQ) == (BIT(7) | PIPEHANDLER_LOCK_EN));
 }
 static void lock_later_gen_once(void) {
     reset(ATCPHY_GENERATION_T8122, false); ack_on = 0;
-    assert(atcphy_pipehandler_lock(&p) == -ETIMEDOUT);
+    assert(atcphy_pipehandler_lock(&p, true) == -ETIMEDOUT);
     assert(polls == 1 && sleeps == 0 && sets == 1 && clears == 1);
 }
 static void lock_legacy_requested_unchanged(void) {
     reset(ATCPHY_GENERATION_T8122, false); ack_on = 0;
     writel(PIPEHANDLER_LOCK_EN, memory + PIPEHANDLER_LOCK_REQ);
-    assert(!atcphy_pipehandler_lock(&p)); assert(!polls && !sleeps && !clears);
+    assert(!atcphy_pipehandler_lock(&p, true)); assert(!polls && !sleeps && !clears);
 }
 static void lock_t8140_requested_needs_ack(void) {
     reset(ATCPHY_GENERATION_T8122, true); ack_on = 0;
     writel(BIT(7) | PIPEHANDLER_LOCK_EN, memory + PIPEHANDLER_LOCK_REQ);
-    assert(atcphy_pipehandler_lock(&p) == -ETIMEDOUT);
+    assert(atcphy_pipehandler_lock(&p, true) == -ETIMEDOUT);
     assert(polls == 1 && !sleeps && !sets && clears == 1);
     assert(readl(memory + PIPEHANDLER_LOCK_REQ) == BIT(7));
 }
@@ -269,21 +264,21 @@ static void failed_setup_remains_retryable(void) {
     assert(!atcphy_usb3_set_mode(&phy, PHY_MODE_USB_HOST, 0));
     assert(muxes == 1 && !bist_old && !polls);
 }
-static void failed_host_lock_does_not_record_success(void) {
+static void failed_backend_check_does_not_record_success(void) {
     reset(ATCPHY_GENERATION_T8103, false); p.mode = APPLE_ATCPHY_MODE_USB3;
-    ack_on = 0;
-    assert(atcphy_configure_pipehandler(&p, true) == -ETIMEDOUT);
+    check_ret = -EIO;
+    assert(atcphy_configure_pipehandler(&p, true) == -EIO);
     assert(p.pipe_state == ATCPHY_PIPEHANDLER_STATE_DUMMY && !muxes);
     assert(!readl(memory + PIPEHANDLER_OVERRIDE));
-    ack_on = polls + 1;
+    check_ret = 0;
     assert(!atcphy_configure_pipehandler(&p, true));
     assert(p.pipe_state == ATCPHY_PIPEHANDLER_STATE_USB3 && muxes == 1);
 }
 static void t8103_non_usb3_failure_state_unchanged(void) {
     reset(ATCPHY_GENERATION_T8103, false); p.mode = APPLE_ATCPHY_MODE_USB4;
-    other_ret = -EIO;
+    check_ret = -EIO;
     assert(atcphy_configure_pipehandler(&p, true) == -EIO);
-    assert(p.pipe_state == ATCPHY_PIPEHANDLER_STATE_USB4 && other_calls == 1);
+    assert(p.pipe_state == ATCPHY_PIPEHANDLER_STATE_USB4 && !muxes);
 }
 static void later_gen_once_per_mode_unchanged(void) {
     reset(ATCPHY_GENERATION_T8122, false); p.mode = APPLE_ATCPHY_MODE_USB3;
@@ -435,7 +430,7 @@ static void generic_park_pending_cannot_bypass_stopped(void) {
     hw.park_pipe_unlocked = true; unlock_ret = -EIO;
     assert(atcphy_park_pipehandler(&p, false) == -EIO);
     assert(atcphy_park_pipehandler(&p, true) == -EIO);
-    assert(p.t8103_dummy_pending && unlocks == 2 && !other_calls && !muxes && !polls);
+    assert(p.t8103_dummy_pending && unlocks == 2 && !muxes && !polls);
 }
 static void configure_pending_refuses_lane_work(void) {
     reset(ATCPHY_GENERATION_T8103, false); p.t8103_dummy_pending = true; p.t8103_usb3_retry = true;
@@ -548,7 +543,7 @@ static void reset_assert_pending_failure_preserves_controller(void) {
     assert(readl(memory + PIPEHANDLER_AON_GEN) == (BIT(7) | PIPEHANDLER_AON_GEN_DWC3_RESET_N));
     assert(!usb2_power_off_calls && p.host_active && p.t8103_dummy_pending && !p.mode_dirty);
     assert(p.t8103_usb3_retry);
-    assert(!muxes && !other_calls && unlocks == 1);
+    assert(!muxes && unlocks == 1);
 }
 static void reset_assert_pending_success_then_resets(void) {
     reset(ATCPHY_GENERATION_T8103, false); p.t8103_dummy_pending = true; p.t8103_usb3_retry = true; p.host_active = true;
@@ -557,17 +552,39 @@ static void reset_assert_pending_success_then_resets(void) {
     assert(readl(memory + PIPEHANDLER_AON_GEN) == (BIT(7) | PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN));
     assert(usb2_power_off_calls == 1 && !p.host_active && !p.t8103_dummy_pending);
     assert(!p.t8103_usb3_retry);
-    assert(!muxes && !other_calls && unlocks == 1);
+    assert(!muxes && unlocks == 1);
 }
-static void reset_deassert_pending_refused(void) {
-    reset(ATCPHY_GENERATION_T8103, false); p.t8103_dummy_pending = true; p.t8103_usb3_retry = true;
-    writel(BIT(7) | PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN, memory + PIPEHANDLER_AON_GEN);
-    assert(atcphy_dwc3_reset_deassert(&p.rcdev, 0) == -EBUSY);
-    assert(readl(memory + PIPEHANDLER_AON_GEN) == (BIT(7) | PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN));
-    assert(p.t8103_dummy_pending && !unlocks && !usb2_power_off_calls);
-    p.t8103_dummy_pending = false;
-    assert(!atcphy_dwc3_reset_deassert(&p.rcdev, 0));
-    assert(readl(memory + PIPEHANDLER_AON_GEN) == (BIT(7) | PIPEHANDLER_AON_GEN_DWC3_RESET_N));
+static void reset_deassert_retries_completion_before_register_writes(void) {
+    for (unsigned host = 0; host <= 1; host++) {
+        reset(ATCPHY_GENERATION_T8103, false); p.mode = APPLE_ATCPHY_MODE_USB3;
+        p.t8103_dummy_pending = true; p.t8103_usb3_retry = true;
+        p.host_active = host; unlock_ret = -ETIMEDOUT;
+        writel(BIT(7) | PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN, memory + PIPEHANDLER_AON_GEN);
+        assert(atcphy_dwc3_reset_deassert(&p.rcdev, 0) == -ETIMEDOUT);
+        assert(readl(memory + PIPEHANDLER_AON_GEN) ==
+            (BIT(7) | PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN));
+        assert(p.t8103_dummy_pending && p.t8103_usb3_retry && p.host_active == !!host);
+        assert(unlocks == 1 && !polls && !muxes && !usb2_power_off_calls && !configure_calls);
+        unlock_ret = 0;
+        assert(!atcphy_dwc3_reset_deassert(&p.rcdev, 0));
+        assert(readl(memory + PIPEHANDLER_AON_GEN) == (BIT(7) | PIPEHANDLER_AON_GEN_DWC3_RESET_N));
+        assert(!p.t8103_dummy_pending && p.t8103_usb3_retry && p.pipe_state == ATCPHY_PIPEHANDLER_STATE_DUMMY);
+        assert(unlocks == 2 && !polls && !muxes && !usb2_power_off_calls && !configure_calls);
+        assert(!atcphy_usb3_set_mode(&phy, host ? PHY_MODE_USB_HOST : PHY_MODE_USB_DEVICE, 0));
+        assert(p.pipe_state == ATCPHY_PIPEHANDLER_STATE_USB3 && !p.t8103_usb3_retry);
+        assert(muxes == 1 && !dummy_muxes && unlocks == 2 && !polls && !bist_old && !p.mode_dirty);
+    }
+}
+static void later_gen_reset_deassert_unchanged(void) {
+    for (unsigned t8140 = 0; t8140 <= 1; t8140++) {
+        reset(ATCPHY_GENERATION_T8122, t8140);
+        check_ret = unlock_ret = -EIO;
+        writel(BIT(7) | PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN, memory + PIPEHANDLER_AON_GEN);
+        assert(!atcphy_dwc3_reset_deassert(&p.rcdev, 0));
+        assert(readl(memory + PIPEHANDLER_AON_GEN) == (BIT(7) | PIPEHANDLER_AON_GEN_DWC3_RESET_N));
+        assert(!p.t8103_dummy_pending && !p.t8103_usb3_retry);
+        assert(!polls && !unlocks && !muxes && !usb2_power_off_calls && !configure_calls);
+    }
 }
 static void usb3_power_off_pending_preserves_live_controller(void) {
     reset(ATCPHY_GENERATION_T8103, false); p.mode = APPLE_ATCPHY_MODE_USB3;
@@ -575,12 +592,12 @@ static void usb3_power_off_pending_preserves_live_controller(void) {
     assert(atcphy_usb3_power_off(&phy) == -EIO);
     assert(p.t8103_dummy_pending && p.host_active && p.mode == APPLE_ATCPHY_MODE_USB3);
     assert(p.t8103_usb3_retry);
-    assert(!configure_calls && !other_calls && !muxes);
+    assert(!configure_calls && !muxes);
     unlock_ret = 0;
     assert(!atcphy_usb3_power_off(&phy));
     assert(!p.t8103_dummy_pending && !p.host_active && p.mode == APPLE_ATCPHY_MODE_OFF);
     assert(!p.t8103_usb3_retry);
-    assert(configure_calls == 1 && !other_calls && !muxes);
+    assert(configure_calls == 1 && !muxes);
 }
 static void failed_target_configuration_retains_retry_until_commit(void) {
     reset(ATCPHY_GENERATION_T8103, false); p.mode = APPLE_ATCPHY_MODE_USB3;
@@ -636,13 +653,54 @@ static void known_reset_setup_clears_both_flags(void) {
     assert(!p.t8103_dummy_pending && !p.t8103_usb3_retry && !p.pipe_pending);
     assert(p.pipe_state == ATCPHY_PIPEHANDLER_STATE_DUMMY && dummy_muxes == 1 && !unlocks);
 }
+static void nonlive_t8103_lock_does_not_retry(void) {
+    reset(ATCPHY_GENERATION_T8103, false); ack_on = 0;
+    assert(atcphy_pipehandler_lock(&p, false) == -ETIMEDOUT);
+    assert(polls == 1 && !sleeps && sets == 1 && clears == 1);
+}
+static void usb4_without_pipe_clock_uses_single_poll(void) {
+    reset(ATCPHY_GENERATION_T8103, false); ack_on = 0;
+    writel(BIT(7), memory + PIPEHANDLER_OVERRIDE);
+    assert(!atcphy_configure_pipehandler_usb4(&p));
+    assert(polls == 1 && !sleeps && muxes == 1 && !dummy_muxes && unlocks == 1);
+    assert(readl(memory + PIPEHANDLER_OVERRIDE) == BIT(7));
+}
+static void postclamp_legacy_dummy_uses_single_poll(void) {
+    reset(ATCPHY_GENERATION_T8103, false); ack_on = 0;
+    p.pipe_state = ATCPHY_PIPEHANDLER_STATE_USB3;
+    _atcphy_dwc3_reset_assert(&p);
+    assert(!atcphy_park_pipehandler(&p, true));
+    assert(polls == 1 && !sleeps && dummy_muxes == 1 && unlocks == 1);
+    assert(p.pipe_state == ATCPHY_PIPEHANDLER_STATE_DUMMY && !p.t8103_dummy_pending);
+    assert(readl(memory + PIPEHANDLER_AON_GEN) == PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN);
+}
+static void fixedhub_host_dispatch_skips_only_t8103_bist(void) {
+    for (unsigned chip = 0; chip < 3; chip++) {
+        reset(chip ? ATCPHY_GENERATION_T8122 : ATCPHY_GENERATION_T8103, chip == 2);
+        p.fixed_usb2 = true; p.host_active = true;
+        struct typec_mux_dev mux = {.data = &p};
+        struct typec_mux_state state = {.mode = TYPEC_STATE_USB};
+        assert(!atcphy_mux_set_locked(&mux, &state));
+        assert(p.mode == APPLE_ATCPHY_MODE_USB3 && p.pipe_state == ATCPHY_PIPEHANDLER_STATE_USB3);
+        assert(muxes == 1 && !bist_old && configure_calls == 1 && !p.pipe_pending);
+        assert(bist_new == (chip != 0) && polls == (chip != 0));
+    }
+}
+static void t8140_live_dummy_failure_remains_strict(void) {
+    reset(ATCPHY_GENERATION_T8122, true); ack_on = 0;
+    p.pipe_state = ATCPHY_PIPEHANDLER_STATE_USB3; p.fixed_usb2 = true; p.host_active = true;
+    assert(atcphy_park_pipehandler(&p, false) == -ETIMEDOUT);
+    assert(polls == 1 && !sleeps && !muxes && !unlocks);
+    assert(p.mode_dirty && p.pipe_state == ATCPHY_PIPEHANDLER_STATE_USB3);
+    assert(!p.t8103_dummy_pending && !p.t8103_usb3_retry);
+}
 int main(void) {
     TEST(lock_retry_last_success); TEST(lock_retry_exhausted);
     TEST(lock_requested_is_not_ack); TEST(lock_requested_ack_immediate); TEST(lock_later_gen_once);
     TEST(lock_legacy_requested_unchanged); TEST(lock_t8140_requested_needs_ack);
     TEST(host_lock_failure_cleanup); TEST(later_gen_failure_unchanged);
     TEST(device_mode_no_lock_bist); TEST(success_clears_override);
-    TEST(failed_setup_remains_retryable); TEST(failed_host_lock_does_not_record_success);
+    TEST(failed_setup_remains_retryable); TEST(failed_backend_check_does_not_record_success);
     TEST(t8103_non_usb3_failure_state_unchanged); TEST(later_gen_once_per_mode_unchanged);
     TEST(off_configures_usb3); TEST(off_without_tunables_refused);
     TEST(off_dp_only_refused); TEST(off_configuration_failure_propagated);
@@ -660,12 +718,18 @@ int main(void) {
     TEST(canceled_mux_same_mode_restores_backend); TEST(configure_backend_pending_refused);
     TEST(canceled_mux_reroute_failure_remains_retryable);
     TEST(reset_assert_pending_failure_preserves_controller); TEST(reset_assert_pending_success_then_resets);
-    TEST(reset_deassert_pending_refused);
+    TEST(reset_deassert_retries_completion_before_register_writes);
+    TEST(later_gen_reset_deassert_unchanged);
     TEST(usb3_power_off_pending_preserves_live_controller);
     TEST(failed_target_configuration_retains_retry_until_commit);
     TEST(failed_target_then_canceled_transition_reconnects);
     TEST(changed_usb3_dp_target_preserves_retry_across_two_failures);
     TEST(known_reset_setup_clears_both_flags);
+    TEST(nonlive_t8103_lock_does_not_retry);
+    TEST(usb4_without_pipe_clock_uses_single_poll);
+    TEST(postclamp_legacy_dummy_uses_single_poll);
+    TEST(fixedhub_host_dispatch_skips_only_t8103_bist);
+    TEST(t8140_live_dummy_failure_remains_strict);
     printf("%u ATCPHY USB3 host tests passed\n", tests);
 }
 '''
@@ -699,17 +763,26 @@ def harness(source):
     start = source.index("static const struct {\n\tconst struct atcphy_mode_configuration normal;")
     end = source.index("\n};", source.index("} atcphy_modes[] = {", start)) + 3
     table = source[start:end]
-    functions = "\n".join(block(source, "static int " + name + "(") for name in (
-        "atcphy_pipehandler_lock", "atcphy_configure_pipehandler_usb3",
-        "atcphy_configure_pipehandler", "atcphy_park_live_t8103_pipehandler",
-        "atcphy_park_pipehandler", "atcphy_usb3_set_mode", "atcphy_mux_set_locked",
-        "atcphy_usb3_power_off"))
-    functions += "\n" + block(source, "static void _atcphy_dwc3_reset_assert(")
-    functions += "\n" + block(source, "static int atcphy_dwc3_reset_assert(")
-    functions += "\n" + block(source, "static int atcphy_dwc3_reset_deassert(")
-    functions += "\n" + block(source, "static void atcphy_enable_dummy_phy(")
-    functions += "\n" + block(source, "static bool atcphy_needs_dummy_phy(")
-    functions += "\n" + block(source, "static void atcphy_setup_pipehandler(")
+    function_specs = [
+        ("int", "atcphy_pipehandler_lock"),
+        ("int", "atcphy_configure_pipehandler_usb3"),
+        ("int", "atcphy_configure_pipehandler_usb4"),
+        ("void", "atcphy_enable_dummy_phy"),
+        ("bool", "atcphy_needs_dummy_phy"),
+        ("int", "atcphy_configure_pipehandler_dummy"),
+        ("int", "atcphy_configure_pipehandler"),
+        ("int", "atcphy_park_live_t8103_pipehandler"),
+        ("int", "atcphy_park_pipehandler"),
+        ("int", "atcphy_usb3_set_mode"),
+        ("int", "atcphy_mux_set_locked"),
+        ("int", "atcphy_usb3_power_off"),
+        ("void", "_atcphy_dwc3_reset_assert"),
+        ("int", "atcphy_dwc3_reset_assert"),
+        ("int", "atcphy_dwc3_reset_deassert"),
+        ("void", "atcphy_setup_pipehandler"),
+    ]
+    functions = "\n".join(block(source, "static " + kind + " " + name + "(")
+                          for kind, name in function_specs)
     configure = block(source, "static int atcphy_configure(")
     guard_start = configure.index("lockdep_assert_held")
     guard_end = configure.index("/* The T8140 transition state")
@@ -728,8 +801,14 @@ MUTATIONS = {
     "missing-tunable-admission": ("if (atcphy->dp_only || !atcphy->ss_tunables)", "if (atcphy->dp_only)"),
     "missing-dp-only-admission": ("if (atcphy->dp_only || !atcphy->ss_tunables)", "if (!atcphy->ss_tunables)"),
     "off-config-all-generations": ("if (atcphy->hw->gen == ATCPHY_GENERATION_T8103 &&\n\t    atcphy->mode == APPLE_ATCPHY_MODE_OFF)", "if (atcphy->mode == APPLE_ATCPHY_MODE_OFF)"),
-    "bist-skipped-all-generations": ("mode == PHY_MODE_USB_HOST &&\n\t\t\t\t\t   atcphy->hw->gen != ATCPHY_GENERATION_T8103", "false"),
-    "t8103-bist-restored": ("mode == PHY_MODE_USB_HOST &&\n\t\t\t\t\t   atcphy->hw->gen != ATCPHY_GENERATION_T8103", "mode == PHY_MODE_USB_HOST"),
+    "bist-skipped-all-generations": ("host && atcphy->hw->gen != ATCPHY_GENERATION_T8103", "false"),
+    "t8103-bist-restored": ("host && atcphy->hw->gen != ATCPHY_GENERATION_T8103", "host"),
+    "retry-applied-to-nonlive-lock": ("atcphy_pipehandler_lock",
+        "unsigned int attempts = live &&", "unsigned int attempts ="),
+    "usb4-mistaken-for-live-pipe": ("atcphy_configure_pipehandler_usb4",
+        "atcphy_pipehandler_lock(atcphy, false)", "atcphy_pipehandler_lock(atcphy, true)"),
+    "legacy-dummy-mistaken-for-live-pipe": ("atcphy_configure_pipehandler_dummy",
+        "atcphy_pipehandler_lock(atcphy, false)", "atcphy_pipehandler_lock(atcphy, true)"),
     "strict-park-generation-gate-removed": ("atcphy_park_live_t8103_pipehandler",
         "if (atcphy->hw->gen != ATCPHY_GENERATION_T8103)", "if (false)"),
     "strict-park-no-value-restore": ("atcphy_park_live_t8103_pipehandler",
@@ -766,7 +845,14 @@ MUTATIONS = {
     "reset-assert-ignores-pending": ("atcphy_dwc3_reset_assert",
         "atcphy->hw->has_t8140_dp || atcphy->t8103_dummy_pending", "atcphy->hw->has_t8140_dp"),
     "reset-deassert-ignores-pending": ("atcphy_dwc3_reset_deassert",
-        "if (atcphy->t8103_dummy_pending)\n\t\treturn -EBUSY;", "/* omitted */"),
+        "if (atcphy->t8103_dummy_pending) {", "if (false) {"),
+    "reset-deassert-strands-completion": ("atcphy_dwc3_reset_deassert",
+        "if (atcphy->t8103_dummy_pending) {", "if (atcphy->t8103_dummy_pending) return -EBUSY;\n\tif (atcphy->t8103_dummy_pending) {"),
+    "reset-deassert-ignores-completion-error": ("atcphy_dwc3_reset_deassert",
+        "if (ret)\n\t\t\treturn ret;", "if (false)\n\t\t\treturn ret;"),
+    "reset-deassert-writes-before-completion": ("atcphy_dwc3_reset_deassert",
+        "if (atcphy->t8103_dummy_pending) {",
+        "clear32(atcphy->regs.pipehandler + PIPEHANDLER_AON_GEN, PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN);\n\tif (atcphy->t8103_dummy_pending) {"),
     "sticky-retry-not-set-after-mux": ("atcphy_park_live_t8103_pipehandler",
         "atcphy->t8103_usb3_retry = true;", "/* omitted */"),
     "sticky-retry-cleared-after-unlock": ("atcphy_park_live_t8103_pipehandler",

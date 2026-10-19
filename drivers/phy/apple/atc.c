@@ -1156,9 +1156,10 @@ static void atcphy_apply_tunables(struct apple_atcphy *atcphy, enum atcphy_mode 
 		j700_dp_tunables(atcphy);
 }
 
-static int atcphy_pipehandler_lock(struct apple_atcphy *atcphy)
+static int atcphy_pipehandler_lock(struct apple_atcphy *atcphy, bool live)
 {
-	unsigned int attempts = atcphy->hw->gen == ATCPHY_GENERATION_T8103 ? 10 : 1;
+	/* USB4 and post-clamp callers lack the PIPE clock and cannot ACK retries. */
+	unsigned int attempts = live && atcphy->hw->gen == ATCPHY_GENERATION_T8103 ? 10 : 1;
 	bool requested;
 	int ret;
 	u32 reg;
@@ -1415,7 +1416,7 @@ static int atcphy_configure_pipehandler_usb3(struct apple_atcphy *atcphy, bool h
 		set32(atcphy->regs.pipehandler + PIPEHANDLER_OVERRIDE,
 		      PIPEHANDLER_OVERRIDE_RXDETECT);
 
-		ret = atcphy_pipehandler_lock(atcphy);
+		ret = atcphy_pipehandler_lock(atcphy, true);
 		if (ret) {
 			dev_err(atcphy->dev, "Failed to lock pipehandler");
 			if (atcphy->hw->gen == ATCPHY_GENERATION_T8103)
@@ -1497,7 +1498,7 @@ static int atcphy_configure_pipehandler_usb4(struct apple_atcphy *atcphy)
 	 * already relies on the same warn-and-continue behaviour. Only the USB3 host
 	 * BIST sequence genuinely needs the PIPE quiesced and keeps the lock fatal.
 	 */
-	ret = atcphy_pipehandler_lock(atcphy);
+	ret = atcphy_pipehandler_lock(atcphy, false);
 	if (ret)
 		dev_warn(atcphy->dev, "Failed to lock pipehandler\n");
 
@@ -1562,7 +1563,7 @@ static int atcphy_configure_pipehandler_dummy(struct apple_atcphy *atcphy, bool 
 	set32(atcphy->regs.pipehandler + PIPEHANDLER_OVERRIDE, PIPEHANDLER_OVERRIDE_RXDETECT);
 
 	if (lock) {
-		ret = atcphy_pipehandler_lock(atcphy);
+		ret = atcphy_pipehandler_lock(atcphy, false);
 		if (ret) {
 			/* A live controller must acknowledge before its backend changes. */
 			if (live_usb3) {
@@ -1622,7 +1623,9 @@ static int atcphy_configure_pipehandler(struct apple_atcphy *atcphy, bool host)
 	case ATCPHY_PIPEHANDLER_STATE_USB3:
 		if (atcphy->hw->has_t8140_dp)
 			atcphy->pipe_pending = true;
-		ret = atcphy_configure_pipehandler_usb3(atcphy, host);
+		/* The T8103 host BIST can mask the first xHCI link-detection scan. */
+		ret = atcphy_configure_pipehandler_usb3(atcphy,
+				host && atcphy->hw->gen != ATCPHY_GENERATION_T8103);
 		break;
 	case ATCPHY_PIPEHANDLER_STATE_USB4:
 		ret = atcphy_configure_pipehandler_usb4(atcphy);
@@ -1688,7 +1691,7 @@ static int atcphy_park_live_t8103_pipehandler(struct apple_atcphy *atcphy)
 		clear32(pipe + PIPEHANDLER_OVERRIDE_VALUES, value_mask);
 		set32(pipe + PIPEHANDLER_OVERRIDE, override_mask);
 
-		ret = atcphy_pipehandler_lock(atcphy);
+		ret = atcphy_pipehandler_lock(atcphy, true);
 		if (ret) {
 			/* The mux did not move: restore only the fields we touched. */
 			mask32(pipe + PIPEHANDLER_OVERRIDE_VALUES, value_mask,
@@ -3788,9 +3791,7 @@ static int atcphy_usb3_set_mode(struct phy *phy, enum phy_mode mode, int submode
 	if (atcphy->pipe_state == atcphy_modes[atcphy->mode].pipehandler_state)
 		return 0;
 
-	/* T8103 host BIST can leave RXDETECT forced during xHCI's first scan. */
-	return atcphy_configure_pipehandler(atcphy, mode == PHY_MODE_USB_HOST &&
-					   atcphy->hw->gen != ATCPHY_GENERATION_T8103);
+	return atcphy_configure_pipehandler(atcphy, mode == PHY_MODE_USB_HOST);
 }
 
 static const struct phy_ops apple_atc_usb3_phy_ops = {
@@ -4109,8 +4110,12 @@ static int atcphy_dwc3_reset_deassert(struct reset_controller_dev *rcdev, unsign
 
 	guard(mutex)(&atcphy->lock);
 	atcphy_restore_after_pd_off(atcphy);
-	if (atcphy->t8103_dummy_pending)
-		return -EBUSY;
+	if (atcphy->t8103_dummy_pending) {
+		int ret = atcphy_park_live_t8103_pipehandler(atcphy);
+
+		if (ret)
+			return ret;
+	}
 
 	clear32(atcphy->regs.pipehandler + PIPEHANDLER_AON_GEN,
 		PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN);
