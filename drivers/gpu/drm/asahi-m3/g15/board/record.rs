@@ -307,6 +307,14 @@ fn complement(n: u32) -> R<u32> {
     f32_div(f32_from_u32(n - 1), f32_from_u32(n)).ok_or("a time constant is 0")
 }
 
+/// `a * b` of device-tree words: refused, not wrapped (and no overflow panic), when it does not
+/// fit the record's u32.
+fn mul(a: u32, b: u32) -> R<u32> {
+    a.checked_mul(b).ok_or(OVERFLOW)
+}
+
+const OVERFLOW: &str = "a device-tree value overflows the hardware record's u32 arithmetic";
+
 /// The G15C HardwareDataA offset of a G15S-layout word.
 pub(crate) const fn a(off: usize) -> usize {
     let shifted = if off < 0x8bc {
@@ -507,7 +515,8 @@ fn hwdata_b(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
                 put32(
                     out,
                     0x105c + 4 * k,
-                    (100 * u64::from(ps.mw) / u64::from(top.mw)) as u32,
+                    u32::try_from(100 * u64::from(ps.mw) / u64::from(top.mw))
+                        .map_err(|_| "a relative power does not fit its u32 word")?,
                 )?;
             }
             if ps.mhz > base.mhz {
@@ -573,7 +582,7 @@ fn hwdata_a(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
     let per_period =
         |gain: usize| f32_mul(p[gain], period_s).ok_or("a gain is not a finite normal single");
     let max_scaled = 100 * t.top() as u32;
-    let base_scaled = 100 * p[BASE_PSTATE];
+    let base_scaled = mul(100, p[BASE_PSTATE])?;
     let max_power = i.max_power_mw;
     let max_power_f = f32_from_u32(max_power);
     let mut w = |off: usize, v: u32| put32(out, a(off), v);
@@ -606,7 +615,7 @@ fn hwdata_a(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
     w(0x6d4, max_scaled)?;
     // PPM controller.
     let ppm_tc = p[PPM_TC_MS] / period_ms;
-    w(0x6f0, 4 * ppm_tc)?;
+    w(0x6f0, mul(4, ppm_tc)?)?;
     w(0x6fc, complement(ppm_tc)?)?;
     w(0x704, inv(ppm_tc)?)?;
     w(0x70c, per_period(PPM_KI)?)?;
@@ -616,7 +625,7 @@ fn hwdata_a(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
     w(0x72c, max_scaled)?;
     w(0x73c, max_power)?;
     w(0x744, p[PPM_TC_MS])?;
-    w(0x74c, ppm_tc * period_ms * BASE_CLOCK_KHZ)?;
+    w(0x74c, mul(mul(ppm_tc, period_ms)?, BASE_CLOCK_KHZ)?)?;
     // Performance controller.
     w(0x788, p[PERF_TGT])?;
     w(0x790, p[BOOST_MIN])?;
@@ -662,7 +671,7 @@ fn hwdata_a(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
     w(0x8f4, p[PWR_MIN_DUTY])?;
     w(0x8f8, max_scaled)?;
     w(0x8fc, max_scaled)?;
-    w(0x900, 100 * p[FD_DELTA])?;
+    w(0x900, mul(100, p[FD_DELTA])?)?;
     w(0x908, 11000)?;
     w(0x938, max_scaled)?;
     w(0xbe0, max_scaled)?;
@@ -675,9 +684,9 @@ fn hwdata_a(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
     let tgt_tc = p[AVG_TGT_TC];
     w(0xe9c, complement(tgt_tc)?)?;
     w(0xea0, inv(tgt_tc)?)?;
-    w(0xea4, 4 * tgt_tc)?;
-    w(0xea8, period_ms * tgt_tc)?;
-    w(0xeac, period_ms * tgt_tc * BASE_CLOCK_KHZ)?;
+    w(0xea4, mul(4, tgt_tc)?)?;
+    w(0xea8, mul(period_ms, tgt_tc)?)?;
+    w(0xeac, mul(mul(period_ms, tgt_tc)?, BASE_CLOCK_KHZ)?)?;
     if i.zones.len() % 3 != 0 || i.zones.len() > 15 {
         return Err("the power zones are not up to five u32 triples");
     }
@@ -691,14 +700,14 @@ fn hwdata_a(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
                 .checked_sub(offset)
                 .ok_or("a power zone's offset is larger than its target")?,
         )?;
-        w(at + 0xc, 4 * tc)?;
-        w(at + 0x10, period_ms * tc)?;
+        w(at + 0xc, mul(4, tc)?)?;
+        w(at + 0x10, mul(period_ms, tc)?)?;
         w(at + 0x14, 1_320_000_000)?;
         w(at + 0x1c, complement(tc)?)?;
         w(at + 0x20, inv(tc)?)?;
     }
     let avg_tc = p[AVG_TC_MS] / period_ms;
-    w(0xf7c, 4 * avg_tc)?;
+    w(0xf7c, mul(4, avg_tc)?)?;
     w(0xf88, complement(avg_tc)?)?;
     w(0xf90, inv(avg_tc)?)?;
     w(0xf98, per_period(AVG_KI)?)?;
@@ -710,11 +719,11 @@ fn hwdata_a(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
     w(0xfc4, max_power_f)?;
     w(0xfc8, max_power)?;
     w(0xfd0, p[AVG_TC_MS])?;
-    w(0xfd8, avg_tc * period_ms * BASE_CLOCK_KHZ)?;
+    w(0xfd8, mul(mul(avg_tc, period_ms)?, BASE_CLOCK_KHZ)?)?;
     w(0xff8, max_scaled)?;
     // The shader-engine controller block at +0x10b4.
     const SE: usize = 0x10b4;
-    let clocks = BASE_CLOCK_KHZ * period_ms;
+    let clocks = mul(BASE_CLOCK_KHZ, period_ms)?;
     w(SE + 0x40, 50)?;
     w(SE + 0x44, 1)?;
     w(SE + 0x4c, complement(p[SE_TC])?)?;
@@ -731,10 +740,10 @@ fn hwdata_a(out: &mut [u8], i: &Inputs<'_>, t: &Tables) -> R<()> {
     w(SE + 0x80, 100)?;
     w(SE + 0x88, F_8000)?;
     w(SE + 0x8c, p[SE_TARGET])?;
-    w(SE + 0x94, p[SE_TC] * period_ms)?;
-    w(SE + 0x98, p[SE_TC1] * period_ms)?;
-    w(SE + 0x9c, p[SE_TC] * clocks)?;
-    w(SE + 0xa4, p[SE_TC1] * clocks)?;
+    w(SE + 0x94, mul(p[SE_TC], period_ms)?)?;
+    w(SE + 0x98, mul(p[SE_TC1], period_ms)?)?;
+    w(SE + 0x9c, mul(p[SE_TC], clocks)?)?;
+    w(SE + 0xa4, mul(p[SE_TC1], clocks)?)?;
     w(SE + 0xb0, F_65536)?;
     w(SE + 0xd8, 8000)?;
     w(SE + 0xdc, 4)?;
@@ -1002,6 +1011,7 @@ mod tests {
             put32(&mut r, SENSOR_ROWS + 12 * k, u32::from_le_bytes(**row)).unwrap();
         }
         build(&mut r, &i).unwrap();
+        let good = r.clone();
         assert_eq!(get(&r, 0xe0), 0x1000);
         assert_eq!(get(&r, 0x30f0), 0x1000 + 35);
         // Identity, IOMapping records, flags.
@@ -1077,6 +1087,35 @@ mod tests {
         let mut j = inputs(&main, &cs, &slots);
         j.zones = &[100, 101, 1];
         assert!(build(&mut r, &j).is_err());
+        // Device-tree values whose arithmetic leaves u32 are refused, not wrapped or panicking:
+        // each on a copy of the record that built, so that nothing else refuses it first.
+        let refused = |j: &Inputs<'_>| {
+            let mut x = good.clone();
+            build(&mut x, j)
+        };
+        assert_eq!(refused(&i), Ok(()));
+        for (prop, value) in [
+            (AVG_TGT_TC, 0x4000_0000),
+            (PPM_TC_MS, u32::MAX),
+            (AVG_TC_MS, u32::MAX),
+            (SE_TC, 0x2000_0000),
+            (SE_TC1, 0x2000_0000),
+            (FD_DELTA, 0x0300_0000),
+        ] {
+            let mut j = inputs(&main, &cs, &slots);
+            j.props[prop] = value;
+            assert_eq!(refused(&j), Err(OVERFLOW), "prop {prop} = {value:#x}");
+        }
+        let mut j = inputs(&main, &cs, &slots);
+        j.zones = &[5000, 200, 0x4000_0000];
+        assert_eq!(refused(&j), Err(OVERFLOW));
+        let mut skewed = main.clone();
+        skewed[1].mw = u32::MAX;
+        skewed[13].mw = 1;
+        assert_eq!(
+            refused(&inputs(&skewed, &cs, &slots)),
+            Err("a relative power does not fit its u32 word")
+        );
     }
 
     // --- The fixture: a saved copy of a J516C's device tree and its private board file. ---

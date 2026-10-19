@@ -460,7 +460,10 @@ fn from_device_tree(dev: &device::Device) -> Result<GpuAdt> {
             return Err(EINVAL);
         }
         if count < PERF_STATES {
-            out.perf_mhz[count] = (hz / 1_000_000) as u32;
+            out.perf_mhz[count] = u32::try_from(hz / 1_000_000).map_err(|_| {
+                dev_err!(dev, "GPU operating point {} is {} Hz\n", count, hz);
+                EINVAL
+            })?;
             out.perf_mv[count] = mv;
             out.sram_mv[count] = mv;
             for (c, v) in uv.iter().enumerate() {

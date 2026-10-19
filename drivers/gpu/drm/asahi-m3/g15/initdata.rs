@@ -209,7 +209,11 @@ fn blob(
         max_power_mw,
         max_mhz
     );
-    Ok((hw_img, glob, pwr, max_mhz * 1000))
+    let max_khz = max_mhz.checked_mul(1000).ok_or_else(|| {
+        dev_err!(dev, "board data: top operating point {} MHz does not fit in kHz\n", max_mhz);
+        EINVAL
+    })?;
+    Ok((hw_img, glob, pwr, max_khz))
 }
 
 /// Verified board bytes, prepared before any GPU firmware is started.

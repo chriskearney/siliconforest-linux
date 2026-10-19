@@ -90,8 +90,12 @@ fn aux_opps(
             );
             return Err(EINVAL);
         }
+        let mhz = u32::try_from(hz / 1_000_000).map_err(|_| {
+            dev_err!(dev, "GPU {} table: state {} is {} Hz\n", name, n, hz);
+            EINVAL
+        })?;
         out[n] = record::Opp {
-            mhz: (hz / 1_000_000) as u32,
+            mhz,
             mv: [uv[0].div_ceil(1000), 0, 0, 0],
             cells: 1,
             mw: 0,
