@@ -497,7 +497,7 @@ struct VmBinding {
 }
 
 struct VmBoInner {
-    sgt: Option<shmem::SGTable<gem::AsahiObject>>,
+    sgt: Option<shmem::SGTable<gem::AsahiObject, kernel::drm::Uninit>>,
     sg_vec: Option<KVVec<(usize, Range<usize>)>>,
 }
 
@@ -1699,7 +1699,7 @@ pub(crate) struct KernelMappingInner {
 
 /// Prepared CPU timestamp access; destruction happens after completion signalling.
 pub(crate) struct TimestampMapping {
-    mapping: shmem::VMap<gem::AsahiObject, u8>,
+    mapping: shmem::VMap<gem::AsahiObject, u8, kernel::drm::Uninit>,
     offset: usize,
 }
 

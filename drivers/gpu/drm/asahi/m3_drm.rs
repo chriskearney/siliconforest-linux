@@ -86,7 +86,7 @@ pub(crate) struct Registered {
     _overlap: Pin<KBox<kernel::debugfs::File<SubmitOverlapView>>>,
 }
 impl Registered {
-    pub(crate) fn start(pdev: &platform::Device<Core>, soc: &'static crate::m3_soc::Soc) -> Result<Self> {
+    pub(crate) fn start(pdev: &platform::Device<Core<'_>>, soc: &'static crate::m3_soc::Soc) -> Result<Self> {
         let resources = crate::m3_resources::from_device(pdev, soc).inspect_err(|_| {
             crate::t8122_start::not_admitted(pdev.as_ref(), soc);
             crate::t6031_start::not_admitted(pdev.as_ref(), soc);
@@ -118,7 +118,7 @@ impl Registered {
         device.check_drm(pdev).inspect_err(refused("the DRM setup"))?;
         let core_mask = device.core_mask();
         let max_frequency_khz = 1000 * contents.pstates.reported_max_mhz();
-        let mut runtime = crate::m3_runtime::Runtime::new(pdev, device, contents)?;
+        let (mut runtime, unreg) = crate::m3_runtime::Runtime::new(pdev, device, contents)?;
         runtime.boot(pdev)?;
         dev_info!(pdev.as_ref(), "M3: runtime switches: asahi.m3_unlocked_wait={} asahi.m3_timeout_nohang={} resume-after-fault={}\n",
             u8::from(crate::m3_params::unlocked_wait()), u8::from(crate::m3_params::timeout_nohang()),
@@ -150,7 +150,7 @@ impl Registered {
             core_mask, max_frequency_khz, soc }, GFP_KERNEL)?;
         if !drm.gpu.populate(crate::drm_gpu::Backend::M3(backend)) { return Err(EBUSY); }
         if crate::m3_board::expose_render_node(soc) {
-            *owner.registration.lock() = Some(drm::driver::Registration::new(&drm, 0)?);
+            *owner.registration.lock() = Some(drm::driver::Registration::new(unreg, 0)?);
             dev_info!(pdev.as_ref(), "M3: firmware ready; common DRM GEM/VM frontend registered\n");
         } else {
             dev_info!(pdev.as_ref(), "M3: firmware ready; render node not registered on this board (asahi.m3_expose=1 registers it)\n");

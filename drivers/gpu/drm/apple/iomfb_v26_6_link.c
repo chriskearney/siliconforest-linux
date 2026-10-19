@@ -95,7 +95,7 @@ static void link_event(struct dcp_v26_link *link, u32 kind, u64 message, ktime_t
 	link->event_count++;
 	wake_up(&link->wait);
 	if (link->idle_work)
-		queue_work(system_unbound_wq, link->idle_work);
+		queue_work(system_dfl_wq, link->idle_work);
 }
 
 void dcp_v26_link_init(struct dcp_v26_link *link, struct device *dev,
@@ -127,7 +127,7 @@ void dcp_v26_link_set_idle_work(struct dcp_v26_link *link, struct work_struct *w
 	mutex_lock(&link->lock);
 	link->idle_work = work;
 	if (link->event_count)
-		queue_work(system_unbound_wq, work);
+		queue_work(system_dfl_wq, work);
 	mutex_unlock(&link->lock);
 }
 

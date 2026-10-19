@@ -1022,6 +1022,7 @@ static int bt7932_iommu(struct bt7932 *bt)
 	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
 	struct iommu_fwspec *spec = dev_iommu_fwspec_get(dev);
 	struct pci_bus *root = bt->pdev->bus;
+	struct of_phandle_args map = {};
 	struct device_node *target = NULL;
 	u32 rid = pci_dev_id(bt->pdev), sid = U32_MAX;
 	int ret;
@@ -1043,8 +1044,10 @@ static int bt7932_iommu(struct bt7932 *bt)
 		return -ENODEV;
 	}
 	/* Apple DART stores IDs in private stream_maps, not fwspec->ids. */
-	ret = of_map_id(root->dev.of_node, rid, "iommu-map", "iommu-map-mask",
-			&target, &sid);
+	ret = of_map_iommu_id(root->dev.of_node, rid, &map);
+	target = map.np;
+	if (!ret && map.args_count)
+		sid = map.args[0];
 	if (ret || !target || sid != 2 ||
 	    of_fwnode_handle(target) != spec->iommu_fwnode ||
 	    !of_device_is_compatible(target, "apple,t8140-dart")) {

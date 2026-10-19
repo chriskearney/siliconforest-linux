@@ -201,7 +201,7 @@ const CRASH_BUFFER_FILL: [u8; 2] = [0xa5, 0x5a];
 /// A crash log buffer handed to RTKit.
 pub(crate) struct CrashLog {
     iova: usize,
-    map: shmem::VMap<AsahiObject, u8>,
+    map: shmem::VMap<AsahiObject, u8, kernel::drm::Uninit>,
 }
 
 impl rtkit::Buffer for CrashLog {
@@ -220,7 +220,7 @@ struct RoleState {
     role: Role,
     shared: Arc<Shared>,
     crash_log: FixedBuffer,
-    crash_map: shmem::VMap<AsahiObject, u8>,
+    crash_map: shmem::VMap<AsahiObject, u8, kernel::drm::Uninit>,
     crashed: AtomicBool,
     #[pin]
     ack: Opaque<kernel::bindings::completion>,
@@ -324,7 +324,7 @@ struct Coprocessor {
 impl Coprocessor {
     /// Sets up a coprocessor's RTKit and crash log buffer, without starting it.
     fn new(
-        pdev: &platform::Device<Core>,
+        pdev: &platform::Device<Core<'_>>,
         dev: &AsahiDevice,
         cfg: &Config,
         uat: &mmu::Uat,
@@ -853,7 +853,7 @@ pub(crate) struct Gpu {
 impl Gpu {
     /// Boots the firmware of a G17 GPU.
     pub(crate) fn new(
-        pdev: &platform::Device<Core>,
+        pdev: &platform::Device<Core<'_>>,
         dev: &AsahiDevice,
         cfg: &'static Config,
         regs: regs::Resources,
@@ -939,7 +939,7 @@ impl Gpu {
 
     /// Starts both coprocessors and initializes their firmware.
     fn boot(
-        pdev: &platform::Device<Core>,
+        pdev: &platform::Device<Core<'_>>,
         dev: &AsahiDevice,
         cfg: &'static Config,
         regs: regs::Resources,

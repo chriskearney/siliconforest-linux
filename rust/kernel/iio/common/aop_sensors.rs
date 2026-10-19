@@ -150,7 +150,9 @@ impl<T: MessageProcessor + 'static> IIORegistration<T> {
                     type_: ty,
                     __bindgen_anon_1: bindings::iio_chan_spec__bindgen_ty_1 {
                         scan_type: bindings::iio_scan_type {
-                            sign: b'u' as _,
+                            __bindgen_anon_1: bindings::iio_scan_type__bindgen_ty_1 {
+                                sign: b'u' as _,
+                            },
                             realbits: 32,
                             storagebits: 32,
                             ..Default::default()

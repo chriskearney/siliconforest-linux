@@ -469,12 +469,12 @@ static int soc_limit_volume(struct snd_kcontrol *kctl, int max)
 }
 
 /**
- * snd_soc_limit_volume - Set new limit to existing volume controls
+ * snd_soc_limit_volume - Set new limit to existing volume controls.
  *
  * @card: where to look for the control
  * @name: name pattern
  * @max: new maximum limit
- * 
+ *
  * Finds controls matching the given name (which can be either a name
  * verbatim, or a pattern starting with the wildcard '*') and sets
  * a platform volume limit on them.
@@ -502,8 +502,12 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
 		hits++;
 	}
 
-	if (!hits)
+	if (!hits) {
+		/* Some cards blindly add limits for multiple variants. */
+		dev_dbg(card->dev, "Volume limit for unknown control '%s'\n",
+			name);
 		return -EINVAL;
+	}
 
 	return hits;
 }

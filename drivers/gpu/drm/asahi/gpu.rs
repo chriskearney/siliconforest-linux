@@ -705,7 +705,7 @@ fn g15_fw_release_unsupported(dev: &kernel::device::Device) -> bool {
 }
 
 pub(crate) struct RtkitObject {
-    vmap: shmem::VMap<gem::AsahiObject, u8>,
+    vmap: shmem::VMap<gem::AsahiObject, u8, kernel::drm::Uninit>,
     mapping: mmu::KernelMapping,
 }
 

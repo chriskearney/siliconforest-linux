@@ -12,10 +12,13 @@
 use crate::{
     container_of,
     drm::{
-        device,
         driver,
         gem,
-        private::Sealed, //
+        private::Sealed,
+        Device,
+        DeviceContext,
+        Registered,
+        Uninit, //
     },
     error::{
         from_err_ptr,
@@ -25,10 +28,10 @@ use crate::{
     prelude::*,
     scatterlist,
     sync::aref::ARef,
-    transmute::*,
     types::Opaque, //
 };
 use core::{
+    marker::PhantomData,
     mem::{
         self,
         MaybeUninit, //
@@ -38,7 +41,11 @@ use core::{
         DerefMut, //
     },
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering}, //
+};
+use crate::transmute::{
+    AsBytes,
+    FromBytes, //
 };
 use gem::{
     BaseObject,
@@ -52,7 +59,7 @@ use gem::{
 /// This is used with [`Object::new()`] to control various properties that can only be set when
 /// initially creating a shmem-backed GEM object.
 #[derive(Default)]
-pub struct ObjectConfig<'a, T: DriverObject> {
+pub struct ObjectConfig<'a, T: DriverObject, C: DeviceContext = Registered> {
     /// Whether to set the write-combine map flag.
     pub map_wc: bool,
 
@@ -66,7 +73,7 @@ pub struct ObjectConfig<'a, T: DriverObject> {
     /// Reuse the DMA reservation from another GEM object.
     ///
     /// The newly created [`Object`] will hold an owned refcount to `parent_resv_obj` if specified.
-    pub parent_resv_obj: Option<&'a Object<T>>,
+    pub parent_resv_obj: Option<&'a Object<T, C>>,
 }
 
 const SGT_PERMANENT: usize = 1 << (usize::BITS - 1);
@@ -77,31 +84,38 @@ const SGT_USERS: usize = SGT_RECLAIMING - 1;
 ///
 /// # Invariants
 ///
-/// `obj` contains a valid initialized `struct drm_gem_shmem_object` for the lifetime of this
-/// object.
+/// - `obj` contains a valid initialized `struct drm_gem_shmem_object` for the lifetime of this
+///   object.
+/// - Any type invariants of `C` apply to the parent DRM device for this GEM object.
 #[repr(C)]
 #[pin_data]
-pub struct Object<T: DriverObject> {
+pub struct Object<T: DriverObject, C: DeviceContext = Registered> {
     #[pin]
     obj: Opaque<bindings::drm_gem_shmem_object>,
     /// Parent object that owns this object's DMA reservation object.
-    parent_resv_obj: Option<ARef<Object<T>>>,
+    parent_resv_obj: Option<ARef<Object<T, C>>>,
     /// Owned SGT readers, or permanent borrowed access, exclude backing eviction.
     sgt_access: AtomicUsize,
     synchronous_reclaim: bool,
     #[pin]
     inner: T,
+    _ctx: PhantomData<C>,
 }
 
-super::impl_aref_for_gem_obj!(impl<T> for Object<T> where T: DriverObject);
+super::impl_aref_for_gem_obj! {
+    impl<T, C> for Object<T, C>
+    where
+        T: DriverObject,
+        C: DeviceContext
+}
 
 // SAFETY: All GEM objects are thread-safe.
-unsafe impl<T: DriverObject> Send for Object<T> {}
+unsafe impl<T: DriverObject, C: DeviceContext> Send for Object<T, C> {}
 
 // SAFETY: All GEM objects are thread-safe.
-unsafe impl<T: DriverObject> Sync for Object<T> {}
+unsafe impl<T: DriverObject, C: DeviceContext> Sync for Object<T, C> {}
 
-impl<T: DriverObject> Object<T> {
+impl<T: DriverObject, C: DeviceContext> Object<T, C> {
     /// `drm_gem_object_funcs` vtable suitable for GEM shmem objects.
     const VTABLE: bindings::drm_gem_object_funcs = bindings::drm_gem_object_funcs {
         free: Some(Self::free_callback),
@@ -136,9 +150,9 @@ impl<T: DriverObject> Object<T> {
     ///
     /// Additional config options can be specified using `config`.
     pub fn new(
-        dev: &device::Device<T::Driver>,
+        dev: &Device<T::Driver, C>,
         size: usize,
-        config: ObjectConfig<'_, T>,
+        config: ObjectConfig<'_, T, C>,
         args: T::Args,
     ) -> Result<ARef<Self>> {
         let new: Pin<KBox<Self>> = KBox::try_pin_init(
@@ -148,6 +162,7 @@ impl<T: DriverObject> Object<T> {
                 sgt_access: AtomicUsize::new(0),
                 synchronous_reclaim: config.synchronous_reclaim,
                 inner <- T::new(dev, size, args),
+                _ctx: PhantomData::<C>,
             }),
             GFP_KERNEL,
         )?;
@@ -180,10 +195,50 @@ impl<T: DriverObject> Object<T> {
         Ok(obj)
     }
 
+    /// Returns a view of this object in the [`Uninit`] device context.
+    ///
+    /// The context only describes what is known about the parent device. [`Uninit`] promises
+    /// nothing beyond a valid device, so this view is valid for an object of any context. See
+    /// [`Device::as_uninit`].
+    pub fn as_uninit(&self) -> &Object<T, Uninit> {
+        // SAFETY: `Object<T, C>` and `Object<T, Uninit>` differ only in the zero-sized
+        // `PhantomData` context marker, so they have the same layout. `Uninit` carries no
+        // guarantee about the parent device that `C` does not already provide.
+        unsafe { &*core::ptr::from_ref(self).cast::<Object<T, Uninit>>() }
+    }
+
+    /// Creates a new handle for this object on `file`, or returns the existing one.
+    ///
+    /// Unlike [`BaseObject::create_handle`], this accepts an object of any device context. A
+    /// [`drm::File`](crate::drm::File) exists only for a registered device, so a file opened
+    /// on this object's own device shows that the device can hand out handles, whatever context
+    /// the object was created in. A file of another device of the same driver proves nothing
+    /// about this one, so such a file is refused with `EINVAL`.
+    pub fn create_handle<F>(&self, file: &crate::drm::File<F>) -> Result<u32>
+    where
+        F: crate::drm::file::DriverFile<Driver = T::Driver>,
+    {
+        let raw_file = file.as_raw();
+        // SAFETY: `raw_file` is a valid open `struct drm_file`. Its `minor`, and that minor's
+        // `dev`, stay valid while the file is open.
+        let file_dev = unsafe { (*(*raw_file).minor).dev };
+        if file_dev != self.dev().as_raw() {
+            return Err(EINVAL);
+        }
+
+        let mut handle: u32 = 0;
+        // SAFETY: `raw_file` and `self` are valid by their type invariants, and the file was
+        // opened on the device that owns this object.
+        to_result(unsafe {
+            bindings::drm_gem_handle_create(raw_file.cast(), self.as_raw(), &mut handle)
+        })?;
+        Ok(handle)
+    }
+
     /// Returns the `Device` that owns this GEM object.
-    pub fn dev(&self) -> &device::Device<T::Driver> {
+    pub fn dev(&self) -> &Device<T::Driver, C> {
         // SAFETY: `dev` will have been initialized in `Self::new()` by `drm_gem_shmem_init()`.
-        unsafe { device::Device::from_raw((*self.as_raw()).dev) }
+        unsafe { Device::from_raw((*self.as_raw()).dev) }
     }
 
     extern "C" fn free_callback(obj: *mut bindings::drm_gem_object) {
@@ -229,7 +284,7 @@ impl<T: DriverObject> Object<T> {
         // SAFETY:
         // - We verified above that `obj` is valid, which makes `this` valid
         // - This function is set in AllocOps, so we know that `this` is contained within a
-        //   `Object<T>`
+        //   `Object<T, C>`
         let this = unsafe { container_of!(Opaque::cast_from(this), Self, obj) }.cast_mut();
 
         // SAFETY: We're recovering the Kbox<> we created in gem_create_object()
@@ -245,11 +300,27 @@ impl<T: DriverObject> Object<T> {
         raw_dev: *mut bindings::drm_device,
         size: usize,
     ) -> *mut bindings::drm_gem_object {
-        // SAFETY: The DRM core only calls this for a device of `T::Driver`, which outlives the
-        // call.
-        let dev = unsafe { device::Device::<T::Driver>::from_raw(raw_dev) };
+        // The core reaches this only for dma-buf imports and dumb buffers, which userspace
+        // requests through an open file on a registered device. Check that before forming a
+        // `Registered` view, so a caller from anywhere else is refused instead of trusted.
+        //
+        // `drm_dev_unregister()` may clear the flag while an ioctl is still running, so read a
+        // snapshot. A device seen registered has been registered at some point, which is all a
+        // `Registered` view promises. This `read_volatile` corresponds to a READ_ONCE().
+        //
+        // SAFETY: The DRM core passes a valid device of `T::Driver`, which outlives the call.
+        if !unsafe { core::ptr::addr_of!((*raw_dev).registered).read_volatile() } {
+            return EINVAL.to_ptr();
+        }
 
-        let new = T::core_object_args(dev, size).and_then(|args| {
+        // SAFETY: The DRM core only calls this for a device of `T::Driver`, which outlives the
+        // call, and the device is registered (checked above), so it satisfies both
+        // `Registered` and `C`.
+        let reg = unsafe { Device::<T::Driver>::from_raw(raw_dev) };
+        // SAFETY: As above.
+        let dev = unsafe { Device::<T::Driver, C>::from_raw(raw_dev) };
+
+        let new = T::core_object_args(reg, size).and_then(|args| {
             KBox::try_pin_init(
                 try_pin_init!(Self {
                     obj <- Opaque::init_zeroed(),
@@ -259,6 +330,7 @@ impl<T: DriverObject> Object<T> {
                     // default deferred file release.
                     synchronous_reclaim: false,
                     inner <- T::new(dev, size, args),
+                    _ctx: PhantomData::<C>,
                 }),
                 GFP_KERNEL,
             )
@@ -335,7 +407,7 @@ impl<T: DriverObject> Object<T> {
     /// This will pin the object in memory.
     ///
     /// [`shmem::SGTable`]: SGTable
-    pub fn owned_sg_table(&self) -> Result<SGTable<T>> {
+    pub fn owned_sg_table(&self) -> Result<SGTable<T, C>> {
         self.acquire_sgt_access(false)?;
         let sgt = match self.sg_table_resident() {
             Ok(sgt) => sgt.into(),
@@ -465,7 +537,7 @@ impl<T: DriverObject> Object<T> {
     }
 
     /// Creates and returns a virtual kernel memory mapping for this object.
-    pub fn vmap<U: AsBytes + FromBytes>(&self) -> Result<VMapRef<'_, T, U>> {
+    pub fn vmap<U: AsBytes + FromBytes>(&self) -> Result<VMapRef<'_, T, U, C>> {
         let map = self.raw_vmap()?;
 
         Ok(VMapRef {
@@ -478,7 +550,7 @@ impl<T: DriverObject> Object<T> {
     }
 
     /// Creates and returns an owned reference to a virtual kernel memory mapping for this object.
-    pub fn owned_vmap<U: AsBytes + FromBytes>(&self) -> Result<VMap<T, U>> {
+    pub fn owned_vmap<U: AsBytes + FromBytes>(&self) -> Result<VMap<T, U, C>> {
         Ok(VMap {
             map: self.raw_vmap()?,
             owner: self.into(),
@@ -486,7 +558,7 @@ impl<T: DriverObject> Object<T> {
     }
 }
 
-impl<T: DriverObject> Deref for Object<T> {
+impl<T: DriverObject, C: DeviceContext> Deref for Object<T, C> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -494,15 +566,15 @@ impl<T: DriverObject> Deref for Object<T> {
     }
 }
 
-impl<T: DriverObject> DerefMut for Object<T> {
+impl<T: DriverObject, C: DeviceContext> DerefMut for Object<T, C> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
 }
 
-impl<T: DriverObject> Sealed for Object<T> {}
+impl<T: DriverObject, C: DeviceContext> Sealed for Object<T, C> {}
 
-impl<T: DriverObject> gem::IntoGEMObject for Object<T> {
+impl<T: DriverObject, C: DeviceContext> gem::IntoGEMObject for Object<T, C> {
     fn as_raw(&self) -> *mut bindings::drm_gem_object {
         // SAFETY:
         // - Our immutable reference is proof that this is safe to dereference.
@@ -510,18 +582,18 @@ impl<T: DriverObject> gem::IntoGEMObject for Object<T> {
         unsafe { &raw mut (*self.obj.get()).base }
     }
 
-    unsafe fn from_raw<'a>(obj: *mut bindings::drm_gem_object) -> &'a Object<T> {
+    unsafe fn from_raw<'a>(obj: *mut bindings::drm_gem_object) -> &'a Self {
         // SAFETY: The safety contract of from_gem_obj() guarantees that `obj` is contained within
         // `Self`
         unsafe {
             let obj = Opaque::cast_from(container_of!(obj, bindings::drm_gem_shmem_object, base));
 
-            &*container_of!(obj, Object<T>, obj)
+            &*container_of!(obj, Self, obj)
         }
     }
 }
 
-impl<T: DriverObject> driver::AllocImpl for Object<T> {
+impl<T: DriverObject, C: DeviceContext> driver::AllocImpl for Object<T, C> {
     type Driver = T::Driver;
 
     const ALLOC_OPS: driver::AllocOps = driver::AllocOps {
@@ -540,19 +612,19 @@ impl<T: DriverObject> driver::AllocImpl for Object<T> {
 }
 
 /// A borrowed reference to a virtual mapping for a shmem-based GEM object in kernel address space.
-pub struct VMapRef<'a, D: DriverObject, T: AsBytes + FromBytes> {
+pub struct VMapRef<'a, D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext = Registered> {
     map: IoSysMapRef<'a, T>,
-    owner: &'a Object<D>,
+    owner: &'a Object<D, C>,
 }
 
-impl<'a, D: DriverObject, T: AsBytes + FromBytes> Clone for VMapRef<'a, D, T> {
+impl<'a, D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> Clone for VMapRef<'a, D, T, C> {
     fn clone(&self) -> Self {
         // SAFETY: We have a successful vmap already, so this can't fail
         unsafe { self.owner.vmap().unwrap_unchecked() }
     }
 }
 
-impl<'a, D: DriverObject, T: AsBytes + FromBytes> Deref for VMapRef<'a, D, T> {
+impl<'a, D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> Deref for VMapRef<'a, D, T, C> {
     type Target = IoSysMapRef<'a, T>;
 
     fn deref(&self) -> &Self::Target {
@@ -560,13 +632,13 @@ impl<'a, D: DriverObject, T: AsBytes + FromBytes> Deref for VMapRef<'a, D, T> {
     }
 }
 
-impl<'a, D: DriverObject, T: AsBytes + FromBytes> DerefMut for VMapRef<'a, D, T> {
+impl<'a, D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> DerefMut for VMapRef<'a, D, T, C> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.map
     }
 }
 
-impl<'a, D: DriverObject, T: AsBytes + FromBytes> Drop for VMapRef<'a, D, T> {
+impl<'a, D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> Drop for VMapRef<'a, D, T, C> {
     fn drop(&mut self) {
         // SAFETY: Our existence is proof that this map was previously created using self.owner.
         unsafe { self.owner.raw_vunmap(&mut self.map) };
@@ -579,20 +651,22 @@ impl<'a, D: DriverObject, T: AsBytes + FromBytes> Drop for VMapRef<'a, D, T> {
 ///
 /// - The memory pointed to by `map` is at least as large as `T`.
 /// - The memory pointed to by `map` remains valid at least until this object is dropped.
-pub struct VMap<D: DriverObject, T: AsBytes + FromBytes> {
+pub struct VMap<D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext = Registered> {
     map: RawIoSysMap<T>,
-    owner: ARef<Object<D>>,
+    owner: ARef<Object<D, C>>,
 }
 
-impl<D: DriverObject, T: AsBytes + FromBytes> Clone for VMap<D, T> {
+impl<D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> Clone for VMap<D, T, C> {
     fn clone(&self) -> Self {
         // SAFETY: We have a successful vmap already, so this can't fail
         unsafe { self.owner.owned_vmap().unwrap_unchecked() }
     }
 }
 
-impl<'a, D: DriverObject, T: AsBytes + FromBytes> From<VMapRef<'a, D, T>> for VMap<D, T> {
-    fn from(value: VMapRef<'a, D, T>) -> Self {
+impl<'a, D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> From<VMapRef<'a, D, T, C>>
+    for VMap<D, T, C>
+{
+    fn from(value: VMapRef<'a, D, T, C>) -> Self {
         let this = Self {
             map: value.map.clone(),
             owner: value.owner.into(),
@@ -603,7 +677,7 @@ impl<'a, D: DriverObject, T: AsBytes + FromBytes> From<VMapRef<'a, D, T>> for VM
     }
 }
 
-impl<D: DriverObject, T: AsBytes + FromBytes> VMap<D, T> {
+impl<D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> VMap<D, T, C> {
     /// Return a reference to the iosys map for this `VMap`.
     pub fn get(&self) -> IoSysMapRef<'_, T> {
         // SAFETY: The size of the iosys_map is equivalent to the size of the gem object.
@@ -611,12 +685,12 @@ impl<D: DriverObject, T: AsBytes + FromBytes> VMap<D, T> {
     }
 
     /// Borrows a reference to the object that owns this virtual mapping.
-    pub fn owner(&self) -> &Object<D> {
+    pub fn owner(&self) -> &Object<D, C> {
         &self.owner
     }
 }
 
-impl<D: DriverObject, T: AsBytes + FromBytes> Drop for VMap<D, T> {
+impl<D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> Drop for VMap<D, T, C> {
     fn drop(&mut self) {
         // SAFETY: Our existence is proof that this map was previously created using self.owner
         unsafe { self.owner.raw_vunmap(&mut self.map) };
@@ -624,9 +698,9 @@ impl<D: DriverObject, T: AsBytes + FromBytes> Drop for VMap<D, T> {
 }
 
 /// SAFETY: `iosys_map` objects are safe to send across threads.
-unsafe impl<D: DriverObject, T: AsBytes + FromBytes> Send for VMap<D, T> {}
+unsafe impl<D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> Send for VMap<D, T, C> {}
 /// SAFETY: `iosys_map` objects are safe to send across threads.
-unsafe impl<D: DriverObject, T: AsBytes + FromBytes> Sync for VMap<D, T> {}
+unsafe impl<D: DriverObject, T: AsBytes + FromBytes, C: DeviceContext> Sync for VMap<D, T, C> {}
 
 /// An owned reference to a scatter-gather table of DMA address spans for a GEM shmem object.
 ///
@@ -641,23 +715,23 @@ unsafe impl<D: DriverObject, T: AsBytes + FromBytes> Sync for VMap<D, T> {}
 /// - This object is only exposed in situations where we know the underlying `SGTable` will not be
 ///   modified for the lifetime of this object. Thus, it is safe to send/access this type across
 ///   threads.
-pub struct SGTable<T: DriverObject> {
+pub struct SGTable<T: DriverObject, C: DeviceContext = Registered> {
     sgt: NonNull<scatterlist::SGTable>,
-    _owner: ARef<Object<T>>,
+    _owner: ARef<Object<T, C>>,
 }
 
 // SAFETY: This object is thread-safe via our type invariants.
-unsafe impl<T: DriverObject> Send for SGTable<T> {}
+unsafe impl<T: DriverObject, C: DeviceContext> Send for SGTable<T, C> {}
 // SAFETY: This object is thread-safe via our type invariants.
-unsafe impl<T: DriverObject> Sync for SGTable<T> {}
+unsafe impl<T: DriverObject, C: DeviceContext> Sync for SGTable<T, C> {}
 
-impl<T: DriverObject> Drop for SGTable<T> {
+impl<T: DriverObject, C: DeviceContext> Drop for SGTable<T, C> {
     fn drop(&mut self) {
         self._owner.sgt_access.fetch_sub(1, Ordering::Release);
     }
 }
 
-impl<T: DriverObject> Deref for SGTable<T> {
+impl<T: DriverObject, C: DeviceContext> Deref for SGTable<T, C> {
     type Target = scatterlist::SGTable;
 
     fn deref(&self) -> &Self::Target {

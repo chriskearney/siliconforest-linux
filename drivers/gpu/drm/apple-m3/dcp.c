@@ -2322,7 +2322,7 @@ void dcp_swap_watchdog_arm(struct apple_dcp *dcp)
 	if (dcp_is_typec_output(dcp) && !iomfb_is_v14_7_external(dcp)) {
 		dcp->swap_watchdog_deadline = jiffies +
 			msecs_to_jiffies(DCP_SWAP_WATCHDOG_MS);
-		mod_delayed_work(system_wq, &dcp->swap_watchdog_wq,
+		mod_delayed_work(system_percpu_wq, &dcp->swap_watchdog_wq,
 				 msecs_to_jiffies(DCP_SWAP_WATCHDOG_MS));
 	}
 }
@@ -2635,7 +2635,7 @@ void dcp_send_message(struct apple_dcp *dcp, u8 endpoint, u64 message)
 				 true);
 }
 
-int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
+int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
@@ -2957,7 +2957,7 @@ static int dcp_external_stop_locked(struct apple_dcp *dcp, u64 generation)
 		dev_warn(dcp->dev, "external display stop deferred: IOMFB queue busy\n");
 		dcp->external_stop_deferred = true;
 		if (dcp->external_stop_retries++ < DCP_EXTERNAL_STOP_RETRIES)
-			mod_delayed_work(system_wq, &dcp->external_stop_retry_wq,
+			mod_delayed_work(system_percpu_wq, &dcp->external_stop_retry_wq,
 					 msecs_to_jiffies(DCP_SWAP_WATCHDOG_MS));
 		return ret;
 	}

@@ -251,7 +251,7 @@ static int nvm_authenticate(struct tb_switch *sw, bool auth_only)
 
 	sw->nvm->authenticating = true;
 	if (!tb_route(sw)) {
-		if (nhi->ops && nhi->ops->pre_nvm_auth)
+		if (nhi->ops->pre_nvm_auth)
 			nhi->ops->pre_nvm_auth(nhi);
 		ret = nvm_authenticate_host_dma_port(sw);
 	} else {
@@ -767,6 +767,7 @@ static int tb_port_alloc_hopid(struct tb_port *port, bool in, int min_hopid,
 {
 	int port_max_hopid;
 	struct ida *ida;
+	int ret;
 
 	if (in) {
 		port_max_hopid = port->config.max_in_hop_id;
@@ -786,7 +787,11 @@ static int tb_port_alloc_hopid(struct tb_port *port, bool in, int min_hopid,
 	if (max_hopid < 0 || max_hopid > port_max_hopid)
 		max_hopid = port_max_hopid;
 
-	return ida_alloc_range(ida, min_hopid, max_hopid, GFP_KERNEL);
+	ret = ida_alloc_range(ida, min_hopid, max_hopid, GFP_KERNEL);
+	if (ret >= 0)
+		tb_switch_get(port->sw);
+
+	return ret;
 }
 
 /**
@@ -825,6 +830,7 @@ int tb_port_alloc_out_hopid(struct tb_port *port, int min_hopid, int max_hopid)
 void tb_port_release_in_hopid(struct tb_port *port, int hopid)
 {
 	ida_free(&port->in_hopids, hopid);
+	tb_switch_put(port->sw);
 }
 
 /**
@@ -835,6 +841,7 @@ void tb_port_release_in_hopid(struct tb_port *port, int hopid)
 void tb_port_release_out_hopid(struct tb_port *port, int hopid)
 {
 	ida_free(&port->out_hopids, hopid);
+	tb_switch_put(port->sw);
 }
 
 static inline bool tb_switch_is_reachable(const struct tb_switch *parent,
@@ -1600,6 +1607,12 @@ static int tb_switch_reset_host(struct tb_switch *sw)
 				ret = tb_port_reset(port);
 				if (ret)
 					return ret;
+				/*
+				 * USB4 Lane 1 adapters do not have accessible
+				 * path config space.
+				 */
+				if (tb_switch_is_usb4(sw) && !port->usb4)
+					continue;
 			} else if (tb_port_is_usb3_down(port) ||
 				   tb_port_is_usb3_up(port)) {
 				tb_usb3_port_enable(port, false);
@@ -1741,8 +1754,6 @@ int tb_switch_wait_for_bit(struct tb_switch *sw, u32 offset, u32 bit,
 /*
  * tb_plug_events_active() - enable/disable plug events on a switch
  *
- * Also configures a sane plug_events_delay of 255ms.
- *
  * Return: %0 on success, negative errno otherwise.
  */
 static int tb_plug_events_active(struct tb_switch *sw, bool active)
@@ -1752,11 +1763,6 @@ static int tb_plug_events_active(struct tb_switch *sw, bool active)
 
 	if (tb_switch_is_icm(sw) || tb_switch_is_usb4(sw))
 		return 0;
-
-	sw->config.plug_events_delay = 0xff;
-	res = tb_sw_write(sw, ((u32 *) &sw->config) + 4, TB_CFG_SWITCH, 4, 1);
-	if (res)
-		return res;
 
 	res = tb_sw_read(sw, &data, TB_CFG_SWITCH, sw->cap_plug_events + 1, 1);
 	if (res)
@@ -2622,6 +2628,8 @@ int tb_switch_configure(struct tb_switch *sw)
 
 	sw->config.enabled = 1;
 
+	/* Set Notification Timeout to 255 ms for all routers */
+	sw->config.plug_events_delay = 0xff;
 	if (tb_switch_is_usb4(sw)) {
 		/*
 		 * For USB4 devices, we need to program the CM version
@@ -2633,7 +2641,6 @@ int tb_switch_configure(struct tb_switch *sw)
 			sw->config.cmuv = ROUTER_CS_4_CMUV_V1;
 		else
 			sw->config.cmuv = ROUTER_CS_4_CMUV_V2;
-		sw->config.plug_events_delay = 0xa;
 
 		/* Enumerate the switch */
 		ret = tb_sw_write(sw, (u32 *)&sw->config + 1, TB_CFG_SWITCH,
@@ -2654,7 +2661,7 @@ int tb_switch_configure(struct tb_switch *sw)
 
 		/* Enumerate the switch */
 		ret = tb_sw_write(sw, (u32 *)&sw->config + 1, TB_CFG_SWITCH,
-				  ROUTER_CS_1, 3);
+				  ROUTER_CS_1, 4);
 	}
 	if (ret)
 		return ret;
@@ -2789,7 +2796,7 @@ static int tb_switch_add_dma_port(struct tb_switch *sw)
 	nvm_get_auth_status(sw, &status);
 	if (status) {
 		if (!tb_route(sw)) {
-			if (nhi->ops && nhi->ops->post_nvm_auth)
+			if (nhi->ops->post_nvm_auth)
 				nhi->ops->post_nvm_auth(nhi);
 		}
 		return 0;
@@ -2806,7 +2813,7 @@ static int tb_switch_add_dma_port(struct tb_switch *sw)
 
 	/* Now we can allow root port to suspend again */
 	if (!tb_route(sw)) {
-		if (nhi->ops && nhi->ops->post_nvm_auth)
+		if (nhi->ops->post_nvm_auth)
 			nhi->ops->post_nvm_auth(nhi);
 	}
 
@@ -2961,14 +2968,14 @@ static int tb_switch_lane_bonding_enable(struct tb_switch *sw)
 	int ret;
 
 	if (!tb_switch_lane_bonding_possible(sw))
-		return 0;
+		return -EOPNOTSUPP;
 
 	up = tb_upstream_port(sw);
 	down = tb_switch_downstream_port(sw);
 
 	if (!tb_port_width_supported(up, TB_LINK_WIDTH_DUAL) ||
 	    !tb_port_width_supported(down, TB_LINK_WIDTH_DUAL))
-		return 0;
+		return -EOPNOTSUPP;
 
 	/*
 	 * Both lanes need to be in CL0. Here we assume lane 0 already be in
@@ -3619,6 +3626,20 @@ int tb_switch_resume(struct tb_switch *sw, bool runtime)
 				tb_port_warn(port,
 					     "lost during suspend, disconnecting\n");
 				tb_sw_set_unplugged(port->remote->sw);
+			} else if (port->xdomain) {
+				/*
+				 * If the user replaced the XDomain with
+				 * another router, this will succeed in
+				 * which case we must remove the XDomain
+				 * before adding the new router.
+				 */
+				err = tb_cfg_get_upstream_port(sw->tb->ctl,
+							       port->xdomain->route);
+				if (err > 0) {
+					tb_port_warn(port,
+						     "XDomain was disconnected\n");
+					port->xdomain->is_unplugged = true;
+				}
 			}
 		}
 	}

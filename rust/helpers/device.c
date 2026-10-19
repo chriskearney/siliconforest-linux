@@ -30,3 +30,8 @@ __rust_helper const char *rust_helper_dev_name(const struct device *dev)
 {
 	return dev_name(dev);
 }
+
+__rust_helper bool rust_helper_dev_dma_coherent(const struct device *dev)
+{
+	return dev_dma_coherent(dev);
+}

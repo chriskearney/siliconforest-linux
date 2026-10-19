@@ -89,7 +89,7 @@ pub(crate) struct FwObject {
     /// Host-window and lower mappings; never dropped while the firmware runs.
     _mappings: KVec<mmu::KernelMapping>,
     /// Holds the pages for the device.
-    _sgt: kernel::drm::gem::shmem::SGTable<gem::AsahiObject>,
+    _sgt: kernel::drm::gem::shmem::SGTable<gem::AsahiObject, kernel::drm::Uninit>,
     backing: gem::ObjectRef,
 }
 

@@ -54,7 +54,7 @@ pub(crate) struct AsahiData {
 }
 
 impl AsahiData {
-    pub(crate) fn new(pdev: &platform::Device<Core>, resources: Option<regs::Resources>, is_m3: bool) -> impl PinInit<Self, Error> {
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>, resources: Option<regs::Resources>, is_m3: bool) -> impl PinInit<Self, Error> {
         let pdev: ARef<platform::Device> = pdev.into();
         try_pin_init!(Self {
             gpu: SetOnce::new(),
@@ -68,7 +68,7 @@ impl AsahiData {
     }
 
     /// Driver data of a G17P device.
-    fn new_g17(pdev: &platform::Device<Core>, resources: regs::Resources) -> impl PinInit<Self, Error> {
+    fn new_g17(pdev: &platform::Device<Core<'_>>, resources: regs::Resources) -> impl PinInit<Self, Error> {
         let pdev: ARef<platform::Device> = pdev.into();
         try_pin_init!(Self {
             gpu: SetOnce::new(),
@@ -112,11 +112,11 @@ pub(crate) fn queue_g16_completion_worker(dev: ARef<AsahiDevice>) {
 
 #[allow(dead_code)]
 enum AsahiRuntime {
-    Legacy(ARef<drm::Device<AsahiDriver>>),
+    Legacy(ARef<AsahiDevice>),
     M3(crate::m3_drm::Registered),
     G16(crate::g16_drm::Registered),
     G15(crate::g15_probe::G15Manager),
-    G17(ARef<drm::Device<AsahiDriver>>, Arc<g17::Gpu>),
+    G17(ARef<AsahiDevice>, Arc<g17::Gpu>),
 }
 
 pub(crate) struct AsahiDriver {
@@ -139,7 +139,10 @@ unsafe impl Send for AsahiDriver {}
 unsafe impl Sync for AsahiDriver {}
 
 /// Convenience type alias for the DRM device type for this driver.
-pub(crate) type AsahiDevice = drm::device::Device<AsahiDriver>;
+///
+/// The GPU runtime is built before the device is registered, so it works in the `Uninit`
+/// context, which holds before and after registration.
+pub(crate) type AsahiDevice = drm::device::Device<AsahiDriver, drm::Uninit>;
 pub(crate) type AsahiDevRef = ARef<AsahiDevice>;
 
 /// DRM Driver metadata
@@ -159,16 +162,15 @@ impl drm::driver::Driver for AsahiDriver {
     /// Our `File` type.
     type File = file::File;
     /// Our `Object` type.
-    type Object = drm::gem::shmem::Object<AsahiObject>;
+    type Object<Ctx: drm::DeviceContext> = drm::gem::shmem::Object<AsahiObject, Ctx>;
 
     const INFO: drm::driver::DriverInfo = INFO;
     /// Open files and exported buffers pin the module while G17P deferred cleanup can run.
     const MODULE: Option<&'static kernel::ThisModule> = Some(&crate::THIS_MODULE);
-    const FEATURES: u32 = drm::driver::FEAT_GEM
-        | drm::driver::FEAT_RENDER
-        | drm::driver::FEAT_SYNCOBJ
-        | drm::driver::FEAT_SYNCOBJ_TIMELINE
-        | drm::driver::FEAT_GEM_GPUVA;
+    const FEAT_RENDER: bool = true;
+    const FEAT_SYNCOBJ: bool = true;
+    const FEAT_SYNCOBJ_TIMELINE: bool = true;
+    const FEAT_GEM_GPUVA: bool = true;
 
     kernel::declare_drm_ioctls! {
         (ASAHI_GET_PARAMS,      drm_asahi_get_params,
@@ -272,7 +274,7 @@ kernel::of_device_table!(
 /// its identity gate passes, and only on a board the T8122 table allows. The runtime then admits
 /// the boot loader's description and refuses the SoC while its table is incomplete
 /// (`m3_soc::T8122`).
-fn start_t8122(pdev: &platform::Device<Core>) -> Result<crate::m3_drm::Registered> {
+fn start_t8122(pdev: &platform::Device<Core<'_>>) -> Result<crate::m3_drm::Registered> {
     // This gate reads only DT properties.
     let identity = t8122_admission::read_identity(pdev).map_err(|error| {
         dev_info!(
@@ -296,11 +298,11 @@ fn start_t8122(pdev: &platform::Device<Core>) -> Result<crate::m3_drm::Registere
 
 /// Start the M3 runtime on a T6031 (M3 Max, G15C) when `asahi.t6031_start=1`. The caller has
 /// already accepted that parameter. Resource admission still requires the boot loader's handoff.
-fn start_t6031(pdev: &platform::Device<Core>) -> Result<crate::m3_drm::Registered> {
+fn start_t6031(pdev: &platform::Device<Core<'_>>) -> Result<crate::m3_drm::Registered> {
     crate::m3_drm::Registered::start(pdev, &crate::m3_soc::T6031)
 }
 
-fn refuse_agx3_probe(pdev: &platform::Device<Core>, soc: &'static hw::agx3::SocConfig) -> Error {
+fn refuse_agx3_probe(pdev: &platform::Device<Core<'_>>, soc: &'static hw::agx3::SocConfig) -> Error {
 
     let Some(expected) =
         identity::decode_gpu_identity(soc.hw_family, soc.hw_variant, soc.num_dies as u8)
@@ -387,7 +389,7 @@ fn refuse_agx3_probe(pdev: &platform::Device<Core>, soc: &'static hw::agx3::SocC
 /// stop the probe. G15 is the easiest AGX3 target — one `GFX` role, classic
 /// device-control-ring submission — but the firmware image is not on disk and
 /// the init-data/RTKit graph is not boot-complete offline.
-fn refuse_g15_probe(pdev: &platform::Device<Core>) -> Error {
+fn refuse_g15_probe(pdev: &platform::Device<Core<'_>>) -> Error {
     let Err(missing) = g15_boot::pre_handoff_gate(hw::GpuGen::G15 as u32) else {
         dev_err!(
             pdev.as_ref(),
@@ -448,9 +450,10 @@ fn refuse_g15_probe(pdev: &platform::Device<Core>) -> Error {
 /// Platform Driver implementation for `AsahiDriver`.
 impl platform::Driver for AsahiDriver {
     type IdInfo = ProbeConfig;
+    type Data<'bound> = Self;
     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
 
-    fn unbind(_pdev: &platform::Device<Core>, this: Pin<&Self>) {
+    fn unbind<'bound>(_pdev: &'bound platform::Device<Core<'_>>, this: Pin<&Self::Data<'bound>>) {
 
         match &this.runtime {
             AsahiRuntime::M3(runtime) => runtime.stop(),
@@ -462,10 +465,10 @@ impl platform::Driver for AsahiDriver {
     }
 
     /// Device probe function.
-    fn probe(
-        pdev: &platform::Device<Core>,
-        info: Option<&Self::IdInfo>,
-    ) -> impl PinInit<Self, Error> {
+    fn probe<'bound>(
+        pdev: &'bound platform::Device<Core<'_>>,
+        info: Option<&'bound Self::IdInfo>,
+    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         debug::update_debug_flags();
 
         dev_info!(pdev.as_ref(), "Probing...\n");
@@ -541,8 +544,10 @@ impl platform::Driver for AsahiDriver {
             .property_read_array_vec(c_str!("apple,firmware-compat"), 3)?
             .required_by(pdev.as_ref())?;
 
-        let drm: ARef<AsahiDevice> = drm::device::Device::new(
+        let unreg = drm::UnregisteredDevice::<AsahiDriver>::new(
             pdev.as_ref(), AsahiData::new(pdev, Some(res), false))?;
+        // The runtime is built on the unregistered device, which is registered below.
+        let drm: ARef<AsahiDevice> = ARef::from(&*unreg);
         let res = drm.resources.as_ref().ok_or(ENODEV)?;
 
         let legacy_gpu = match (cfg.gpu_gen, cfg.gpu_variant, compat.as_slice()) {
@@ -578,7 +583,7 @@ impl platform::Driver for AsahiDriver {
 
         (*drm).gpu()?.init()?;
 
-        drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
+        drm::driver::Registration::new_foreign_owned(unreg, pdev.as_ref(), 0)?;
 
         Ok(Self {
             runtime: AsahiRuntime::Legacy(drm),
@@ -587,19 +592,20 @@ impl platform::Driver for AsahiDriver {
 }
 
 impl AsahiDriver {
-    fn probe_g17(pdev: &platform::Device<Core>, cfg: &'static g17::Config) -> Result<Self> {
+    fn probe_g17(pdev: &platform::Device<Core<'_>>, cfg: &'static g17::Config) -> Result<Self> {
         // SAFETY: The GPU performs DMA through a UAT whose output width is part of the SoC config.
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(cfg.uat_oas)?)? };
         let res = regs::Resources::new(pdev)?;
         // No userspace or GPU backend is published before the runtime is constructed.
-        let drm: ARef<AsahiDevice> =
-            drm::device::Device::new(pdev.as_ref(), AsahiData::new_g17(pdev, res.clone()))?;
+        let unreg =
+            drm::UnregisteredDevice::<AsahiDriver>::new(pdev.as_ref(), AsahiData::new_g17(pdev, res.clone()))?;
+        let drm: ARef<AsahiDevice> = ARef::from(&*unreg);
         let gpu = g17::Gpu::new(pdev, &drm, cfg, res)?;
         if !drm.gpu.populate(drm_gpu::Backend::G17(gpu.clone())) {
             gpu.shutdown();
             return Err(EBUSY);
         }
-        if let Err(error) = drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0) {
+        if let Err(error) = drm::driver::Registration::new_foreign_owned(unreg, pdev.as_ref(), 0) {
             gpu.shutdown();
             return Err(error);
         }

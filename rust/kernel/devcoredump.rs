@@ -36,7 +36,7 @@ pub trait DevCoreDump {
 /// and not have been freed yet.
 unsafe extern "C" fn read_callback<
     'a,
-    T: ForeignOwnable<Borrowed<'a>: Deref<Target = D>>,
+    T: ForeignOwnable<Borrowed<'a>: Deref<Target = D>> + 'a,
     D: DevCoreDump,
 >(
     buffer: *mut crate::ffi::c_char,
@@ -161,7 +161,7 @@ mod tests {
 /// `data` must come from `T::into_foreign()`, and must not be used again after this call.
 unsafe extern "C" fn free_callback<
     'a,
-    T: ForeignOwnable<Borrowed<'a>: Deref<Target = D>>,
+    T: ForeignOwnable<Borrowed<'a>: Deref<Target = D>> + 'a,
     D: DevCoreDump,
 >(
     data: *mut crate::ffi::c_void,

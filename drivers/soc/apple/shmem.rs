@@ -108,7 +108,7 @@ fn read_blob(dev: &device::Device, name: &CStr) -> Result<KVec<u8>> {
         .required_by(dev)
 }
 
-fn read_manifest(dev: &device::Device<device::Core>, name: &CStr) -> Result<KVec<u8>> {
+fn read_manifest(dev: &device::Device<device::Core<'_>>, name: &CStr) -> Result<KVec<u8>> {
     match read_blob(dev, name) {
         Ok(v) => Ok(v),
         Err(e) => {
@@ -124,7 +124,7 @@ fn read_manifest(dev: &device::Device<device::Core>, name: &CStr) -> Result<KVec
 }
 
 fn verify_layout(
-    dev: &device::Device<device::Core>,
+    dev: &device::Device<device::Core<'_>>,
     cinp: &Region,
     opla: &Region,
     ipis: &Region,
@@ -189,11 +189,11 @@ fn verify_layout(
 }
 
 pub(crate) fn build(
-    pdev: &platform::Device<device::Core>,
+    pdev: &platform::Device<device::Core<'_>>,
     capacity: usize,
     first_item: &[u8; 4],
 ) -> Result<Shmem> {
-    let dev: &device::Device<device::Core> = pdev.as_ref();
+    let dev: &device::Device<device::Core<'_>> = pdev.as_ref();
 
     // Read manifests before allocating: a CINP-only registration would burn the one-shot and fault.
     let opla_blob = read_manifest(dev, PROP_LOCAL_POLICY)?;

@@ -45,7 +45,7 @@ pub(crate) struct Registered {
 }
 
 impl Registered {
-    pub(crate) fn start(pdev: &platform::Device<Core>) -> Result<Self> {
+    pub(crate) fn start(pdev: &platform::Device<Core<'_>>) -> Result<Self> {
         let resources = crate::g16_resources::from_device(pdev).inspect_err(|error| {
             dev_err!(pdev.as_ref(), "G16G: firmware/resource handoff admission failed: {:?}\n", error);
         })?;
@@ -58,7 +58,7 @@ impl Registered {
         device.check_drm(pdev)?;
         device.check_mmu(pdev)?;
         device.check_tables(pdev)?;
-        let mut runtime = crate::g16_runtime::Runtime::new(pdev, device)?;
+        let (mut runtime, unreg) = crate::g16_runtime::Runtime::new(pdev, device)?;
         runtime.boot(pdev)?;
         let drm = runtime.drm();
         let mask = runtime.core_mask();
@@ -80,7 +80,7 @@ impl Registered {
             shared, scheduler, ids: gpu::SequenceIDs::default(), core_mask: mask, health,
         }, GFP_KERNEL)?;
         if !drm.gpu.populate(crate::drm_gpu::Backend::G16(backend)) { return Err(EBUSY); }
-        *owner.registration.lock() = Some(drm::driver::Registration::new(&drm, 0)?);
+        *owner.registration.lock() = Some(drm::driver::Registration::new(unreg, 0)?);
         dev_info!(pdev.as_ref(), "G16G: owned runtime retained; common DRM GEM/VM frontend registered\n");
         Ok(owner)
     }

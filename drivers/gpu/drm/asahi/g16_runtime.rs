@@ -2,7 +2,7 @@
 
 
 use core::mem::ManuallyDrop;
-use kernel::{device::Core, platform, prelude::*, soc::apple::rtkit, sync::Arc,
+use kernel::{device::Core, drm, platform, prelude::*, soc::apple::rtkit, sync::Arc,
     time::{delay::fsleep, Delta}};
 use crate::{driver, g16_device::Device, g16_rtkit, mmu};
 
@@ -973,10 +973,13 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn new(pdev: &platform::Device<Core>, device: Device) -> Result<Self> {
+    /// Also returns the unregistered DRM device the runtime is built on, for the caller to
+    /// register.
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>, device: Device) -> Result<(Self, drm::UnregisteredDevice<driver::AsahiDriver>)> {
         device.require_stopped(pdev)?;
-        let drm: driver::AsahiDevRef = kernel::drm::Device::new(
+        let unreg = drm::UnregisteredDevice::<driver::AsahiDriver>::new(
             pdev.as_ref(), driver::AsahiData::new(pdev, None, true))?;
+        let drm = driver::AsahiDevRef::from(&*unreg);
         // SAFETY: Device exclusively owns ASC control and power. Construction
         // is stopped, and Runtime::drop stops ASC before dropping this UAT.
         let uat = unsafe { mmu::Uat::new_j613_25g83(&drm, device.firmware()) }?;
@@ -996,16 +999,16 @@ impl Runtime {
                 None
             }
         };
-        Ok(Self { inner: ManuallyDrop::new(Inner { transport, state, queue, compute_queue, fragment_queue, queue_context, fragment_registered:false, retired_renders:KVec::new(),retired_computes:KVec::new(), idle_caches:crate::g16_owner_cache::Registry::new(), compute, config, uat, drm, device, generation: 0, gpu_pending: false, #[cfg(CONFIG_DEV_COREDUMP)] fault_captured: false, #[cfg(CONFIG_DEV_COREDUMP)] fault_reserve, busy_since_ns: None, command_label: 1, render_stamp: 0, compute_stamp: crate::g16_compute::STAMP, inflight: KVec::new(), pending: KVec::new(), messages_at_wait: 0, waits: 0, late_retirements: 0, wait_timeouts: 0, last_retired: None, last_gpu_end: None, summary: SubmitSummary { since_ns: <kernel::time::Monotonic as kernel::time::ClockSource>::ktime_get(), ..Default::default() } }) })
+        Ok((Self { inner: ManuallyDrop::new(Inner { transport, state, queue, compute_queue, fragment_queue, queue_context, fragment_registered:false, retired_renders:KVec::new(),retired_computes:KVec::new(), idle_caches:crate::g16_owner_cache::Registry::new(), compute, config, uat, drm, device, generation: 0, gpu_pending: false, #[cfg(CONFIG_DEV_COREDUMP)] fault_captured: false, #[cfg(CONFIG_DEV_COREDUMP)] fault_reserve, busy_since_ns: None, command_label: 1, render_stamp: 0, compute_stamp: crate::g16_compute::STAMP, inflight: KVec::new(), pending: KVec::new(), messages_at_wait: 0, waits: 0, late_retirements: 0, wait_timeouts: 0, last_retired: None, last_gpu_end: None, summary: SubmitSummary { since_ns: <kernel::time::Monotonic as kernel::time::ClockSource>::ktime_get(), ..Default::default() } }) }, unreg))
     }
 
-    pub(crate) fn boot(&mut self, pdev: &platform::Device<Core>) -> Result {
+    pub(crate) fn boot(&mut self, pdev: &platform::Device<Core<'_>>) -> Result {
         let result = self.boot_inner(pdev);
         if let Err(error) = result { self.fail_all(error); }
         result
     }
 
-    fn boot_inner(&mut self, pdev: &platform::Device<Core>) -> Result {
+    fn boot_inner(&mut self, pdev: &platform::Device<Core<'_>>) -> Result {
         self.inner.device.start_asc(pdev)?;
         Pin::new(&mut self.inner.transport).wake()?;
         if !Pin::new(&self.inner.transport).is_running() || !self.inner.state.healthy() {

@@ -392,7 +392,6 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	tcp_update_metrics(sk);
 	tcp_done(sk);
 }
-EXPORT_SYMBOL(tcp_time_wait);
 
 void tcp_twsk_destructor(struct sock *sk)
 {
@@ -441,7 +440,7 @@ void tcp_openreq_init_rwin(struct request_sock *req,
 	u32 rcv_wnd;
 	int mss;
 
-	mss = tcp_mss_clamp(tp, dst_metric_advmss(dst));
+	mss = tcp_mss_clamp(tp, tcp_dst_advmss(dst));
 	window_clamp = READ_ONCE(tp->window_clamp);
 	/* Set this up on the first call only */
 	req->rsk_window_clamp = window_clamp ? : dst_metric(dst, RTAX_WINDOW);
@@ -670,7 +669,6 @@ struct sock *tcp_create_openreq_child(const struct sock *sk,
 
 	return newsk;
 }
-EXPORT_SYMBOL(tcp_create_openreq_child);
 
 /*
  * Process an incoming packet for SYN_RECV sockets represented as a

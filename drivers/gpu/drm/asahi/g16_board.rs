@@ -202,7 +202,7 @@ fn j615(mut board: Board) -> Board {
 static CURRENT: kernel::sync::SetOnce<Board> = kernel::sync::SetOnce::new();
 
 #[cfg(not(test))]
-pub(crate) fn initialize(pdev: &kernel::platform::Device<kernel::device::Core>) -> kernel::error::Result {
+pub(crate) fn initialize(pdev: &kernel::platform::Device<kernel::device::Core<'_>>) -> kernel::error::Result {
     use kernel::{c_str, prelude::*};
     if !crate::g16_profile::selected(pdev)? { return Err(ENODEV); }
     if CURRENT.as_ref().is_some() { return Ok(()); }

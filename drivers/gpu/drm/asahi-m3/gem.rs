@@ -60,7 +60,10 @@ pub(crate) struct AsahiObject {
 }
 
 /// Type alias for the shmem GEM object type for this driver.
-pub(crate) type Object = shmem::Object<AsahiObject>;
+///
+/// The GPU runtime holds its objects in the [`drm::Uninit`] context, like the device
+/// ([`AsahiDevice`]).
+pub(crate) type Object = shmem::Object<AsahiObject, drm::Uninit>;
 
 /// Marks whether the pages of `gem` are held for the device.
 ///
@@ -98,9 +101,15 @@ pub(crate) fn set_mapping_held(gem: &Object, held: bool) {
     }
 }
 
+/// Looks up the object of a client's GEM handle, in the runtime's [`drm::Uninit`] context.
+pub(crate) fn lookup_handle(file: &file::DrmFile, handle: u32) -> Result<ARef<Object>> {
+    let gem = shmem::Object::<AsahiObject>::lookup_handle(file, handle)?;
+    Ok(gem.as_uninit().into())
+}
+
 /// Takes an owned SG table of `gem`, which holds its pages for the device, and marks the
 /// object held (see [`set_mapping_held`]).
-pub(crate) fn held_sg_table(gem: &Object) -> Result<shmem::SGTable<AsahiObject>> {
+pub(crate) fn held_sg_table(gem: &Object) -> Result<shmem::SGTable<AsahiObject, drm::Uninit>> {
     let sgt = gem.owned_sg_table()?;
     set_mapping_held(gem, true);
     Ok(sgt)
@@ -128,7 +137,7 @@ pub(crate) struct ObjectRef {
     /// The underlying GEM object reference
     pub(crate) gem: ARef<Object>,
     /// The kernel-side VMap of this object, if needed
-    vmap: Option<VMap<AsahiObject, u8>>,
+    vmap: Option<VMap<AsahiObject, u8, drm::Uninit>>,
 }
 
 crate::no_debug!(ObjectRef);
@@ -142,7 +151,7 @@ impl ObjectRef {
     }
 
     /// Return the `VMap` for this object, creating it if necessary.
-    pub(crate) fn vmap(&mut self) -> Result<shmem::VMapRef<'_, AsahiObject, u8>> {
+    pub(crate) fn vmap(&mut self) -> Result<shmem::VMapRef<'_, AsahiObject, u8, drm::Uninit>> {
         if self.vmap.is_none() {
             self.vmap = Some(self.gem.owned_vmap()?);
         }
@@ -223,10 +232,10 @@ pub(crate) fn new_kernel_object_wc(dev: &AsahiDevice, size: usize) -> Result<Obj
 }
 
 fn new_kernel_object_mapped(dev: &AsahiDevice, size: usize, map_wc: bool) -> Result<ObjectRef> {
-    let gem = shmem::Object::<AsahiObject>::new(
+    let gem = Object::new(
         dev,
         align(size, mmu::UAT_PGSZ),
-        shmem::ObjectConfig::<AsahiObject> {
+        shmem::ObjectConfig::<AsahiObject, drm::Uninit> {
             synchronous_reclaim: false,
             reclaimable_cpu_mappings: false,
             map_wc,
@@ -249,7 +258,7 @@ pub(crate) fn new_object(
     dev: &AsahiDevice,
     size: usize,
     flags: u32,
-    parent_object: Option<&shmem::Object<AsahiObject>>,
+    parent_object: Option<&Object>,
     reclaim_cpu: bool,
 ) -> Result<ARef<Object>> {
     if (flags & uapi::drm_asahi_gem_flags_DRM_ASAHI_GEM_VM_PRIVATE != 0) != parent_object.is_some()
@@ -257,10 +266,10 @@ pub(crate) fn new_object(
         return Err(EINVAL);
     }
 
-    let gem = shmem::Object::<AsahiObject>::new(
+    let gem = Object::new(
         dev,
         align(size, mmu::UAT_PGSZ),
-        shmem::ObjectConfig::<AsahiObject> {
+        shmem::ObjectConfig::<AsahiObject, drm::Uninit> {
             synchronous_reclaim: false,
             reclaimable_cpu_mappings: parent_object.is_some() && reclaim_cpu,
             map_wc: flags & uapi::drm_asahi_gem_flags_DRM_ASAHI_GEM_WRITEBACK == 0,
@@ -285,7 +294,11 @@ impl DriverObject for AsahiObject {
     const HAS_EXPORT: bool = true;
 
     /// Callback to create the inner data of a GEM object
-    fn new(_dev: &AsahiDevice, size: usize, args: Self::Args) -> impl PinInit<Self, Error> {
+    fn new<Ctx: drm::DeviceContext>(
+        _dev: &drm::Device<AsahiDriver, Ctx>,
+        size: usize,
+        args: Self::Args,
+    ) -> impl PinInit<Self, Error> {
         let id = GEM_ID.fetch_add(1, Ordering::Relaxed);
         mod_pr_debug!("AsahiObject::new id={}\n", id);
         try_pin_init!(AsahiObject {
@@ -300,7 +313,7 @@ impl DriverObject for AsahiObject {
 
     /// Objects the DRM core allocates for us (dma-bufs imported from other devices and dumb
     /// buffers) are shared user objects, like a GEM_CREATE object without flags.
-    fn core_object_args(_dev: &AsahiDevice, _size: usize) -> Result<Self::Args> {
+    fn core_object_args(_dev: &drm::Device<AsahiDriver>, _size: usize) -> Result<Self::Args> {
         Ok(AsahiObjConfig {
             flags: 0,
             exportable: true,
@@ -309,19 +322,19 @@ impl DriverObject for AsahiObject {
     }
 
     /// Callback to drop all mappings for a GEM object owned by a given `File`
-    fn close(obj: &<Self::Driver as drm::Driver>::Object, file: &drm::gem::DriverFile<Self>) {
+    fn close(obj: &drm::gem::DriverAllocImpl<Self>, file: &drm::gem::DriverFile<Self>) {
         // fn close(obj: &Object, file: &DrmFile) {
         mod_pr_debug!("AsahiObject::close id={}\n", obj.id);
-        if file::File::unbind_gem_object(file, obj).is_err() {
+        if file::File::unbind_gem_object(file, obj.as_uninit()).is_err() {
             pr_err!("AsahiObject::close: Failed to unbind GEM object\n");
         }
     }
 
     /// Optional handle for exporting a gem object.
     fn export(
-        obj: &<Self::Driver as drm::Driver>::Object,
+        obj: &drm::gem::DriverAllocImpl<Self>,
         flags: u32,
-    ) -> Result<drm::gem::DmaBuf<Object>> {
+    ) -> Result<drm::gem::DmaBuf<drm::gem::DriverAllocImpl<Self>>> {
         if !obj.exportable {
             return Err(EINVAL);
         }
@@ -377,7 +390,7 @@ pub(crate) fn prepare_new_object(gem: &Object) -> Result {
     let sgt = gem.sg_table()?;
     let dev: &kernel::device::Device = gem.dev().as_ref();
     // SAFETY: The device outlives its GEM objects; the flag is fixed when the device is probed.
-    if !unsafe { (*dev.as_raw()).dma_coherent() } {
+    if !unsafe { kernel::bindings::dev_dma_coherent(dev.as_raw()) } {
         return Ok(());
     }
     static WARNED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);

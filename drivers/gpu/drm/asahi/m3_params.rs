@@ -563,7 +563,7 @@ pub(crate) fn thermal_hot_param() -> (u64, bool) {
 /// The runtime starts only on the boards the T8122 table allows (the M3 MacBook Airs), with
 /// `auto` and `runtime` alike: it has not run on any T8122, so nothing forces it onto another
 /// board. The G15 manager backend is T6030-only.
-pub(crate) fn t8122_backend(pdev: &platform::Device<Core>) -> bool {
+pub(crate) fn t8122_backend(pdev: &platform::Device<Core<'_>>) -> bool {
     let dev = pdev.as_ref();
     match M3_BACKEND.load(Ordering::Relaxed) {
         BACKEND_OFF => {
@@ -593,7 +593,7 @@ pub(crate) fn t8122_backend(pdev: &platform::Device<Core>) -> bool {
 /// `auto` starts the runtime backend on the boards it is validated on (the M3 Pro MacBook
 /// Pros). On other T6030 boards it starts nothing until the runtime is validated there;
 /// `asahi.m3_backend=runtime` starts it anyway.
-pub(crate) fn t6030_backend(pdev: &platform::Device<Core>) -> T6030Backend {
+pub(crate) fn t6030_backend(pdev: &platform::Device<Core<'_>>) -> T6030Backend {
     let dev = pdev.as_ref();
     match M3_BACKEND.load(Ordering::Relaxed) {
         BACKEND_RUNTIME => {

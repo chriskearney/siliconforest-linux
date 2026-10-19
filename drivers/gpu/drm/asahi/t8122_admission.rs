@@ -93,7 +93,7 @@ pub(crate) fn opp_table_shape(opps: impl IntoIterator<Item = (u64, u32)>) -> Opt
 /// This is intentionally only an identity gate; it does not admit a full HwConfig.
 #[cfg(not(test))]
 pub(crate) fn read_identity(
-    pdev: &kernel::platform::Device<kernel::device::Core>,
+    pdev: &kernel::platform::Device<kernel::device::Core<'_>>,
 ) -> kernel::error::Result<Identity> {
     use kernel::{bindings, c_str, prelude::*};
 

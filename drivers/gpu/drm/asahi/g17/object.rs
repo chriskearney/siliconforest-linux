@@ -192,7 +192,7 @@ impl KernelObject {
     }
 
     /// Returns a reference-counted kernel mapping of the object.
-    pub(crate) fn kernel_map(&self) -> Result<shmem::VMap<gem::AsahiObject, u8>> {
+    pub(crate) fn kernel_map(&self) -> Result<shmem::VMap<gem::AsahiObject, u8, kernel::drm::Uninit>> {
         self.obj.gem.owned_vmap()
     }
 

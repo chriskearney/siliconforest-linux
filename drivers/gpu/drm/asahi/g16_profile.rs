@@ -23,7 +23,7 @@ pub(crate) fn chosen_switch_on(value: Option<&[u8]>) -> bool {
 }
 
 #[cfg(not(test))]
-pub(crate) fn selected(pdev: &kernel::platform::Device<kernel::device::Core>) -> kernel::error::Result<bool> {
+pub(crate) fn selected(pdev: &kernel::platform::Device<kernel::device::Core<'_>>) -> kernel::error::Result<bool> {
     use kernel::{bindings, c_str, prelude::*};
     let node = pdev.as_ref().of_node().ok_or(ENODEV)?;
     let compat = node.get_property::<KVec<u32>>(c_str!("apple,firmware-compat"))?;

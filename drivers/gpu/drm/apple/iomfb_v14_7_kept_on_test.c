@@ -118,7 +118,7 @@ static bool v14_kept_look_then_release(struct apple_dcp *dcp)
 {
 	bool inactive = READ_ONCE(dcp->dptxport[0].sink_inactive);
 
-	queue_work(system_unbound_wq, &v14_kept_current->release_work);
+	queue_work(system_dfl_wq, &v14_kept_current->release_work);
 	msleep(50);
 	return inactive;
 }

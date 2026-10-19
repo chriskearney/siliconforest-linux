@@ -726,7 +726,7 @@ bool dcp_has_panel(struct apple_dcp *dcp);
 
 struct iomfb_scanout_v14_7 *iomfb_present_atomic_v14_7(struct apple_dcp *dcp,
 							struct drm_crtc *crtc,
-							struct drm_atomic_state *state);
+							struct drm_atomic_commit *state);
 void iomfb_present_backlight_v14_7(struct apple_dcp *dcp);
 void iomfb_present_release_v14_7(struct apple_dcp *dcp,
 				 struct iomfb_scanout_v14_7 *scanout);

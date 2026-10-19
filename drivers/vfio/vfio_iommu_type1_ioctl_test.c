@@ -158,7 +158,7 @@ static int vfio_ioctl_test_rw(struct vfio_fragment_fixture *f,
 	}
 	if (cmd->flags & VFIO_TYPE1_TEST_WORKER) {
 		INIT_WORK(&rw.work, vfio_ioctl_rw_work);
-		queue_work(system_unbound_wq, &rw.work);
+		queue_work(system_dfl_wq, &rw.work);
 		flush_work(&rw.work);
 		ret = rw.ret;
 	} else {

@@ -355,7 +355,10 @@ static int pmp_power_prepare(struct device *consumer, enum pmp_power_kind kind)
 		ret = -ENOMEM;
 		goto out;
 	}
-	/* Rust checks the actual drvdata type; no provider exists before full binding. */
+	/*
+	 * The caller verified the bound driver under the device lock; the Rust side
+	 * borrows its private data. No provider exists before full binding.
+	 */
 	p = apple_pmp_display_bound_owner(&pdev->dev);
 	if (!p) {
 		device_link_del(link);

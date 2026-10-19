@@ -273,7 +273,7 @@ static void iomfb_queue_advance(struct apple_dcp *dcp)
 				unsigned int delay = dcp_backlight_retry_delay(dcp);
 
 				if (delay)
-					mod_delayed_work(system_wq, &dcp->iomfb.backlight_retry,
+					mod_delayed_work(system_percpu_wq, &dcp->iomfb.backlight_retry,
 							 msecs_to_jiffies(delay));
 				else
 					dev_warn_ratelimited(dcp->dev,
@@ -313,7 +313,7 @@ static void iomfb_queue_work(struct work_struct *work)
 	dcp->iomfb.active = transaction;
 	WRITE_ONCE(dcp->iomfb.owner, current);
 	dcp->iomfb.deadline = jiffies + msecs_to_jiffies(10000);
-	mod_delayed_work(system_wq, &dcp->iomfb.timeout, msecs_to_jiffies(10000));
+	mod_delayed_work(system_percpu_wq, &dcp->iomfb.timeout, msecs_to_jiffies(10000));
 	transaction->start(dcp, transaction);
 	WRITE_ONCE(dcp->iomfb.owner, NULL);
 	iomfb_queue_advance(dcp);
@@ -328,7 +328,7 @@ static void iomfb_queue_timeout(struct work_struct *work)
 
 	mutex_lock(&dcp->iomfb.lock);
 	if (dcp->iomfb.active && time_before(jiffies, dcp->iomfb.deadline)) {
-		mod_delayed_work(system_wq, &dcp->iomfb.timeout,
+		mod_delayed_work(system_percpu_wq, &dcp->iomfb.timeout,
 				 dcp->iomfb.deadline - jiffies);
 	} else if (dcp->iomfb.active) {
 		WRITE_ONCE(dcp->crashed, true);
@@ -992,10 +992,10 @@ static int dcp_external_commit_relink(struct apple_connector *connector,
 {
 	struct drm_connector_state *conn_state;
 	struct drm_crtc_state *crtc_state;
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 	int ret;
 
-	state = drm_atomic_state_alloc(crtc->dev);
+	state = drm_atomic_commit_alloc(crtc->dev);
 	if (!state)
 		return -ENOMEM;
 	state->acquire_ctx = ctx;
@@ -1013,7 +1013,7 @@ static int dcp_external_commit_relink(struct apple_connector *connector,
 	conn_state->link_status = DRM_LINK_STATUS_GOOD;
 	ret = drm_atomic_commit(state);
 out:
-	drm_atomic_state_put(state);
+	drm_atomic_commit_put(state);
 
 	return ret;
 }
@@ -1803,7 +1803,7 @@ enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 }
 
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
-			    struct drm_atomic_state *state)
+			    struct drm_atomic_commit *state)
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	struct apple_dcp *dcp = platform_get_drvdata(apple_crtc->dcp);
@@ -1902,7 +1902,7 @@ static void iomfb_scanout_release_h17p(struct iomfb_scanout_h17p *scanout)
 
 static struct iomfb_scanout_h17p *
 iomfb_scanout_prepare_h17p(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			   struct drm_atomic_state *state)
+			   struct drm_atomic_commit *state)
 {
 	struct iomfb_scanout_h17p *scanout;
 	struct drm_plane *plane;
@@ -2179,7 +2179,7 @@ int iomfb_configure_backlight_h17p(struct apple_dcp *dcp, u32 maximum,
 
 struct iomfb_atomic_transaction {
 	struct iomfb_transaction transaction;
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 	struct drm_crtc *crtc;
 	struct apple_dcp *dcp;
 	struct iomfb_scanout_h17p *scanout;
@@ -2230,12 +2230,12 @@ static void iomfb_atomic_release(struct iomfb_transaction *transaction)
 #if IS_ENABLED(CONFIG_DRM_APPLE_DCP_T6030)
 	iomfb_present_release_v14_7(atomic->dcp, atomic->scanout_v14_7);
 #endif
-	drm_atomic_state_put(atomic->state);
+	drm_atomic_commit_put(atomic->state);
 	kfree(atomic);
 }
 
 static void iomfb_queue_atomic(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			       struct drm_atomic_state *state)
+			       struct drm_atomic_commit *state)
 {
 	struct iomfb_atomic_transaction *atomic;
 	int ret;
@@ -2250,7 +2250,7 @@ static void iomfb_queue_atomic(struct apple_dcp *dcp, struct drm_crtc *crtc,
 	atomic->transaction.start = iomfb_atomic_start;
 	atomic->transaction.presentation = true;
 	atomic->transaction.release = iomfb_atomic_release;
-	atomic->state = drm_atomic_state_get(state);
+	atomic->state = drm_atomic_commit_get(state);
 	atomic->crtc = crtc;
 	atomic->dcp = dcp;
 	ret = iomfb_queue(dcp, &atomic->transaction);
@@ -2266,7 +2266,7 @@ failed:
 	schedule_work(&dcp->vblank_wq);
 }
 
-void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
+void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);

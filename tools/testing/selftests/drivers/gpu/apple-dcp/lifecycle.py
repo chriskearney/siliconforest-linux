@@ -979,11 +979,11 @@ struct apple_dcp {
 struct platform_device { struct apple_dcp *data; };
 struct drm_crtc { struct platform_device *dcp; };
 struct drm_crtc_state { bool vrr_enabled, modeset; };
-struct drm_atomic_state { struct drm_crtc_state crtc; };
+struct drm_atomic_commit { struct drm_crtc_state crtc; };
 #define to_apple_crtc(x) (x)
 #define platform_get_drvdata(x) ((x)->data)
 static struct drm_crtc_state *drm_atomic_get_new_crtc_state(
-    struct drm_atomic_state *s, struct drm_crtc *c)
+    struct drm_atomic_commit *s, struct drm_crtc *c)
 { (void)c; return &s->crtc; }
 static bool drm_atomic_crtc_needs_modeset(struct drm_crtc_state *s)
 { return s->modeset; }
@@ -995,7 +995,7 @@ int main(void)
     struct apple_dcp dcp = { .connector = &connector };
     struct platform_device pdev = { .data = &dcp };
     struct drm_crtc crtc = { .dcp = &pdev };
-    struct drm_atomic_state state = {0};
+    struct drm_atomic_commit state = {0};
     unsigned int cases = 0;
     /* Check initial modesets, plane-only commits and link recovery states. */
     for (unsigned int profile = 0; profile < 3; profile++)

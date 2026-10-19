@@ -92,7 +92,7 @@ MODULE_PARM_DESC(unstable_edid, "Enable unstable EDID retrival support");
 static void dcp_recv_msg_h17p(struct apple_dcp *dcp, u8 endpoint, u64 message);
 static void dcp_rtk_crashed_h17p(struct apple_dcp *dcp);
 static int dcp_rtk_shmem_setup_h17p(struct apple_dcp *dcp, struct apple_rtkit_shmem *bfr);
-static int dcp_crtc_atomic_check_h17p(struct drm_crtc *crtc, struct drm_atomic_state *state);
+static int dcp_crtc_atomic_check_h17p(struct drm_crtc *crtc, struct drm_atomic_commit *state);
 static int dcp_dptx_connect_h17p(struct apple_dcp *dcp, u32 port);
 static int dcp_dptx_disconnect_h17p(struct apple_dcp *dcp, u32 port);
 static int dcp_dptx_connect_oob_h17p(struct platform_device *pdev, u32 port);
@@ -304,7 +304,7 @@ static void dcp_swap_watchdog(struct work_struct *work)
 void dcp_swap_watchdog_arm(struct apple_dcp *dcp)
 {
 	if (dcp_is_typec_output(dcp))
-		mod_delayed_work(system_wq, &dcp->swap_watchdog_wq,
+		mod_delayed_work(system_percpu_wq, &dcp->swap_watchdog_wq,
 				 msecs_to_jiffies(DCP_SWAP_WATCHDOG_MS));
 }
 
@@ -463,7 +463,7 @@ void dcp_send_message(struct apple_dcp *dcp, u8 endpoint, u64 message)
 				     endpoint, ret);
 }
 
-int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
+int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
@@ -4339,7 +4339,7 @@ static const struct apple_rtkit_ops external_h17p_rtkit_ops = {
 	.shmem_destroy = dcp_rtk_shmem_destroy,
 };
 
-static int dcp_crtc_atomic_check_h17p(struct drm_crtc *crtc, struct drm_atomic_state *state)
+static int dcp_crtc_atomic_check_h17p(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);

@@ -29,7 +29,7 @@
  *
  * Returns the mask of the CRTCs to be resumed disabled.
  */
-u32 apple_drm_drop_stale_crtcs(struct drm_atomic_state *state)
+u32 apple_drm_drop_stale_crtcs(struct drm_atomic_commit *state)
 {
 	const struct drm_crtc_helper_funcs *funcs;
 	struct drm_connector_state *conn_state;

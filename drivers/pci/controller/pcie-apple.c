@@ -93,6 +93,7 @@ static const char *const apple_pcie_tunnel_cold_init_machines[] = {
  */
 bool apple_pcie_tunnel_needs_cold_init(struct device_node *np)
 {
+	struct of_phandle_args dart_spec = {};
 	struct device_node *dart = NULL;
 	bool tunables;
 	u32 status;
@@ -106,8 +107,9 @@ bool apple_pcie_tunnel_needs_cold_init(struct device_node *np)
 	    status == 1)
 		return false;
 
-	if (of_map_id(np, 0, "iommu-map", "iommu-map-mask", &dart, NULL) || !dart)
+	if (of_map_iommu_id(np, 0, &dart_spec) || !dart_spec.np)
 		return false;
+	dart = dart_spec.np;
 	tunables = of_property_present(dart, "apple,tunable");
 	if (!tunables)
 		pr_warn_once("%pOF: no PCIe-C DART tunables, not cold-initializing\n",
@@ -1977,6 +1979,7 @@ static int apple_pcie_enable_device(struct pci_host_bridge *bridge, struct pci_d
 	struct resource *res;
 	u32 sid, val, readback, rid = pci_dev_id(pdev);
 	struct apple_pcie_port *port;
+	struct of_phandle_args iommu_spec = {};
 	int idx, err;
 
 	/* A generic rescan must not enable cached children of failed admission. */
@@ -2011,11 +2014,12 @@ static int apple_pcie_enable_device(struct pci_host_bridge *bridge, struct pci_d
 	dev_dbg(&pdev->dev, "added to bus %s, index %d\n",
 		pci_name(pdev->bus->self), port->idx);
 
-	err = of_map_id(port->pcie->dev->of_node, rid, "iommu-map",
-			"iommu-map-mask", NULL, &sid);
+	err = of_map_iommu_id(port->pcie->dev->of_node, rid, &iommu_spec);
 	if (err)
 		return err;
 
+	of_node_put(iommu_spec.np);
+	sid = iommu_spec.args[0];
 	mutex_lock(&port->pcie->lock);
 
 	if (port->pcie->hw->sid_indexed_rid2sid) {

@@ -457,7 +457,7 @@ impl Orphan {
 
 /// Probe-time admission.
 pub(crate) fn admit(
-    pdev: &platform::Device<Core>,
+    pdev: &platform::Device<Core<'_>>,
     _dev: &AsahiDevice,
     cfg: &'static Config,
     res: shared_regs::Resources,

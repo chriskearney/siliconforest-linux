@@ -30,7 +30,7 @@ pub enum Status {
 }
 
 /// Scheduler priorities
-#[repr(u32)]
+#[repr(i32)]
 pub enum Priority {
     /// Low userspace priority
     Low = bindings::drm_sched_priority_DRM_SCHED_PRIORITY_LOW,
@@ -369,7 +369,7 @@ impl<T: JobImpl> Entity<T> {
         let mut sched_ptr = &sched.0.allocation.sched as *const _ as *mut _;
 
         // SAFETY: The Box is allocated above and valid.
-        unsafe {
+        to_result(unsafe {
             bindings::drm_sched_entity_init(
                 addr_of_mut!((*entity.as_mut_ptr()).entity),
                 priority as _,
@@ -377,7 +377,7 @@ impl<T: JobImpl> Entity<T> {
                 1,
                 addr_of_mut!((*entity.as_mut_ptr()).guilty),
             )
-        };
+        })?;
 
         // SAFETY: The Box is allocated above and valid.
         unsafe { addr_of_mut!((*entity.as_mut_ptr()).sched).write(sched.0.clone()) };

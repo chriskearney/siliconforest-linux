@@ -143,7 +143,7 @@ static void apple_connector_oob_hotplug(struct drm_connector *connector,
 }
 
 static void apple_crtc_atomic_enable(struct drm_crtc *crtc,
-				     struct drm_atomic_state *state)
+				     struct drm_atomic_commit *state)
 {
 	struct drm_crtc_state *crtc_state;
 	crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
@@ -163,7 +163,7 @@ static void apple_crtc_atomic_enable(struct drm_crtc *crtc,
 }
 
 static void apple_crtc_atomic_disable(struct drm_crtc *crtc,
-				      struct drm_atomic_state *state)
+				      struct drm_atomic_commit *state)
 {
 	struct drm_crtc_state *crtc_state;
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
@@ -184,7 +184,7 @@ static void apple_crtc_atomic_disable(struct drm_crtc *crtc,
 }
 
 static void apple_crtc_atomic_begin(struct drm_crtc *crtc,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	unsigned long flags;
@@ -290,7 +290,7 @@ static const struct drm_mode_config_funcs apple_mode_config_funcs = {
 	.fb_create		= drm_gem_fb_create,
 };
 
-static void apple_atomic_commit_tail(struct drm_atomic_state *state)
+static void apple_atomic_commit_tail(struct drm_atomic_commit *state)
 {
 	struct drm_plane *plane;
 	struct drm_plane_state *old, *new;
@@ -344,7 +344,7 @@ static const struct drm_connector_funcs apple_connector_funcs = {
  */
 static struct drm_encoder *
 apple_connector_atomic_best_encoder(struct drm_connector *conn,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	struct apple_connector *apple_connector = to_apple_connector(conn);
 	struct drm_connector_state *conn_state;

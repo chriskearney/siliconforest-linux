@@ -33,6 +33,18 @@ static void kunit_ida_init(struct kunit *test, struct ida *ida)
 	kunit_alloc_resource(test, __ida_init, __ida_destroy, GFP_KERNEL, ida);
 }
 
+static void tb_test_switch_release(struct device *dev)
+{
+	/* The memory is owned by KUnit, nothing to do here */
+}
+
+static void tb_test_switch_put(void *data)
+{
+	struct tb_switch *sw = data;
+
+	put_device(&sw->dev);
+}
+
 static struct tb_switch *alloc_switch(struct kunit *test, u64 route,
 				      u8 upstream_port, u8 max_port_number)
 {
@@ -42,6 +54,15 @@ static struct tb_switch *alloc_switch(struct kunit *test, u64 route,
 
 	sw = kunit_kzalloc(test, sizeof(*sw), GFP_KERNEL);
 	if (!sw)
+		return NULL;
+
+	/*
+	 * HopID allocations take a reference to their routers and those devices
+	 * have to be initialized for that to work.
+	 */
+	sw->dev.release = tb_test_switch_release;
+	device_initialize(&sw->dev);
+	if (kunit_add_action_or_reset(test, tb_test_switch_put, sw))
 		return NULL;
 
 	sw->config.upstream_port_number = upstream_port;
@@ -1386,6 +1407,10 @@ static void tb_test_tunnel_pcie(struct kunit *test)
 	tb_tunnel_put(tunnel1);
 }
 
+static void tb_test_dp_tunnel_active(struct tb_tunnel *tunnel, void *data)
+{
+}
+
 static void tb_test_tunnel_dp(struct kunit *test)
 {
 	struct tb_switch *host, *dev;
@@ -1406,7 +1431,8 @@ static void tb_test_tunnel_dp(struct kunit *test)
 	in = &host->ports[5];
 	out = &dev->ports[13];
 
-	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0, NULL, NULL);
+	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
+				    tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel->src_port, in);
@@ -1452,7 +1478,8 @@ static void tb_test_tunnel_dp_chain(struct kunit *test)
 	in = &host->ports[5];
 	out = &dev4->ports[14];
 
-	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0, NULL, NULL);
+	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
+				    tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel->src_port, in);
@@ -1502,7 +1529,8 @@ static void tb_test_tunnel_dp_tree(struct kunit *test)
 	in = &dev2->ports[13];
 	out = &dev5->ports[13];
 
-	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0, NULL, NULL);
+	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
+				    tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel->src_port, in);
@@ -1567,7 +1595,8 @@ static void tb_test_tunnel_dp_max_length(struct kunit *test)
 	in = &dev6->ports[13];
 	out = &dev12->ports[13];
 
-	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0, NULL, NULL);
+	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
+				    tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel->src_port, in);
@@ -1637,7 +1666,8 @@ static void tb_test_tunnel_3dp(struct kunit *test)
 	out2 = &dev5->ports[13];
 	out3 = &dev4->ports[14];
 
-	tunnel1 = tb_tunnel_alloc_dp(NULL, in1, out1, 1, 0, 0, NULL, NULL);
+	tunnel1 = tb_tunnel_alloc_dp(NULL, in1, out1, 1, 0, 0,
+				     tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_TRUE(test, tunnel1 != NULL);
 	KUNIT_EXPECT_EQ(test, tunnel1->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel1->src_port, in1);
@@ -1645,7 +1675,8 @@ static void tb_test_tunnel_3dp(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, tunnel1->npaths, 3);
 	KUNIT_ASSERT_EQ(test, tunnel1->paths[0]->path_length, 3);
 
-	tunnel2 = tb_tunnel_alloc_dp(NULL, in2, out2, 1, 0, 0, NULL, NULL);
+	tunnel2 = tb_tunnel_alloc_dp(NULL, in2, out2, 1, 0, 0,
+				     tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_TRUE(test, tunnel2 != NULL);
 	KUNIT_EXPECT_EQ(test, tunnel2->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel2->src_port, in2);
@@ -1653,7 +1684,8 @@ static void tb_test_tunnel_3dp(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, tunnel2->npaths, 3);
 	KUNIT_ASSERT_EQ(test, tunnel2->paths[0]->path_length, 4);
 
-	tunnel3 = tb_tunnel_alloc_dp(NULL, in3, out3, 1, 0, 0, NULL, NULL);
+	tunnel3 = tb_tunnel_alloc_dp(NULL, in3, out3, 1, 0, 0,
+				     tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_TRUE(test, tunnel3 != NULL);
 	KUNIT_EXPECT_EQ(test, tunnel3->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel3->src_port, in3);
@@ -1661,6 +1693,7 @@ static void tb_test_tunnel_3dp(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, tunnel3->npaths, 3);
 	KUNIT_ASSERT_EQ(test, tunnel3->paths[0]->path_length, 3);
 
+	tb_tunnel_put(tunnel3);
 	tb_tunnel_put(tunnel2);
 	tb_tunnel_put(tunnel1);
 }
@@ -1750,7 +1783,8 @@ static void tb_test_tunnel_port_on_path(struct kunit *test)
 	in = &dev2->ports[13];
 	out = &dev5->ports[13];
 
-	dp_tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0, NULL, NULL);
+	dp_tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
+				       tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, dp_tunnel);
 
 	KUNIT_EXPECT_TRUE(test, tb_tunnel_port_on_path(dp_tunnel, in));
@@ -2182,7 +2216,8 @@ static void tb_test_credit_alloc_dp(struct kunit *test)
 	in = &host->ports[5];
 	out = &dev->ports[14];
 
-	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0, NULL, NULL);
+	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
+				    tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_ASSERT_EQ(test, tunnel->npaths, (size_t)3);
 
@@ -2418,7 +2453,8 @@ static struct tb_tunnel *TB_TEST_DP_TUNNEL1(struct kunit *test,
 
 	in = &host->ports[5];
 	out = &dev->ports[13];
-	dp_tunnel1 = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0, NULL, NULL);
+	dp_tunnel1 = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
+					tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, dp_tunnel1);
 	KUNIT_ASSERT_EQ(test, dp_tunnel1->npaths, (size_t)3);
 
@@ -2455,7 +2491,8 @@ static struct tb_tunnel *TB_TEST_DP_TUNNEL2(struct kunit *test,
 
 	in = &host->ports[6];
 	out = &dev->ports[14];
-	dp_tunnel2 = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0, NULL, NULL);
+	dp_tunnel2 = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
+					tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, dp_tunnel2);
 	KUNIT_ASSERT_EQ(test, dp_tunnel2->npaths, (size_t)3);
 
@@ -2852,6 +2889,248 @@ static void tb_test_property_copy(struct kunit *test)
 	tb_property_free_dir(src);
 }
 
+/*
+ * Reproducers for three memory-safety defects in
+ * drivers/thunderbolt/property.c reached from a crafted XDomain
+ * PROPERTIES_RESPONSE payload.  Without the fix these trip KASAN or
+ * smash the kernel stack; with the fix each returns NULL cleanly.
+ *
+ * The on-wire entry layout matches struct tb_property_entry in
+ * property.c (private to that translation unit): u32 key_hi, u32
+ * key_lo, then a packed u32 = (type << 24) | (reserved << 16) |
+ * length, then u32 value.  Each entry is 4 dwords.
+ */
+
+static void tb_test_property_parse_u32_wrap(struct kunit *test)
+{
+	/*
+	 * 0x102 dwords: enough for the entry's length field (0x100) to
+	 * pass the "entry->length > block_len" gate so the wrap check
+	 * is actually exercised.  parse_dwdata's downstream OOB read
+	 * lands ~16 GiB past the allocation regardless.
+	 */
+	u32 *block = kunit_kzalloc(test, 0x102 * sizeof(u32), GFP_KERNEL);
+	struct tb_property_dir *dir;
+
+	KUNIT_ASSERT_NOT_NULL(test, block);
+
+	block[0] = 0x55584401;	/* "UXD" v1 magic */
+	block[1] = 0x00000004;	/* Root directory length: one entry */
+
+	/*
+	 * DATA entry whose value 0xffffff00 + length 0x100 wrap to 0
+	 * in u32, passing the sum <= block_len guard even though the
+	 * real offset is far past the allocation.
+	 */
+	block[2] = 0x61616161;	/* key_hi */
+	block[3] = 0x61616161;	/* key_lo */
+	block[4] = 0x64000100;	/* type=DATA, reserved=0, length=0x100 */
+	block[5] = 0xffffff00;	/* value */
+
+	dir = tb_property_parse_dir(block, 0x102);
+	KUNIT_EXPECT_NULL(test, dir);
+	tb_property_free_dir(dir);
+}
+
+static void tb_test_property_parse_recursion(struct kunit *test)
+{
+	/*
+	 * 10 dwords: rootdir header (2) + parent DIRECTORY entry (4) +
+	 * the child entry that lives at dir_offset(2) + UUID(4) = 6,
+	 * occupying block[6..9].  Each recursive level re-reads the
+	 * same block[6..9] as its first child entry, which is itself
+	 * a DIRECTORY pointing at offset 2.
+	 */
+	u32 *block = kunit_kzalloc(test, 10 * sizeof(u32), GFP_KERNEL);
+	struct tb_property_dir *dir;
+
+	KUNIT_ASSERT_NOT_NULL(test, block);
+
+	block[0] = 0x55584401;	/* "UXD" v1 magic */
+	block[1] = 0x00000004;	/* Root directory length: one entry */
+
+	/*
+	 * DIRECTORY entry pointing at dir_offset = 2 with length = 8.
+	 * Non-root parse derives content_offset = 6, content_len = 4,
+	 * nentries = 1.  block[6..9] is read both as the parent's UUID
+	 * (kmemdup'd into dir->uuid) and as the single child entry --
+	 * which is itself a DIRECTORY pointing at offset 2, so the
+	 * recursion never terminates and the kernel stack is exhausted.
+	 */
+	block[2] = 0x61616161;	/* key_hi */
+	block[3] = 0x61616161;	/* key_lo */
+	block[4] = 0x44000008;	/* type=DIRECTORY, reserved=0, length=8 */
+	block[5] = 0x00000002;	/* value = dir_offset */
+
+	block[6] = 0x62626262;	/* doubles as UUID dword 0 / child key_hi */
+	block[7] = 0x62626262;	/* doubles as UUID dword 1 / child key_lo */
+	block[8] = 0x44000008;	/* type=DIRECTORY, reserved=0, length=8 */
+	block[9] = 0x00000002;	/* value = dir_offset (back at parent) */
+
+	dir = tb_property_parse_dir(block, 10);
+	KUNIT_EXPECT_NULL(test, dir);
+	tb_property_free_dir(dir);
+}
+
+static void tb_test_property_parse_dir_len_underflow(struct kunit *test)
+{
+	/*
+	 * Allocate exactly 7 dwords (28 bytes) so the kmalloc-32 chunk
+	 * leaves a 4-byte slab redzone tail that KASAN-Generic can flag.
+	 * With block_len = 7, dir_offset = 4, dir_len = 3, the non-root
+	 * UUID kmemdup reads 16 bytes from byte 16, so bytes 28..31 fall
+	 * in the redzone and trip a KASAN slab-out-of-bounds report on
+	 * the pre-fix kernel.  Sizing the buffer at a power of two (32,
+	 * 64, ...) puts the over-read into the slab cache tail where
+	 * KASAN's generic shadow does not flag it, and the test reduces
+	 * to the downstream content_len = dir_len - 4 underflow path
+	 * which also returns NULL.
+	 */
+	u32 *block = kunit_kzalloc(test, 7 * sizeof(u32), GFP_KERNEL);
+	struct tb_property_dir *dir;
+
+	KUNIT_ASSERT_NOT_NULL(test, block);
+
+	block[0] = 0x55584401;	/* "UXD" v1 magic */
+	block[1] = 0x00000004;	/* Root directory length: one entry */
+
+	/*
+	 * DIRECTORY entry with length = 3 pointing at dir_offset = 4.
+	 * tb_property_entry_valid() permits value(4) + length(3) <=
+	 * block_len(7).  Non-root parse begins with a kmemdup of 4
+	 * dwords from dir_offset for the UUID; that read runs past the
+	 * 28-byte allocation before the dir_len < 4 reject would fire.
+	 */
+	block[2] = 0x61616161;	/* key_hi */
+	block[3] = 0x61616161;	/* key_lo */
+	block[4] = 0x44000003;	/* type=DIRECTORY, reserved=0, length=3 */
+	block[5] = 0x00000004;	/* value = dir_offset */
+	/* block[6] is the start of the four UUID dwords; block[7..] is OOB. */
+
+	dir = tb_property_parse_dir(block, 7);
+	KUNIT_EXPECT_NULL(test, dir);
+	tb_property_free_dir(dir);
+}
+
+static void tb_test_property_parse_zero_length(struct kunit *test)
+{
+	u32 *block = kunit_kzalloc(test, 6 * sizeof(u32), GFP_KERNEL);
+	struct tb_property_dir *dir;
+
+	KUNIT_ASSERT_NOT_NULL(test, block);
+
+	block[0] = 0x55584401;	/* rootdir magic */
+	block[1] = 0x00000004;	/* root length: one entry */
+
+	block[2] = 0x61616161;	/* key_hi */
+	block[3] = 0x61616161;	/* key_lo */
+	block[4] = 0x74000000;	/* type=TEXT, reserved=0, length=0 */
+	block[5] = 0x00000000;	/* value */
+
+	dir = tb_property_parse_dir(block, 6);
+	KUNIT_EXPECT_NULL(test, dir);
+	tb_property_free_dir(dir);
+}
+
+static void tb_test_property_parse_rootdir_overflow(struct kunit *test)
+{
+	u32 *block = kunit_kzalloc(test, 4 * sizeof(u32), GFP_KERNEL);
+	struct tb_property_dir *dir;
+
+	KUNIT_ASSERT_NOT_NULL(test, block);
+
+	block[0] = 0x55584401;	/* rootdir magic */
+	block[1] = 0x00000004;	/* root length claims 4 dwords of content */
+	block[2] = 0x61616161;
+	block[3] = 0x61616161;
+
+	/* content_offset(2) + content_len(4) = 6 > block_len(4) */
+	dir = tb_property_parse_dir(block, 4);
+	KUNIT_EXPECT_NULL(test, dir);
+	tb_property_free_dir(dir);
+}
+
+static void tb_test_property_merge(struct kunit *test)
+{
+	struct tb_property_dir *dir1, *dir2, *dir3;
+	struct tb_property *p;
+	uuid_t uuid;
+	int ret;
+
+	dir1 = tb_property_create_dir(&network_dir_uuid);
+	KUNIT_ASSERT_NOT_NULL(test, dir1);
+	ret = tb_property_add_immediate(dir1, "prtcid", 1);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = tb_property_add_immediate(dir1, "prtcvers", 1);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = tb_property_add_immediate(dir1, "prtcrevs", 0);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = tb_property_add_immediate(dir1, "prtcstns", 0);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+
+	dir2 = tb_property_create_dir(&network_dir_uuid);
+	KUNIT_ASSERT_NOT_NULL(test, dir2);
+	ret = tb_property_add_text(dir2, "descr", "This is text");
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	/* This replaces the value in dir1 */
+	ret = tb_property_add_immediate(dir2, "prtcvers", 0x1234);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+
+	uuid_gen(&uuid);
+	dir3 = tb_property_create_dir(&uuid);
+	KUNIT_ASSERT_NOT_NULL(test, dir3);
+	ret = tb_property_add_immediate(dir3, "value0", 0);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = tb_property_add_text(dir3, "value1", "Text value");
+	KUNIT_EXPECT_EQ(test, ret, 0);
+	ret = tb_property_add_dir(dir2, "my", dir3);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+
+	ret = tb_property_merge_dir(dir1, dir2, true);
+	KUNIT_EXPECT_EQ(test, ret, 0);
+
+	p = tb_property_get_next(dir1, NULL);
+	KUNIT_ASSERT_NOT_NULL(test, p);
+	KUNIT_ASSERT_STREQ(test, &p->key[0], "prtcid");
+	KUNIT_ASSERT_EQ(test, p->type, TB_PROPERTY_TYPE_VALUE);
+	KUNIT_ASSERT_EQ(test, p->length, 1);
+	KUNIT_ASSERT_EQ(test, p->value.immediate, 1);
+	p = tb_property_get_next(dir1, p);
+	KUNIT_ASSERT_NOT_NULL(test, p);
+	KUNIT_ASSERT_STREQ(test, &p->key[0], "prtcvers");
+	KUNIT_ASSERT_EQ(test, p->type, TB_PROPERTY_TYPE_VALUE);
+	KUNIT_ASSERT_EQ(test, p->length, 1);
+	KUNIT_ASSERT_EQ(test, p->value.immediate, 0x1234);
+	p = tb_property_get_next(dir1, p);
+	KUNIT_ASSERT_NOT_NULL(test, p);
+	KUNIT_ASSERT_STREQ(test, &p->key[0], "prtcrevs");
+	KUNIT_ASSERT_EQ(test, p->type, TB_PROPERTY_TYPE_VALUE);
+	KUNIT_ASSERT_EQ(test, p->length, 1);
+	KUNIT_ASSERT_EQ(test, p->value.immediate, 0);
+	p = tb_property_get_next(dir1, p);
+	KUNIT_ASSERT_NOT_NULL(test, p);
+	KUNIT_ASSERT_STREQ(test, &p->key[0], "prtcstns");
+	KUNIT_ASSERT_EQ(test, p->type, TB_PROPERTY_TYPE_VALUE);
+	KUNIT_ASSERT_EQ(test, p->length, 1);
+	KUNIT_ASSERT_EQ(test, p->value.immediate, 0);
+	p = tb_property_get_next(dir1, p);
+	KUNIT_ASSERT_NOT_NULL(test, p);
+	KUNIT_ASSERT_STREQ(test, &p->key[0], "descr");
+	KUNIT_ASSERT_EQ(test, p->type, TB_PROPERTY_TYPE_TEXT);
+	KUNIT_ASSERT_EQ(test, p->length, 4);
+	KUNIT_ASSERT_STREQ(test, p->value.text, "This is text");
+	p = tb_property_get_next(dir1, p);
+	KUNIT_ASSERT_NOT_NULL(test, p);
+	KUNIT_ASSERT_STREQ(test, &p->key[0], "my");
+	KUNIT_ASSERT_EQ(test, p->type, TB_PROPERTY_TYPE_DIRECTORY);
+	compare_dirs(test, p->value.dir, dir3);
+	p = tb_property_get_next(dir1, p);
+	KUNIT_ASSERT_NULL(test, p);
+
+	tb_property_free_dir(dir2);
+	tb_property_free_dir(dir1);
+}
+
 struct tb_test_pci_host {
 	struct tb_nhi nhi;
 	unsigned int prepares;
@@ -3005,6 +3284,18 @@ static void tb_test_dprx_marker(struct work_struct *work)
 	complete(&ctx->worker_passed);
 }
 
+static void tb_test_dprx_release(struct device *dev)
+{
+	/* The domain is owned by KUnit and survives the final device put. */
+}
+
+/* DPRX work holds a domain reference, so the test domain needs a device. */
+static void tb_test_dprx_init_domain(struct tb *tb)
+{
+	device_initialize(&tb->dev);
+	tb->dev.release = tb_test_dprx_release;
+}
+
 static void tb_test_dprx_complete(struct tb_tunnel *tunnel, void *data)
 {
 	struct tb_test_dprx *ctx = data;
@@ -3023,6 +3314,7 @@ static void tb_test_dp_dprx_cancel_common(struct kunit *test, bool running)
 
 	tb = kunit_kzalloc(test, sizeof(*tb), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, tb);
+	tb_test_dprx_init_domain(tb);
 	host = alloc_host(test);
 	KUNIT_ASSERT_NOT_NULL(test, host);
 	dev = alloc_dev_default(test, host, 0x1, true);
@@ -3033,6 +3325,7 @@ static void tb_test_dp_dprx_cancel_common(struct kunit *test, bool running)
 	tb->wq = alloc_ordered_workqueue("tb-dprx-test", 0);
 	if (!tb->wq) {
 		tb_tunnel_put(tunnel);
+		put_device(&tb->dev);
 		KUNIT_FAIL(test, "failed to allocate DPRX workqueue");
 		return;
 	}
@@ -3041,8 +3334,9 @@ static void tb_test_dp_dprx_cancel_common(struct kunit *test, bool running)
 	mutex_init(&tb->lock);
 	mutex_lock(&tb->lock);
 
-	/* Model a pending poll holding the callback's tunnel reference. */
+	/* Model a pending poll holding the callback's tunnel and domain references. */
 	kref_get(&tunnel->kref);
+	tb_domain_get(tb);
 	tunnel->dprx_started = true;
 	queue_delayed_work(tb->wq, &tunnel->dprx_work, running ? 0 : 60 * HZ);
 	if (running) {
@@ -3066,19 +3360,24 @@ static void tb_test_dp_dprx_cancel_common(struct kunit *test, bool running)
 	KUNIT_EXPECT_TRUE(test, tunnel->dprx_canceled);
 	KUNIT_EXPECT_FALSE(test, delayed_work_pending(&tunnel->dprx_work));
 	KUNIT_EXPECT_EQ(test, kref_read(&tunnel->kref), 1U);
+	KUNIT_EXPECT_EQ(test, kref_read(&tb->dev.kobj.kref), 1U);
 
 	/* A second stop must not release the callback's resources again. */
 	tb_dp_tunnel_deactivate_host(tunnel);
 	KUNIT_EXPECT_EQ(test, ctx.completions, 1U);
 	KUNIT_EXPECT_EQ(test, kref_read(&tunnel->kref), 1U);
+	KUNIT_EXPECT_EQ(test, kref_read(&tb->dev.kobj.kref), 1U);
 
 	/* Also leave a failed cancellation test with no pending work. */
-	if (cancel_delayed_work_sync(&tunnel->dprx_work))
+	if (cancel_delayed_work_sync(&tunnel->dprx_work)) {
 		tb_tunnel_put(tunnel);
+		tb_domain_put(tb);
+	}
 	mutex_unlock(&tb->lock);
 	destroy_workqueue(tb->wq);
 	tb_tunnel_put(tunnel);
 	mutex_destroy(&tb->lock);
+	put_device(&tb->dev);
 }
 
 static void tb_test_dp_dprx_cancel(struct kunit *test)
@@ -3131,6 +3430,7 @@ static void tb_test_dp_dprx_deferred_first(struct kunit *test)
 
 	tb = kunit_kzalloc(test, sizeof(*tb), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, tb);
+	tb_test_dprx_init_domain(tb);
 	host = alloc_host(test);
 	KUNIT_ASSERT_NOT_NULL(test, host);
 	dev = alloc_dev_default(test, host, 0x1, true);
@@ -3141,6 +3441,7 @@ static void tb_test_dp_dprx_deferred_first(struct kunit *test)
 	tb->wq = alloc_ordered_workqueue("tb-dprx-gate-test", 0);
 	if (!tb->wq) {
 		tb_tunnel_put(tunnel);
+		put_device(&tb->dev);
 		KUNIT_FAIL(test, "failed to allocate DPRX workqueue");
 		return;
 	}
@@ -3148,8 +3449,9 @@ static void tb_test_dp_dprx_deferred_first(struct kunit *test)
 	mutex_init(&tb->lock);
 	init_completion(&ctx.worker_passed);
 	mutex_lock(&tb->lock);
-	/* Start with an expired timeout and a worker-owned tunnel reference. */
+	/* Start with an expired timeout and worker-owned tunnel and domain references. */
 	kref_get(&tunnel->kref);
+	tb_domain_get(tb);
 	tunnel->dprx_started = true;
 	tunnel->dprx_timeout = ktime_sub_ms(ktime_get(), 30000);
 	queue_delayed_work(tb->wq, &tunnel->dprx_work, 0);
@@ -3168,6 +3470,7 @@ static void tb_test_dp_dprx_deferred_first(struct kunit *test)
 	KUNIT_EXPECT_FALSE(test, delayed_work_pending(&tunnel->dprx_work));
 	KUNIT_EXPECT_TRUE(test, ktime_after(tunnel->dprx_timeout, ktime_get()));
 	KUNIT_EXPECT_EQ(test, kref_read(&tunnel->kref), 2U);
+	KUNIT_EXPECT_EQ(test, kref_read(&tb->dev.kobj.kref), 2U);
 
 	/* Once admitted, use a non-USB4 host so normal completion needs no I/O. */
 	gate.deferred = false;
@@ -3179,11 +3482,14 @@ static void tb_test_dp_dprx_deferred_first(struct kunit *test)
 		KUNIT_FAIL(test, "released DPRX worker did not finish");
 		goto out;
 	}
+	/* The worker drops its domain reference after releasing the lock. */
+	flush_workqueue(tb->wq);
 	mutex_lock(&tb->lock);
 	KUNIT_EXPECT_EQ(test, ctx.completions, 1U);
 	KUNIT_EXPECT_FALSE(test, tunnel->dprx_started);
 	KUNIT_EXPECT_FALSE(test, delayed_work_pending(&tunnel->dprx_work));
 	KUNIT_EXPECT_EQ(test, kref_read(&tunnel->kref), 1U);
+	KUNIT_EXPECT_EQ(test, kref_read(&tb->dev.kobj.kref), 1U);
 	mutex_unlock(&tb->lock);
 out:
 	mutex_lock(&tb->lock);
@@ -3192,6 +3498,7 @@ out:
 	destroy_workqueue(tb->wq);
 	tb_tunnel_put(tunnel);
 	mutex_destroy(&tb->lock);
+	put_device(&tb->dev);
 }
 
 static void tb_test_dp_host_disconnect(struct tb_nhi *nhi, struct tb_port *in,
@@ -3272,7 +3579,7 @@ static void tb_test_tunnel_dp_host_credits(struct kunit *test)
 
 	dev->ports[14].config.type = TB_TYPE_DP_HDMI_OUT;
 	tunnel = tb_tunnel_alloc_dp(NULL, &host->ports[5], &dev->ports[14],
-				    1, 0, 0, NULL, NULL);
+				    1, 0, 0, tb_test_dp_tunnel_active, NULL);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->paths[0]->hops[0].nfc_credits, 5U);
 	tb_tunnel_put(tunnel);
@@ -3344,6 +3651,9 @@ static struct kunit_case tb_test_cases[] = {
 	KUNIT_CASE(tb_test_tunnel_dp_host_credits),
 	KUNIT_CASE(tb_test_dp_host_teardown_once),
 	KUNIT_CASE(tb_test_dp_host_teardown_unannounced),
+	KUNIT_CASE(tb_test_property_parse_u32_wrap),
+	KUNIT_CASE(tb_test_property_parse_recursion),
+	KUNIT_CASE(tb_test_property_parse_dir_len_underflow),
 	KUNIT_CASE(tb_test_path_basic),
 	KUNIT_CASE(tb_test_path_not_connected_walk),
 	KUNIT_CASE(tb_test_path_single_hop_walk),
@@ -3383,6 +3693,9 @@ static struct kunit_case tb_test_cases[] = {
 	KUNIT_CASE(tb_test_property_parse),
 	KUNIT_CASE(tb_test_property_format),
 	KUNIT_CASE(tb_test_property_copy),
+	KUNIT_CASE(tb_test_property_parse_zero_length),
+	KUNIT_CASE(tb_test_property_parse_rootdir_overflow),
+	KUNIT_CASE(tb_test_property_merge),
 	{ }
 };
 

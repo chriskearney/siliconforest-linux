@@ -70,7 +70,7 @@ static bool ext_rect_valid(int x1, int y1, int x2, int y2, u32 pitch, size_t siz
 	return end <= size;
 }
 
-static int ext_plane_check(struct drm_plane *plane, struct drm_atomic_state *state)
+static int ext_plane_check(struct drm_plane *plane, struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *ps = drm_atomic_get_new_plane_state(state, plane);
 	struct drm_crtc_state *cs = NULL;
@@ -100,7 +100,7 @@ static int ext_plane_check(struct drm_plane *plane, struct drm_atomic_state *sta
 }
 
 /* A failed copy/firmware transaction must not become a successful fake flip. */
-static void ext_cancel_flip(struct dcpext_drm *ext, struct drm_atomic_state *state, int error)
+static void ext_cancel_flip(struct dcpext_drm *ext, struct drm_atomic_commit *state, int error)
 {
 	struct drm_crtc_state *cs = drm_atomic_get_new_crtc_state(state, &ext->crtc);
 	struct drm_pending_vblank_event *event;
@@ -227,7 +227,7 @@ static int ext_copy_frame(struct dcpext_drm *ext, struct drm_plane_state *old,
 	return ret;
 }
 
-static void ext_plane_update(struct drm_plane *plane, struct drm_atomic_state *state)
+static void ext_plane_update(struct drm_plane *plane, struct drm_atomic_commit *state)
 {
 	struct dcpext_drm *ext = container_of(plane->dev, struct dcpext_drm, drm);
 	struct drm_plane_state *ps = drm_atomic_get_new_plane_state(state, plane);
@@ -287,7 +287,7 @@ cancel:
 		ext_cancel_flip(ext, state, ret);
 }
 
-static void ext_plane_disable(struct drm_plane *plane, struct drm_atomic_state *state)
+static void ext_plane_disable(struct drm_plane *plane, struct drm_atomic_commit *state)
 {
 	struct dcpext_drm *ext = container_of(plane->dev, struct dcpext_drm, drm);
 	u32 *dst = ext->pixels;
@@ -338,7 +338,7 @@ static enum drm_mode_status ext_mode_valid(struct drm_crtc *crtc,
 {
 	return drm_mode_equal(mode, &ext_mode) ? MODE_OK : MODE_BAD;
 }
-static int ext_crtc_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
+static int ext_crtc_check(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct drm_crtc_state *cs = drm_atomic_get_new_crtc_state(state, crtc);
 

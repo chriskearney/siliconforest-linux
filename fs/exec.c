@@ -37,6 +37,7 @@
 #include <linux/init.h>
 #include <linux/sched/mm.h>
 #include <linux/sched/coredump.h>
+#include <linux/sched/exec_state.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/numa_balancing.h>
 #include <linux/sched/task.h>
@@ -332,6 +333,9 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 	if (!mm)
 		goto err;
 
+	/* Staged for would_dump() narrowing; consumed by begin_new_exec(). */
+	bprm->user_ns = get_user_ns(current_user_ns());
+
 	/* Save current stack limit for all calculations made during exec. */
 	task_lock(current->group_leader);
 	bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
@@ -439,8 +443,6 @@ int bprm_set_page_shift(struct linux_binprm *bprm, unsigned int page_shift)
 	}
 
 	old_mm = bprm->mm;
-	put_user_ns(replacement.mm->user_ns);
-	replacement.mm->user_ns = get_user_ns(old_mm->user_ns);
 	acct_arg_size(bprm, 0);
 	bprm->mm = replacement.mm;
 	bprm->vma = replacement.vma;
@@ -1000,13 +1002,20 @@ EXPORT_SYMBOL(read_code);
 /*
  * Maps the mm_struct mm into the current task struct.
  * On success, this function returns with exec_update_lock
- * held for writing.
+ * held for writing. The replaced address space is stashed in
+ * bprm->old_mm for setup_new_exec() to release outside the lock.
  */
-static int exec_mmap(struct mm_struct *mm)
+static int exec_mmap(struct linux_binprm *bprm)
 {
+	struct task_exec_state *exec_state __free(put_task_exec_state) = NULL;
+	struct mm_struct *mm = bprm->mm;
 	struct task_struct *tsk;
 	struct mm_struct *old_mm, *active_mm;
 	int ret;
+
+	exec_state = alloc_task_exec_state(bprm->user_ns);
+	if (!exec_state)
+		return -ENOMEM;
 
 	/* Notify parent that we're no longer interested in the old VM */
 	tsk = current;
@@ -1038,7 +1047,9 @@ static int exec_mmap(struct mm_struct *mm)
 	active_mm = tsk->active_mm;
 	tsk->active_mm = mm;
 	tsk->mm = mm;
+	sched_cache_exec_mmap(tsk, mm);
 	mm_init_cid(mm, tsk);
+	exec_state = task_exec_state_replace(tsk, exec_state);
 	/*
 	 * This prevents preemption while active_mm is being loaded and
 	 * it and mm are being updated, which could cause problems for
@@ -1057,15 +1068,21 @@ static int exec_mmap(struct mm_struct *mm)
 	if (old_mm) {
 		mmap_read_unlock(old_mm);
 		BUG_ON(active_mm != old_mm);
-		setmax_mm_hiwater_rss(&tsk->signal->maxrss, old_mm);
-		mm_update_next_owner(old_mm);
-		mmput(old_mm);
+		/* Defer teardown to setup_new_exec(), outside the exec locks. */
+		bprm->old_mm = old_mm;
 	} else {
 		mmdrop_lazy_tlb(active_mm);
 	}
-
 	futex_exec_done(tsk);
 	return 0;
+}
+
+/* Release the address space replaced by exec, outside the exec locks. */
+static void exec_mm_put_old(struct mm_struct *old_mm)
+{
+	setmax_mm_hiwater_rss(&current->signal->maxrss, old_mm);
+	mm_update_next_owner(old_mm);
+	mmput(old_mm);
 }
 
 static int de_thread(struct task_struct *tsk)
@@ -1253,6 +1270,17 @@ void __set_task_comm(struct task_struct *tsk, const char *buf, bool exec)
 	perf_event_comm(tsk, exec);
 }
 
+static void posixtimer_exec(struct task_struct *me)
+{
+#ifdef CONFIG_POSIX_TIMERS
+	spin_lock_irq(&me->sighand->siglock);
+	posix_cpu_timers_exit(me);
+	spin_unlock_irq(&me->sighand->siglock);
+	exit_itimers(me);
+	flush_itimer_signals();
+#endif
+}
+
 #if defined(CONFIG_MM_SUBPAGE) || defined(CONFIG_ARCH_HAS_USER_PAGE_SIZE)
 /*
  * The user page-size preference is set by an unprivileged prctl. Like the
@@ -1320,6 +1348,16 @@ int begin_new_exec(struct linux_binprm * bprm)
 	retval = de_thread(me);
 	if (retval)
 		goto out;
+
+	/*
+	 * This must be done here to ensure that POSIX CPU timers which were
+	 * armed on the current task are dequeued from me::posix_cputimers.
+	 * Otherwise in case of a TID switch the deletion of the related POSIX
+	 * timer would not remove an enqueued timer because the TID lookup
+	 * of the old TID fails.
+	 */
+	posixtimer_exec(me);
+
 	/* see the comment in check_unsafe_exec() */
 	current->fs->in_exec = 0;
 	/*
@@ -1331,6 +1369,20 @@ int begin_new_exec(struct linux_binprm * bprm)
 	retval = unshare_files();
 	if (retval)
 		goto out;
+
+	/*
+	 * We have to apply CLOEXEC before we change whether the process is
+	 * dumpable (in setup_new_exec) to avoid a race with a process in userspace
+	 * trying to access the should-be-closed file descriptors of a process
+	 * undergoing exec(2).
+	 *
+	 * This can block on filesystem ->flush() handlers, including waiting
+	 * for FUSE daemons, so do it before exec_mmap takes the
+	 * exec_update_lock.
+	 * This must happen after the point of no return, and after unsharing
+	 * the FD table.
+	 */
+	do_close_on_exec(me->files);
 
 	/*
 	 * Must be called _before_ exec_mmap() as bprm->mm is
@@ -1350,7 +1402,7 @@ int begin_new_exec(struct linux_binprm * bprm)
 	 * Release all of the old mmap stuff
 	 */
 	acct_arg_size(bprm, 0);
-	retval = exec_mmap(bprm->mm);
+	retval = exec_mmap(bprm);
 	if (retval)
 		goto out;
 
@@ -1359,14 +1411,6 @@ int begin_new_exec(struct linux_binprm * bprm)
 	retval = exec_task_namespaces();
 	if (retval)
 		goto out_unlock;
-
-#ifdef CONFIG_POSIX_TIMERS
-	spin_lock_irq(&me->sighand->siglock);
-	posix_cpu_timers_exit(me);
-	spin_unlock_irq(&me->sighand->siglock);
-	exit_itimers(me);
-	flush_itimer_signals();
-#endif
 
 	/*
 	 * Make the signal table private.
@@ -1388,14 +1432,6 @@ int begin_new_exec(struct linux_binprm * bprm)
 #endif
 
 	clear_syscall_work_syscall_user_dispatch(me);
-
-	/*
-	 * We have to apply CLOEXEC before we change whether the process is
-	 * dumpable (in setup_new_exec) to avoid a race with a process in userspace
-	 * trying to access the should-be-closed file descriptors of a process
-	 * undergoing exec(2).
-	 */
-	do_close_on_exec(me->files);
 
 	if (bprm->secureexec) {
 		/* Make sure parent cannot signal privileged process. */
@@ -1422,9 +1458,9 @@ int begin_new_exec(struct linux_binprm * bprm)
 	if (bprm->interp_flags & BINPRM_FLAGS_ENFORCE_NONDUMP ||
 	    !(uid_eq(current_euid(), current_uid()) &&
 	      gid_eq(current_egid(), current_gid())))
-		set_dumpable(current->mm, suid_dumpable);
+		task_exec_state_set_dumpable(suid_dumpable);
 	else
-		set_dumpable(current->mm, SUID_DUMP_USER);
+		task_exec_state_set_dumpable(TASK_DUMPABLE_OWNER);
 
 	perf_event_exec();
 
@@ -1473,7 +1509,7 @@ int begin_new_exec(struct linux_binprm * bprm)
 	 * wait until new credentials are committed
 	 * by commit_creds() above
 	 */
-	if (get_dumpable(me->mm) != SUID_DUMP_USER)
+	if (task_exec_state_get_dumpable(me) != TASK_DUMPABLE_OWNER)
 		perf_event_exit_task(me);
 	/*
 	 * cred_guard_mutex must be held at least to this point to prevent
@@ -1510,14 +1546,14 @@ void would_dump(struct linux_binprm *bprm, struct file *file)
 		struct user_namespace *old, *user_ns;
 		bprm->interp_flags |= BINPRM_FLAGS_ENFORCE_NONDUMP;
 
-		/* Ensure mm->user_ns contains the executable */
-		user_ns = old = bprm->mm->user_ns;
+		/* Ensure bprm->user_ns contains the executable. */
+		user_ns = old = bprm->user_ns;
 		while ((user_ns != &init_user_ns) &&
 		       !privileged_wrt_inode_uidgid(user_ns, idmap, inode))
 			user_ns = user_ns->parent;
 
 		if (old != user_ns) {
-			bprm->mm->user_ns = get_user_ns(user_ns);
+			bprm->user_ns = get_user_ns(user_ns);
 			put_user_ns(old);
 		}
 	}
@@ -1544,6 +1580,12 @@ void setup_new_exec(struct linux_binprm * bprm)
 	me->mm->task_size = TASK_SIZE;
 	up_write(&me->signal->exec_update_lock);
 	mutex_unlock(&me->signal->cred_guard_mutex);
+
+	/* The exec locks are dropped: release the old address space now. */
+	if (bprm->old_mm) {
+		exec_mm_put_old(bprm->old_mm);
+		bprm->old_mm = NULL;
+	}
 }
 EXPORT_SYMBOL(setup_new_exec);
 
@@ -1591,6 +1633,8 @@ static void free_bprm(struct linux_binprm *bprm)
 		acct_arg_size(bprm, 0);
 		mmput(bprm->mm);
 	}
+	if (bprm->user_ns)
+		put_user_ns(bprm->user_ns);
 	free_arg_pages(bprm);
 	if (bprm->cred) {
 		/* in case exec fails before de_thread() succeeds */
@@ -1598,6 +1642,9 @@ static void free_bprm(struct linux_binprm *bprm)
 		mutex_unlock(&current->signal->cred_guard_mutex);
 		abort_creds(bprm->cred);
 	}
+	/* exec swapped the mm but failed before setup_new_exec() freed it */
+	if (bprm->old_mm)
+		exec_mm_put_old(bprm->old_mm);
 	do_close_execat(bprm->file);
 	if (bprm->executable)
 		fput(bprm->executable);
@@ -1903,7 +1950,7 @@ static int exec_binprm(struct linux_binprm *bprm)
 	old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
 	rcu_read_unlock();
 
-	/* This allows 4 levels of binfmt rewrites before failing hard. */
+	/* This allows 5 levels of binfmt rewrites before failing hard. */
 	for (depth = 0;; depth++) {
 		struct file *exec;
 		if (depth > 5)
@@ -2121,17 +2168,6 @@ void set_binfmt(struct linux_binfmt *new)
 }
 EXPORT_SYMBOL(set_binfmt);
 
-/*
- * set_dumpable stores three-value SUID_DUMP_* into mm->flags.
- */
-void set_dumpable(struct mm_struct *mm, int value)
-{
-	if (WARN_ON((unsigned)value > SUID_DUMP_ROOT))
-		return;
-
-	__mm_flags_set_mask_dumpable(mm, value);
-}
-
 static inline struct user_arg_ptr native_arg(const char __user *const __user *p)
 {
 	return (struct user_arg_ptr){.ptr.native = p};
@@ -2191,9 +2227,11 @@ COMPAT_SYSCALL_DEFINE5(execveat, int, fd,
 static int proc_dointvec_minmax_coredump(const struct ctl_table *table, int write,
 		void *buffer, size_t *lenp, loff_t *ppos)
 {
-	int error = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+	int error, old = READ_ONCE(suid_dumpable);
 
-	if (!error && write)
+	error = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+
+	if (!error && write && (old != READ_ONCE(suid_dumpable)))
 		validate_coredump_safety();
 	return error;
 }

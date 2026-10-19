@@ -248,7 +248,7 @@ static void dcp_backlight_fade_work(struct work_struct *work)
 	if (kick)
 		dcp_backlight_kick(dcp);
 	if (running)
-		queue_delayed_work(system_wq, &dcp->backlight.fade_work,
+		queue_delayed_work(system_percpu_wq, &dcp->backlight.fade_work,
 				   msecs_to_jiffies(DCP_BL_FADE_STEP_MS));
 }
 
@@ -424,7 +424,7 @@ static u32 calculate_dac(struct apple_dcp *dcp, int val)
 
 static int drm_crtc_set_brightness(struct apple_dcp *dcp)
 {
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 	struct drm_crtc_state *crtc_state;
 	struct drm_modeset_acquire_ctx ctx;
 	struct drm_crtc *crtc = &dcp->crtc->base;
@@ -444,7 +444,7 @@ static int drm_crtc_set_brightness(struct apple_dcp *dcp)
 	if (!dcp->brightness.update)
 		goto done;
 
-	state = drm_atomic_state_alloc(crtc->dev);
+	state = drm_atomic_commit_alloc(crtc->dev);
 	if (!state) {
 		ret = -ENOMEM;
 		goto done;
@@ -462,7 +462,7 @@ static int drm_crtc_set_brightness(struct apple_dcp *dcp)
 	ret = drm_atomic_commit(state);
 
 fail:
-	drm_atomic_state_put(state);
+	drm_atomic_commit_put(state);
 done:
 	drm_modeset_drop_locks(&ctx);
 	drm_modeset_acquire_fini(&ctx);
@@ -476,13 +476,13 @@ done:
  */
 static int drm_crtc_set_brightness_h17p(struct apple_dcp *dcp)
 {
-	struct drm_atomic_state *state;
+	struct drm_atomic_commit *state;
 	struct drm_crtc_state *crtc_state;
 	struct drm_modeset_acquire_ctx ctx;
 	struct drm_crtc *crtc = &dcp->crtc->base;
 	int ret = 0;
 
-	state = drm_atomic_state_alloc(crtc->dev);
+	state = drm_atomic_commit_alloc(crtc->dev);
 	if (!state)
 		return -ENOMEM;
 
@@ -510,13 +510,13 @@ retry:
 
 out:
 	if (ret == -EDEADLK) {
-		drm_atomic_state_clear(state);
+		drm_atomic_commit_clear(state);
 		ret = drm_modeset_backoff(&ctx);
 		if (!ret)
 			goto retry;
 	}
 
-	drm_atomic_state_put(state);
+	drm_atomic_commit_put(state);
 	drm_modeset_drop_locks(&ctx);
 	drm_modeset_acquire_fini(&ctx);
 
@@ -579,7 +579,7 @@ static int dcp_set_brightness_h17p(struct backlight_device *bd)
 			dcp->backlight.fade_start = jiffies;
 		spin_unlock_irqrestore(&dcp->backlight.lock, flags);
 		if (fade)
-			queue_delayed_work(system_wq, &dcp->backlight.fade_work,
+			queue_delayed_work(system_percpu_wq, &dcp->backlight.fade_work,
 					   msecs_to_jiffies(DCP_BL_FADE_STEP_MS));
 		else if (!ret)
 			dcp_backlight_kick(dcp);

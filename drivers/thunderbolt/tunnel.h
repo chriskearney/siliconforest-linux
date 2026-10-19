@@ -72,8 +72,8 @@ enum tb_tunnel_state {
  * @host_pci_activated: The NHI post-activation hook owns PCIe host state
  * @dprx_timeout: If set DPRX capabilities read poll work will timeout after this passes
  * @dprx_work: Worker that is scheduled to poll completion of DPRX capabilities read
- * @callback: Optional callback called when DP tunnel is fully activated
- * @callback_data: Optional data for @callback
+ * @callback: Callback called when DP tunnel is fully activated
+ * @callback_data: Data for @callback
  * @paths: All paths required by the tunnel
  */
 struct tb_tunnel {
@@ -129,7 +129,9 @@ int tb_pci_tunnel_deactivate_host(struct tb_tunnel *tunnel);
 bool tb_tunnel_reserved_pci(struct tb_port *port, int *reserved_up,
 			    int *reserved_down);
 struct tb_tunnel *tb_tunnel_discover_dp(struct tb *tb, struct tb_port *in,
-					bool alloc_hopid);
+					bool alloc_hopid,
+					void (*callback)(struct tb_tunnel *, void *),
+					void *callback_data);
 bool tb_apple_nhi_needs_bw_grant(struct tb_nhi *nhi);
 struct tb_tunnel *tb_tunnel_alloc_dp(struct tb *tb, struct tb_port *in,
 				     struct tb_port *out, int link_nr,

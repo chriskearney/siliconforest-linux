@@ -43,7 +43,10 @@ pub(crate) struct AsahiData {
 }
 
 impl AsahiData {
-    fn new(pdev: &platform::Device<Core>, resources: regs::Resources) -> impl PinInit<Self, Error> {
+    fn new(
+        pdev: &platform::Device<Core<'_>>,
+        resources: regs::Resources,
+    ) -> impl PinInit<Self, Error> {
         let pdev: ARef<platform::Device> = pdev.into();
         try_pin_init!(Self {
             gpu: SetOnce::new(),
@@ -63,7 +66,7 @@ unsafe impl Send for AsahiData {}
 unsafe impl Sync for AsahiData {}
 
 pub(crate) struct AsahiDriver {
-    drm: ARef<drm::Device<Self>>,
+    drm: AsahiDevRef,
     /// Raw `struct device *` of the platform device. Stored once at probe
     /// time so the `Drop` impl can find the sysfs file on unregister.
     raw_dev: *mut bindings::device,
@@ -76,7 +79,10 @@ unsafe impl Send for AsahiDriver {}
 unsafe impl Sync for AsahiDriver {}
 
 /// Convenience type alias for the DRM device type for this driver.
-pub(crate) type AsahiDevice = drm::device::Device<AsahiDriver>;
+///
+/// The GPU runtime is built before the device is registered, so it uses the device in the
+/// [`drm::Uninit`] context, which holds before and after registration.
+pub(crate) type AsahiDevice = drm::device::Device<AsahiDriver, drm::Uninit>;
 pub(crate) type AsahiDevRef = ARef<AsahiDevice>;
 
 /// DRM Driver metadata
@@ -96,15 +102,14 @@ impl drm::driver::Driver for AsahiDriver {
     /// Our `File` type.
     type File = file::File;
     /// Our `Object` type.
-    type Object = drm::gem::shmem::Object<AsahiObject>;
+    type Object<Ctx: drm::DeviceContext> = drm::gem::shmem::Object<AsahiObject, Ctx>;
 
     const INFO: drm::driver::DriverInfo = INFO;
     const MODULE: Option<&'static kernel::ThisModule> = Some(&crate::THIS_MODULE);
-    const FEATURES: u32 = drm::driver::FEAT_GEM
-        | drm::driver::FEAT_RENDER
-        | drm::driver::FEAT_SYNCOBJ
-        | drm::driver::FEAT_SYNCOBJ_TIMELINE
-        | drm::driver::FEAT_GEM_GPUVA;
+    const FEAT_RENDER: bool = true;
+    const FEAT_SYNCOBJ: bool = true;
+    const FEAT_SYNCOBJ_TIMELINE: bool = true;
+    const FEAT_GEM_GPUVA: bool = true;
 
     kernel::declare_drm_ioctls! {
         (ASAHI_GET_PARAMS,      drm_asahi_get_params,
@@ -188,9 +193,10 @@ kernel::of_device_table!(
 /// Platform Driver implementation for `AsahiDriver`.
 impl platform::Driver for AsahiDriver {
     type IdInfo = ProbeConfig;
+    type Data<'bound> = Self;
     const OF_ID_TABLE: Option<of::IdTable<Self::IdInfo>> = Some(&OF_TABLE);
 
-    fn unbind(_pdev: &platform::Device<Core>, this: Pin<&Self>) {
+    fn unbind<'bound>(_pdev: &'bound platform::Device<Core<'_>>, this: Pin<&Self::Data<'bound>>) {
         if let Some(gpu) = this.drm.gpu.as_ref().and_then(|gpu| gpu.as_any().downcast_ref::<g17::Gpu>()) {
             // Driver data is dropped after devres, so CPU control must happen in unbind.
             gpu.shutdown();
@@ -198,10 +204,10 @@ impl platform::Driver for AsahiDriver {
     }
 
     /// Device probe function.
-    fn probe(
-        pdev: &platform::Device<Core>,
-        info: Option<&Self::IdInfo>,
-    ) -> impl PinInit<Self, Error> {
+    fn probe<'bound>(
+        pdev: &'bound platform::Device<Core<'_>>,
+        info: Option<&'bound Self::IdInfo>,
+    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
         debug::update_debug_flags();
 
         dev_info!(pdev.as_ref(), "Probing...\n");
@@ -227,7 +233,9 @@ impl platform::Driver for AsahiDriver {
             .required_by(pdev.as_ref())?;
 
         // Driver data exists before GEM/UAT construction; the backend is published once.
-        let drm: ARef<AsahiDevice> = drm::device::Device::new(pdev.as_ref(), AsahiData::new(pdev, res.clone()))?;
+        let unreg =
+            drm::UnregisteredDevice::<Self>::new(pdev.as_ref(), AsahiData::new(pdev, res.clone()))?;
+        let drm: ARef<AsahiDevice> = (&*unreg).into();
 
         let gpu = match (cfg.gpu_gen, cfg.gpu_variant, compat.as_slice()) {
             (hw::GpuGen::G13, _, &[12, 3, 0]) => {
@@ -264,7 +272,7 @@ impl platform::Driver for AsahiDriver {
 
         drm.gpu()?.init()?;
 
-        drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
+        drm::driver::Registration::new_foreign_owned(unreg, pdev.as_ref(), 0)?;
 
         // Register the sysfs file on the platform device. Must happen after
         // the DRM device is registered so the device is fully bound.
@@ -287,18 +295,20 @@ impl platform::Driver for AsahiDriver {
 }
 
 impl AsahiDriver {
-    fn probe_g17(pdev: &platform::Device<Core>, cfg: &'static g17::Config) -> Result<Self> {
+    fn probe_g17(pdev: &platform::Device<Core<'_>>, cfg: &'static g17::Config) -> Result<Self> {
         // SAFETY: The GPU performs DMA through a UAT whose output width is part of the SoC config.
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(cfg.uat_oas)?)? };
         let res = regs::Resources::new(pdev)?;
         // Fully initialized data also makes all failure paths safe to drop.
-        let drm: ARef<AsahiDevice> = drm::device::Device::new(pdev.as_ref(), AsahiData::new(pdev, res.clone()))?;
+        let unreg =
+            drm::UnregisteredDevice::<Self>::new(pdev.as_ref(), AsahiData::new(pdev, res.clone()))?;
+        let drm: ARef<AsahiDevice> = (&*unreg).into();
         let gpu = g17::Gpu::new(pdev, &drm, cfg, res.clone())?;
         let data_gpu = gpu.clone() as Arc<dyn gpu::Gpu>;
         if !drm.gpu.populate(data_gpu) {
             return Err(EINVAL);
         }
-        if let Err(error) = drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0) {
+        if let Err(error) = drm::driver::Registration::new_foreign_owned(unreg, pdev.as_ref(), 0) {
             gpu.shutdown();
             return Err(error);
         }
@@ -329,19 +339,21 @@ impl AsahiDriver {
     /// A G15 firmware session cannot be stopped once started. If registration fails after the
     /// boot, [`crate::g15::Gpu`] retains everything the firmware can reach until reboot.
     pub(crate) fn probe_g15(
-        pdev: &platform::Device<Core>,
+        pdev: &platform::Device<Core<'_>>,
         cfg: &'static crate::g15::Config,
     ) -> Result<Self> {
         // SAFETY: The GPU performs DMA through a UAT whose output width is part of the SoC config.
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(cfg.uat_oas)?)? };
         let res = regs::Resources::new(pdev)?;
         // Fully initialized data also makes all failure paths safe to drop.
-        let drm: ARef<AsahiDevice> = drm::device::Device::new(pdev.as_ref(), AsahiData::new(pdev, res.clone()))?;
+        let unreg =
+            drm::UnregisteredDevice::<Self>::new(pdev.as_ref(), AsahiData::new(pdev, res.clone()))?;
+        let drm: ARef<AsahiDevice> = (&*unreg).into();
         let gpu = crate::g15::Gpu::new(pdev, &drm, cfg, res.clone())?;
         if !drm.gpu.populate(gpu as Arc<dyn gpu::Gpu>) {
             return Err(EINVAL);
         }
-        drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
+        drm::driver::Registration::new_foreign_owned(unreg, pdev.as_ref(), 0)?;
         // The G15 firmware statistics have no decoder.
         let raw_dev = pdev.as_ref().as_raw();
         let raw_stats = crate::sysfs_exports::register(raw_dev, core::ptr::null(), false)?;

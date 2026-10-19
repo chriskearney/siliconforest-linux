@@ -181,7 +181,7 @@ impl Health {
 }
 
 impl State {
-    pub(crate) fn new(dev: &platform::Device<Core>, drm: crate::driver::AsahiDevRef, data: Region) -> Result<Arc<Self>> {
+    pub(crate) fn new(dev: &platform::Device<Core<'_>>, drm: crate::driver::AsahiDevRef, data: Region) -> Result<Arc<Self>> {
         Ok(Arc::new(
             Self {
                 dev: dev.into(),

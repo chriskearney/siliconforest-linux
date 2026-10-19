@@ -14,7 +14,7 @@ struct apple_dcp;
 struct apple_dcp_v26;
 struct dcp_v26_board;
 struct device;
-struct drm_atomic_state;
+struct drm_atomic_commit;
 struct drm_crtc;
 struct drm_crtc_state;
 
@@ -35,10 +35,10 @@ void iomfb_v26_6_unbind(struct apple_dcp *dcp);
 int iomfb_v26_6_start(struct apple_dcp *dcp);
 
 int iomfb_v26_6_atomic_check(struct apple_dcp *dcp, struct drm_crtc *crtc,
-			     struct drm_atomic_state *state);
+			     struct drm_atomic_commit *state);
 int iomfb_v26_6_modeset(struct apple_dcp *dcp, struct drm_crtc_state *crtc_state);
 void iomfb_v26_6_flush(struct apple_dcp *dcp, struct drm_crtc *crtc,
-		       struct drm_atomic_state *state);
+		       struct drm_atomic_commit *state);
 void iomfb_v26_6_poweron(struct apple_dcp *dcp);
 void iomfb_v26_6_poweroff(struct apple_dcp *dcp);
 

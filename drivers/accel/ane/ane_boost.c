@@ -99,7 +99,7 @@ void ane_boost_end(struct ane_device *ane)
 	b->busy = false;
 	b->last_end = jiffies;
 	if (b->on)
-		mod_delayed_work(system_wq, &b->off,
+		mod_delayed_work(system_percpu_wq, &b->off,
 				 msecs_to_jiffies(boost_idle_ms));
 	mutex_unlock(&b->lock);
 }

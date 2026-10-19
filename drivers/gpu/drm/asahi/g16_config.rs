@@ -49,7 +49,7 @@ impl Config {
         Ok(address)
     }
 
-    pub(crate) fn new(pdev: &platform::Device<Core>, dev: &driver::AsahiDevice,
+    pub(crate) fn new(pdev: &platform::Device<Core<'_>>, dev: &driver::AsahiDevice,
         vm: &mmu::Vm, gpu_vm: &mmu::Vm, firmware: &Firmware) -> Result<Self> {
         let resource = pdev.as_ref().of_node().ok_or(ENODEV)?
             .reserved_mem_region_to_resource_byname(c_str!("fw-data"))?;
