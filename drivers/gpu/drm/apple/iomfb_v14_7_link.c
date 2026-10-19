@@ -79,6 +79,17 @@ static void link_event(struct dcp_v14_link *link, u32 kind, u64 message,
 		queue_work(system_unbound_wq, link->idle_work);
 }
 
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+/* KUnit: queue a firmware callback as the receive path does. */
+void dcp_v14_link_test_callback(struct dcp_v14_link *link, u64 message,
+				const void *data, u32 size)
+{
+	mutex_lock(&link->lock);
+	link_event(link, DCP_V14_EVENT_CALLBACK, message, data, size);
+	mutex_unlock(&link->lock);
+}
+#endif
+
 void dcp_v14_link_init(struct dcp_v14_link *link, struct device *dev,
 		       struct apple_rtkit *rtk)
 {

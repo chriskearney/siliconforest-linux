@@ -85,6 +85,10 @@ struct dcp_v14_link {
 	u64 handling[DCP_V14_LINK_MAX_CALLBACKS];
 };
 
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+void dcp_v14_link_test_callback(struct dcp_v14_link *link, u64 message,
+				const void *data, u32 size);
+#endif
 void dcp_v14_link_init(struct dcp_v14_link *link, struct device *dev,
 		       struct apple_rtkit *rtk);
 int dcp_v14_link_start(struct dcp_v14_link *link);

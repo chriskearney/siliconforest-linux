@@ -32,6 +32,7 @@
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
+#include <kunit/static_stub.h>
 
 #include "afk.h"
 #include "dcp.h"
@@ -437,15 +438,33 @@ void iomfb_v14_7_backlight_suspend(struct apple_dcp *dcp)
  * processor, whose display refuses sleep, nor for the J613 internal pipe
  * while it drives a Type-C display.
  */
+static void dcp_v14_rx_hold(struct apple_dcp_v14 *v14)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_rx_hold, v14);
+	apple_rtkit_hold_rx(v14->rtk);
+}
+
+static void dcp_v14_rx_resume(struct apple_dcp_v14 *v14)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_rx_resume, v14);
+	apple_rtkit_resume_rx(v14->rtk);
+}
+
 void iomfb_v14_7_hold_rx(struct apple_dcp *dcp)
 {
 	struct apple_dcp_v14 *v14 = dcp->v14;
 
 	if (dcp->external || !v14 || v14->external || !v14->rtk || !v14->started)
 		return;
+	/*
+	 * Under the lock calls and the notification pump run under: none is
+	 * in progress, and the pump leaves anything already queued alone
+	 * from here on (dcp_v14_idle()). Nothing is flushed or cancelled
+	 * with the lock held.
+	 */
 	mutex_lock(&v14->lock);
 	if (!v14->failed && !READ_ONCE(v14->typec) && !v14->rx_held) {
-		apple_rtkit_hold_rx(v14->rtk);
+		dcp_v14_rx_hold(v14);
 		v14->rx_held = true;
 	}
 	mutex_unlock(&v14->lock);
@@ -464,8 +483,11 @@ void iomfb_v14_7_release_rx(struct apple_dcp *dcp)
 	v14->rx_held = false;
 	mutex_unlock(&v14->lock);
 	/* Outside the lock: the held messages' callbacks take it. */
-	if (held)
-		apple_rtkit_resume_rx(v14->rtk);
+	if (!held)
+		return;
+	dcp_v14_rx_resume(v14);
+	/* Notifications queued before the hold were left for now. */
+	queue_work(system_unbound_wq, &v14->idle_work);
 }
 
 void iomfb_v14_7_backlight_resume(struct apple_dcp *dcp)
@@ -1591,7 +1613,13 @@ static void dcp_v14_idle(struct work_struct *work)
 	int ret = 0;
 
 	mutex_lock(&v14->lock);
-	while (!v14->failed && !ret)
+	/*
+	 * While the mailbox is held through system sleep the notifications
+	 * already queued stay queued: a callback that needs a call of its own
+	 * would be refused (dcp_v14_call_guarded()) and could not be
+	 * acknowledged. iomfb_v14_7_release_rx() runs this work again.
+	 */
+	while (!v14->failed && !v14->rx_held && !ret)
 		ret = dcp_v14_link_pump(&v14->link, 0, dcp_v14_callback, v14);
 	if (ret && ret != -ETIMEDOUT && ret != -EAGAIN) {
 		v14->failed = true;
@@ -3962,4 +3990,5 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 
 #if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
 #include "iomfb_v14_7_backlight_test.c"
+#include "iomfb_v14_7_sleep_test.c"
 #endif
