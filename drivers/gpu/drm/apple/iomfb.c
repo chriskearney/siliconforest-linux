@@ -1807,9 +1807,10 @@ int dcp_get_modes(struct drm_connector *connector)
 			edid = dcpavserv_copy_edid(dcp, 0, &epoch);
 			if (IS_ERR_OR_NULL(edid))
 				dev_info(dcp->dev, "copy_edid failed: %pe\n", edid);
-			else
-				apple_connector_edid_install(apple_connector, pdev,
-							     generation, edid);
+			else if (apple_connector_edid_install(apple_connector, pdev,
+							      generation, edid))
+				/* A native T6030 pipe: its audio, after the first EDID. */
+				dcp_external_audio_start(dcp);
 		}
 
 		edid = apple_connector_edid_dup(apple_connector, pdev);
