@@ -3511,11 +3511,25 @@ bool iomfb_v14_7_external_powered(struct apple_dcp *dcp)
 	return dcp->external && v14 && READ_ONCE(v14->powered) && !READ_ONCE(v14->failed);
 }
 
+/* The sink's audio around an external mode set. */
+static void dcp_v14_audio_off(struct apple_dcp *dcp)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_audio_off, dcp);
+	av_service_disconnect(dcp);
+}
+
+static void dcp_v14_audio_on(struct apple_dcp *dcp)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_audio_on, dcp);
+	av_service_connect(dcp);
+}
+
 /* An external display: power down, set the new mode, power up. */
 static int dcp_v14_external_modeset(struct apple_dcp *dcp, struct drm_crtc_state *crtc_state)
 {
 	struct apple_dcp_v14 *v14 = dcp->v14;
 	struct dcp_display_mode mode = {};
+	bool audio_off = false;
 	int ret = 0;
 
 	if (!v14 || READ_ONCE(v14->failed) || !v14->opened)
@@ -3525,8 +3539,10 @@ static int dcp_v14_external_modeset(struct apple_dcp *dcp, struct drm_crtc_state
 	 * mode change (as dcp_poweroff() has it), outside the RPC lock; it is
 	 * connected again once the display is on, below.
 	 */
-	if (READ_ONCE(v14->powered) && dcp->avep)
-		av_service_disconnect(dcp);
+	if (READ_ONCE(v14->powered) && dcp->avep) {
+		dcp_v14_audio_off(dcp);
+		audio_off = true;
+	}
 	ret = dcp_v14_external_settle(dcp, v14);
 	if (ret)
 		goto out;
@@ -3548,7 +3564,7 @@ static int dcp_v14_external_modeset(struct apple_dcp *dcp, struct drm_crtc_state
 		atomic_set(&dcp->external_retries, 0);
 		dcp_mode_set_valid(&dcp->mode_state, true);
 		if (dcp->avep)
-			av_service_connect(dcp);
+			dcp_v14_audio_on(dcp);
 		return 0;
 	}
 	if (v14->powered && dcp_v14_set_power(v14, false))
@@ -3575,7 +3591,14 @@ out:
 	dev_info(dcp->dev, "display mode " DRM_MODE_FMT " (timing %u, color %u): %d\n",
 		 DRM_MODE_ARG(&crtc_state->mode), mode.timing_mode_id, mode.color_mode_id, ret);
 	if (ret) {
-		/* A mode that is gone, or a description that never settled. */
+		/*
+		 * A mode that is gone, or a description that never settled:
+		 * nothing was powered down, and the display goes on in its old
+		 * mode. So does its audio; no plug event would bring it back
+		 * if the retries fail too.
+		 */
+		if (audio_off && iomfb_v14_7_external_powered(dcp))
+			dcp_v14_audio_on(dcp);
 		dcp_external_retry(dcp, "display mode not set", ret, 500);
 		return ret;
 	}
@@ -3583,7 +3606,7 @@ out:
 	dcp_mode_set_valid(&dcp->mode_state, true);
 	/* A472 on: the sink's audio again. */
 	if (dcp->avep)
-		av_service_connect(dcp);
+		dcp_v14_audio_on(dcp);
 	return 0;
 }
 
@@ -3995,4 +4018,5 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 #if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
 #include "iomfb_v14_7_backlight_test.c"
 #include "iomfb_v14_7_sleep_test.c"
+#include "iomfb_v14_7_external_audio_test.c"
 #endif
