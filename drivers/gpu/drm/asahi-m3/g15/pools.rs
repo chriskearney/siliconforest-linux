@@ -5,18 +5,25 @@
 //! Record layouts: [`super::fw::buffer`]; the ledger and request checks: [`growth`]
 //! (host-tested).
 //!
-//! - One 256 MiB PB heap at [`super::hw::client::PB_HEAP`] (2048 blocks of 128 KiB); initial
-//!   [`super::hw::tuning::PB_BLOCKS`] (1024), maximum 2048; truthful K = 4096 in every profile
-//!   (PB reconstruction, also in recovery, synchronizes 8 * K bytes of the block list: K =
-//!   0x26cd overran the 0x8000-byte list and crashed the second recovery).
+//! - One 512 MiB PB heap at [`super::hw::client::PB_HEAP`] (4096 blocks of 128 KiB), populated
+//!   and mapped when the GPU starts on every G15 SoC, whatever `g15_pb_max_blocks` says; initial
+//!   [`super::hw::tuning::PB_BLOCKS`] (1024), at most [`super::hw::tuning::PB_MAX_BLOCKS`]
+//!   (4095) posted, so the producer never returns to 0; the firmware is given
+//!   [`Pools::soft_max`] (default 3072) as its growth maximum. Truthful K = 4096 in every
+//!   profile (PB reconstruction, also in recovery, synchronizes 8 * K bytes of the block list:
+//!   K = 0x26cd overran the 0x8000-byte list and crashed the second recovery).
 //! - Growth: the event drain queues type-7 requests; [`Firmware::answer_growth`] answers each
 //!   one in the poll pass: type 7, PB slot 0, the context of a live published render prefix,
 //!   counter >= next expected, epoch == current halt count; write records `(G - 0x1000000000)
 //!   >> 15` at producer % K, barrier, block_ctl+4, barrier, then DEVCTL 7 with +4 = 1 echoing
-//!   slot, context, counter, position and epoch; +10 blocks per request. At the maximum, reply
-//!   +4 = 0: the firmware finishes with partial renders (Mesa's partial background/EOT
-//!   programs). Invalid requests are logged and left unanswered, so the host deadline applies.
-//!   Recovery drops pending requests (epoch gate).
+//!   slot, context, counter, position and epoch; +10 blocks per request. Above the firmware's
+//!   growth maximum the requests are answered as before, for the synchronous growth of partial
+//!   renders (Mesa's partial background/EOT programs). At the ledger's maximum the reply is +4
+//!   = 0, a refusal, twice per initialization; later requests are left unanswered. A refusal
+//!   gives no pages and can leave the TA stalled; the poll pass returns, and the host deadline
+//!   and its recovery path apply, without a guarantee that they end the stall. Invalid requests
+//!   are logged and left unanswered, so the host deadline applies. Recovery drops pending
+//!   requests (epoch gate).
 //! - Managers ASC-cached with an uncached spare set allocated with the graph; the first
 //!   recovered render abort swaps to the spare and never rewrites the cached set (the ASC may
 //!   still hold dirty lines of it); later aborts rewrite the spare in place. block_ctl stays
@@ -386,9 +393,9 @@ impl Pools {
             count.w32(0, 1)?;
         }
 
-        // PB: 8192 pages of 0x8000 in 2048 blocks of 0x20000; with growth the first initial
-        // blocks of them and page limits at the maximum. In every profile the block list
-        // declares its real 4096-record capacity.
+        // PB: 16384 pages of 0x8000 in 4096 blocks of 0x20000; with growth the first initial
+        // blocks of them, at most 4095 posted, and page limits at the firmware's growth maximum.
+        // In every profile the block list declares its real 4096-record capacity.
         self.ledger = Ledger::new(tuning::PB_GROW, tuning::PB_BLOCKS, tuning::PB_MAX_BLOCKS);
         self.exhausted_logged = false;
         if tuning::PB_GROW {
@@ -503,11 +510,12 @@ impl Firmware {
     /// request counter; anything else is logged and left unanswered (its TA then stays stalled
     /// and the deadline applies). With growth up to ten more blocks of the mapped heap are
     /// written to unposted block-list records, then the live block_ctl+4 producer advances and
-    /// DEVCTL 7 reports success; at the maximum the reply is the refusal (+4 = 0), which lets
-    /// the firmware continue without new pages. The firmware imports the blocks itself: P is
-    /// never rewritten. A failed reply is logged; a request that cannot be processed at all (a
-    /// firmware object access failed) is logged and left unanswered like an invalid one. Never
-    /// fails: the poll pass continues.
+    /// DEVCTL 7 reports success; at the ledger's maximum the reply is the refusal (+4 = 0),
+    /// which gives the firmware no new pages, and after two refusals requests are left
+    /// unanswered. The firmware imports the blocks itself: P is never rewritten. Only the
+    /// requests queued before the pass are taken. A failed reply is logged; a request that
+    /// cannot be processed at all (a firmware object access failed) is logged and left
+    /// unanswered like an invalid one. Never fails: the poll pass continues.
     pub(crate) fn answer_growth(&mut self) -> Result {
         // Only the requests queued before this pass: a reply's wait drains the rings and may
         // queue the next request, which the next pass answers (the device lock is released in
@@ -544,8 +552,8 @@ impl Firmware {
             .iter()
             .enumerate()
             .any(|(i, f)| self.receipts(i).renders != 0 && f.job.vm.slot == ctx);
-        // At the maximum, after the refusals, the request is left to the deadline: a scene the
-        // firmware cannot finish without more PB stalls its TA, and the host deadline recovers.
+        // At the maximum, after the refusals, the request is left unanswered: the poll pass
+        // returns, and the host deadline and its recovery path apply to a stalled TA.
         if self.pools.ledger.exhausted() {
             self.pools.stats.bad += 1;
             if !self.pools.exhausted_logged {

@@ -5,8 +5,11 @@
 //! The firmware asks for more PB with an event of type 7 naming PB slot 0, the context of a
 //! published render, its request counter (P+0x60 before its increment), the TA position and the
 //! halt epoch; the host appends at most ten blocks of the mapped heap to the block list and
-//! advances the block_ctl+4 producer (modulo K), then replies with DEVCTL 7. At the maximum the
-//! reply refuses, and the firmware finishes the scene with partial renders. A request from
+//! advances the block_ctl+4 producer (modulo K), then replies with DEVCTL 7. At the ledger's
+//! maximum the reply refuses; after [`MAX_REFUSALS`] refusals since the last initialization,
+//! later requests are left unanswered. That bounds the poll pass. It does not make the scene
+//! finish: a refused or unanswered request can leave the TA stalled, and the host deadline and
+//! its recovery path then apply, without a guarantee that they end the stall. A request from
 //! before a halt (epoch) or not matching a published render prefix is left unanswered.
 //!
 //! Core-only (no `kernel` imports): this file is compiled by the host test harness as well.
@@ -18,7 +21,8 @@ use crate::g15::fw::buffer::{grow_request, BLOCK_LIST_RECORDS, GROW_STEP, MAX_BL
 pub(crate) struct Ledger {
     /// Initial blocks (the C1 pages, InitBM blocks and TA register #33 name them).
     pub(crate) initial: u32,
-    /// Maximum blocks (P+0x70/+0x74 = 4 * max pages).
+    /// The most blocks posted, at most [`MAX_POSTED`]. The PB manager's P+0x70/+0x74 hold
+    /// 4 * the firmware's growth maximum (`Pools::soft_max()`) in pages, which may be lower.
     pub(crate) max: u32,
     /// Blocks posted to the block list, cumulative (the block_ctl+4 producer is this modulo K).
     pub(crate) posted: u32,
@@ -28,9 +32,9 @@ pub(crate) struct Ledger {
     pub(crate) refusal_logged: bool,
     /// Refusals answered at the maximum since the last initialization. After
     /// [`MAX_REFUSALS`] further requests are left unanswered: a firmware that keeps asking at
-    /// the maximum instead of finishing the scene with partial renders would otherwise be
-    /// answered forever, under the device lock (ticket malik-na/linux-aurora#69); unanswered,
-    /// its TA stalls and the host deadline recovers.
+    /// the maximum would otherwise be answered forever, under the device lock (ticket
+    /// malik-na/linux-aurora#69). Unanswered, the poll pass returns, and the host deadline and
+    /// its recovery path apply.
     pub(crate) refusals: u32,
 }
 
