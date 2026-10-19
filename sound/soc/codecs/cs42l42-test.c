@@ -1,0 +1,500 @@
+// SPDX-License-Identifier: GPL-2.0-only
+//
+// KUnit tests for the clock switching in cs42l42_mute_stream().
+//
+// The codec runs from its internal oscillator while no stream is active.
+// Unmuting the first stream moves it onto SCLK, through the PLL if the
+// selected clock configuration needs one. Once the codec has left the
+// oscillator it needs a working clock to answer on I2C, so these tests
+// check when that switch happens and when it must not happen.
+
+#include <kunit/device.h>
+#include <kunit/test.h>
+#include <linux/bits.h>
+#include <linux/device.h>
+#include <linux/errno.h>
+#include <linux/minmax.h>
+#include <linux/module.h>
+#include <linux/regmap.h>
+#include <linux/wait.h>
+#include <sound/core.h>
+#include <sound/cs42l42.h>
+#include <sound/pcm.h>
+#include <sound/soc.h>
+
+#include "cs42l42.h"
+
+#define CS42L42_TEST_MAX_WRITES		64
+
+#define CS42L42_TEST_HP_MUTE_MASK	(CS42L42_HP_ANA_AMUTE_MASK | \
+					 CS42L42_HP_ANA_BMUTE_MASK)
+
+/* PLL_LOCK_STATUS bit polled by cs42l42_mute_stream() */
+#define CS42L42_TEST_PLL_LOCKED		BIT(0)
+
+struct cs42l42_test_write {
+	unsigned int reg;
+	unsigned int val;
+};
+
+struct cs42l42_test_priv {
+	struct kunit *test;
+
+	struct cs42l42_private cs42l42;
+	struct snd_soc_component component;
+	struct snd_soc_dai dai;
+	struct snd_soc_card soc_card;
+	struct snd_card card;
+
+	/* Register contents seen by the driver */
+	u8 *regs;
+
+	/* Every register write made by the driver, in order */
+	struct cs42l42_test_write writes[CS42L42_TEST_MAX_WRITES];
+	unsigned int num_writes;
+
+	unsigned int num_lock_reads;
+	bool pll_locks;
+};
+
+struct cs42l42_test_clk_param {
+	unsigned int sclk;
+	unsigned int rate;
+	bool pll_divout_step;
+};
+
+struct cs42l42_test_power_param {
+	unsigned int state;
+	const char *name;
+};
+
+/* Clock configurations that run the codec from the PLL */
+static const struct cs42l42_test_clk_param cs42l42_test_pll_clks[] = {
+	{ .sclk = 1536000, .rate = 48000, .pll_divout_step = true },
+	{ .sclk = 3072000, .rate = 48000, .pll_divout_step = false },
+};
+
+static const struct cs42l42_test_power_param cs42l42_test_low_power[] = {
+	{ .state = SNDRV_CTL_POWER_D1, .name = "D1" },
+	{ .state = SNDRV_CTL_POWER_D2, .name = "D2" },
+	{ .state = SNDRV_CTL_POWER_D3hot, .name = "D3hot" },
+	{ .state = SNDRV_CTL_POWER_D3cold, .name = "D3cold" },
+};
+
+static int cs42l42_test_reg_read(void *context, unsigned int reg, unsigned int *val)
+{
+	struct cs42l42_test_priv *priv = context;
+
+	if (reg > CS42L42_MAX_REGISTER)
+		return -EINVAL;
+
+	if (reg == CS42L42_PLL_LOCK_STATUS) {
+		priv->num_lock_reads++;
+		*val = priv->pll_locks ? CS42L42_TEST_PLL_LOCKED : 0;
+		return 0;
+	}
+
+	*val = priv->regs[reg];
+
+	return 0;
+}
+
+static int cs42l42_test_reg_write(void *context, unsigned int reg, unsigned int val)
+{
+	struct cs42l42_test_priv *priv = context;
+
+	if (reg > CS42L42_MAX_REGISTER)
+		return -EINVAL;
+
+	if (priv->num_writes < ARRAY_SIZE(priv->writes)) {
+		priv->writes[priv->num_writes].reg = reg;
+		priv->writes[priv->num_writes].val = val;
+		priv->num_writes++;
+	} else {
+		KUNIT_FAIL(priv->test, "write log full at reg %#x", reg);
+	}
+
+	priv->regs[reg] = val;
+
+	return 0;
+}
+
+static const struct regmap_config cs42l42_test_regmap_config = {
+	.reg_bits = 16,
+	.val_bits = 8,
+	.max_register = CS42L42_MAX_REGISTER,
+	.reg_read = cs42l42_test_reg_read,
+	.reg_write = cs42l42_test_reg_write,
+	.cache_type = REGCACHE_NONE,
+};
+
+static void cs42l42_test_clear_log(struct cs42l42_test_priv *priv)
+{
+	priv->num_writes = 0;
+	priv->num_lock_reads = 0;
+}
+
+/* Index of the first write to @reg at or after index @from, or -1 */
+static int cs42l42_test_find_write(struct cs42l42_test_priv *priv,
+				   unsigned int reg, int from)
+{
+	unsigned int i;
+
+	for (i = max(from, 0); i < priv->num_writes; i++) {
+		if (priv->writes[i].reg == reg)
+			return i;
+	}
+
+	return -1;
+}
+
+/* Index of the last write to @reg, or -1 */
+static int cs42l42_test_last_write(struct cs42l42_test_priv *priv, unsigned int reg)
+{
+	unsigned int i;
+
+	for (i = priv->num_writes; i > 0; i--) {
+		if (priv->writes[i - 1].reg == reg)
+			return i - 1;
+	}
+
+	return -1;
+}
+
+static unsigned int cs42l42_test_count_writes(struct cs42l42_test_priv *priv,
+					      unsigned int reg)
+{
+	unsigned int i, n = 0;
+
+	for (i = 0; i < priv->num_writes; i++) {
+		if (priv->writes[i].reg == reg)
+			n++;
+	}
+
+	return n;
+}
+
+/* Select the clock configuration the way hw_params does */
+static void cs42l42_test_set_clk(struct kunit *test, unsigned int sclk,
+				 unsigned int rate)
+{
+	struct cs42l42_test_priv *priv = test->priv;
+
+	KUNIT_ASSERT_EQ(test, cs42l42_pll_config(&priv->component, sclk, rate), 0);
+	cs42l42_test_clear_log(priv);
+}
+
+static void cs42l42_test_set_power(struct cs42l42_test_priv *priv, unsigned int state)
+{
+	snd_power_change_state(&priv->card, state);
+}
+
+/*
+ * Check that the writes logged since the last clear are a complete switch
+ * from the oscillator to SCLK through the PLL, with the headphone unmuted
+ * last. The PLL output divider is only rewritten if it still holds the
+ * startup value from cs42l42_pll_config(), so @check_divout must be false
+ * when an earlier unmute has already set the final value.
+ */
+static void cs42l42_test_expect_switch_to_pll(struct kunit *test,
+					      const struct cs42l42_test_clk_param *param,
+					      bool check_divout)
+{
+	struct cs42l42_test_priv *priv = test->priv;
+	int pll_start, divout, mclk_sel, sclk, hp;
+
+	pll_start = cs42l42_test_find_write(priv, CS42L42_PLL_CTL1, 0);
+	KUNIT_ASSERT_GE(test, pll_start, 0);
+	KUNIT_EXPECT_TRUE(test, priv->writes[pll_start].val & CS42L42_PLL_START_MASK);
+
+	divout = cs42l42_test_find_write(priv, CS42L42_PLL_CTL3, pll_start);
+	if (check_divout && param->pll_divout_step)
+		KUNIT_EXPECT_GT(test, divout, pll_start);
+	else if (check_divout)
+		KUNIT_EXPECT_LT(test, divout, 0);
+
+	/* The PLL output must only be selected once the PLL has locked */
+	KUNIT_EXPECT_GT(test, priv->num_lock_reads, 0);
+	mclk_sel = cs42l42_test_find_write(priv, CS42L42_MCLK_SRC_SEL, pll_start);
+	KUNIT_ASSERT_GT(test, mclk_sel, pll_start);
+	KUNIT_EXPECT_EQ(test, priv->writes[mclk_sel].val & CS42L42_MCLK_SRC_SEL_MASK,
+			CS42L42_MCLK_SRC_SEL_MASK);
+
+	sclk = cs42l42_test_find_write(priv, CS42L42_OSC_SWITCH, mclk_sel);
+	KUNIT_ASSERT_GT(test, sclk, mclk_sel);
+	KUNIT_EXPECT_EQ(test, priv->writes[sclk].val, CS42L42_SCLK_PRESENT_MASK);
+
+	hp = cs42l42_test_find_write(priv, CS42L42_HP_CTL, sclk);
+	KUNIT_ASSERT_GT(test, hp, sclk);
+	KUNIT_EXPECT_EQ(test, priv->writes[hp].val & CS42L42_TEST_HP_MUTE_MASK, 0);
+}
+
+/*
+ * ASoC resume sets the card to D2, unmutes the playback DAIs that were
+ * active at suspend and only then sets D0. That early unmute must not move
+ * the codec off the oscillator: the stream is still suspended and SCLK may
+ * not be running yet.
+ */
+static void cs42l42_test_unmute_below_d0_does_nothing(struct kunit *test)
+{
+	const struct cs42l42_test_power_param *param = test->param_value;
+	const struct cs42l42_test_clk_param *clk = &cs42l42_test_pll_clks[0];
+	struct cs42l42_test_priv *priv = test->priv;
+
+	if (!IS_ENABLED(CONFIG_PM))
+		kunit_skip(test, "card power state needs CONFIG_PM");
+
+	/* A PLL configuration whose PLL would lock if it were started */
+	cs42l42_test_set_clk(test, clk->sclk, clk->rate);
+	cs42l42_test_set_power(priv, param->state);
+
+	KUNIT_EXPECT_EQ(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK), 0);
+
+	KUNIT_EXPECT_EQ(test, priv->num_writes, 0);
+	KUNIT_EXPECT_EQ(test, priv->num_lock_reads, 0);
+	KUNIT_EXPECT_EQ(test, priv->cs42l42.stream_use, 0);
+	KUNIT_EXPECT_EQ(test, priv->regs[CS42L42_HP_CTL] & CS42L42_TEST_HP_MUTE_MASK,
+			CS42L42_TEST_HP_MUTE_MASK);
+	KUNIT_EXPECT_EQ(test, priv->regs[CS42L42_OSC_SWITCH], 0);
+}
+
+/*
+ * The resume sequence: the unmute at D2 is skipped, and the unmute that
+ * follows the next prepare at D0 does the whole switch.
+ */
+static void cs42l42_test_resume_unmute_then_d0_unmute(struct kunit *test)
+{
+	const struct cs42l42_test_clk_param *clk = &cs42l42_test_pll_clks[0];
+	struct cs42l42_test_priv *priv = test->priv;
+
+	if (!IS_ENABLED(CONFIG_PM))
+		kunit_skip(test, "card power state needs CONFIG_PM");
+
+	cs42l42_test_set_clk(test, clk->sclk, clk->rate);
+
+	cs42l42_test_set_power(priv, SNDRV_CTL_POWER_D2);
+	KUNIT_EXPECT_EQ(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK), 0);
+	KUNIT_EXPECT_EQ(test, priv->num_writes, 0);
+	KUNIT_EXPECT_EQ(test, priv->cs42l42.stream_use, 0);
+
+	cs42l42_test_set_power(priv, SNDRV_CTL_POWER_D0);
+	KUNIT_EXPECT_EQ(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK), 0);
+	cs42l42_test_expect_switch_to_pll(test, clk, true);
+	KUNIT_EXPECT_EQ(test, priv->cs42l42.stream_use, BIT(SNDRV_PCM_STREAM_PLAYBACK));
+}
+
+/* At D0 with a locked PLL the codec moves onto the PLL output and SCLK */
+static void cs42l42_test_unmute_pll_locked(struct kunit *test)
+{
+	const struct cs42l42_test_clk_param *param = test->param_value;
+	struct cs42l42_test_priv *priv = test->priv;
+
+	cs42l42_test_set_clk(test, param->sclk, param->rate);
+
+	KUNIT_EXPECT_EQ(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK), 0);
+
+	cs42l42_test_expect_switch_to_pll(test, param, true);
+	KUNIT_EXPECT_EQ(test, priv->cs42l42.stream_use, BIT(SNDRV_PCM_STREAM_PLAYBACK));
+	KUNIT_EXPECT_EQ(test, priv->regs[CS42L42_HP_CTL] & CS42L42_TEST_HP_MUTE_MASK, 0);
+}
+
+/*
+ * If the PLL does not lock the codec must stay on the oscillator with the
+ * PLL stopped and the headphone muted, and the error must be returned.
+ */
+static void cs42l42_test_unmute_pll_lock_timeout(struct kunit *test)
+{
+	const struct cs42l42_test_clk_param *param = test->param_value;
+	struct cs42l42_test_priv *priv = test->priv;
+	int pll_stop;
+
+	cs42l42_test_set_clk(test, param->sclk, param->rate);
+	priv->pll_locks = false;
+
+	KUNIT_EXPECT_EQ(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK),
+			-ETIMEDOUT);
+	KUNIT_EXPECT_GT(test, priv->num_lock_reads, 0);
+
+	/* The PLL was started, then stopped again */
+	pll_stop = cs42l42_test_last_write(priv, CS42L42_PLL_CTL1);
+	KUNIT_ASSERT_GE(test, pll_stop, 0);
+	KUNIT_EXPECT_EQ(test, priv->writes[pll_stop].val & CS42L42_PLL_START_MASK, 0);
+	KUNIT_EXPECT_EQ(test, priv->regs[CS42L42_PLL_CTL1] & CS42L42_PLL_START_MASK, 0);
+
+	/* Still on the oscillator */
+	KUNIT_EXPECT_EQ(test, cs42l42_test_count_writes(priv, CS42L42_MCLK_SRC_SEL), 0);
+	KUNIT_EXPECT_EQ(test, priv->regs[CS42L42_MCLK_SRC_SEL] & CS42L42_MCLK_SRC_SEL_MASK, 0);
+	KUNIT_EXPECT_EQ(test, cs42l42_test_count_writes(priv, CS42L42_OSC_SWITCH), 0);
+	KUNIT_EXPECT_EQ(test, priv->regs[CS42L42_OSC_SWITCH], 0);
+
+	/* Headphone still muted, stream not counted as running */
+	KUNIT_EXPECT_EQ(test, cs42l42_test_count_writes(priv, CS42L42_HP_CTL), 0);
+	KUNIT_EXPECT_EQ(test, priv->regs[CS42L42_HP_CTL] & CS42L42_TEST_HP_MUTE_MASK,
+			CS42L42_TEST_HP_MUTE_MASK);
+	KUNIT_EXPECT_EQ(test, priv->cs42l42.stream_use, 0);
+}
+
+/*
+ * A failed unmute leaves stream_use clear, so the next unmute retries the
+ * whole switch instead of assuming the codec is already on SCLK.
+ */
+static void cs42l42_test_unmute_after_pll_lock_timeout(struct kunit *test)
+{
+	const struct cs42l42_test_clk_param *param = test->param_value;
+	struct cs42l42_test_priv *priv = test->priv;
+
+	cs42l42_test_set_clk(test, param->sclk, param->rate);
+
+	priv->pll_locks = false;
+	KUNIT_EXPECT_LT(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK), 0);
+
+	cs42l42_test_clear_log(priv);
+	priv->pll_locks = true;
+	KUNIT_EXPECT_EQ(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK), 0);
+
+	cs42l42_test_expect_switch_to_pll(test, param, false);
+	KUNIT_EXPECT_EQ(test, priv->cs42l42.stream_use, BIT(SNDRV_PCM_STREAM_PLAYBACK));
+}
+
+/* Muting the last stream goes back to the oscillator, then stops the PLL */
+static void cs42l42_test_mute_returns_to_osc(struct kunit *test)
+{
+	const struct cs42l42_test_clk_param *param = test->param_value;
+	struct cs42l42_test_priv *priv = test->priv;
+	int hp, osc, mclk_sel, pll_stop;
+
+	cs42l42_test_set_clk(test, param->sclk, param->rate);
+	KUNIT_ASSERT_EQ(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK), 0);
+	cs42l42_test_clear_log(priv);
+
+	KUNIT_EXPECT_EQ(test, cs42l42_mute_stream(&priv->dai, 1, SNDRV_PCM_STREAM_PLAYBACK), 0);
+
+	hp = cs42l42_test_find_write(priv, CS42L42_HP_CTL, 0);
+	KUNIT_ASSERT_GE(test, hp, 0);
+	KUNIT_EXPECT_EQ(test, priv->writes[hp].val & CS42L42_TEST_HP_MUTE_MASK,
+			CS42L42_TEST_HP_MUTE_MASK);
+
+	osc = cs42l42_test_find_write(priv, CS42L42_OSC_SWITCH, hp);
+	KUNIT_ASSERT_GT(test, osc, hp);
+	KUNIT_EXPECT_EQ(test, priv->writes[osc].val, 0);
+
+	mclk_sel = cs42l42_test_find_write(priv, CS42L42_MCLK_SRC_SEL, osc);
+	KUNIT_ASSERT_GT(test, mclk_sel, osc);
+	KUNIT_EXPECT_EQ(test, priv->writes[mclk_sel].val & CS42L42_MCLK_SRC_SEL_MASK, 0);
+
+	pll_stop = cs42l42_test_find_write(priv, CS42L42_PLL_CTL1, mclk_sel);
+	KUNIT_ASSERT_GT(test, pll_stop, mclk_sel);
+	KUNIT_EXPECT_EQ(test, priv->writes[pll_stop].val & CS42L42_PLL_START_MASK, 0);
+
+	KUNIT_EXPECT_EQ(test, priv->cs42l42.stream_use, 0);
+}
+
+/* Without the PLL the codec goes straight onto SCLK, no lock poll */
+static void cs42l42_test_unmute_no_pll(struct kunit *test)
+{
+	struct cs42l42_test_priv *priv = test->priv;
+	int sclk, hp;
+
+	/* SCLK is used directly as MCLK */
+	cs42l42_test_set_clk(test, 12288000, 48000);
+	priv->pll_locks = false;
+
+	KUNIT_EXPECT_EQ(test, cs42l42_mute_stream(&priv->dai, 0, SNDRV_PCM_STREAM_PLAYBACK), 0);
+
+	KUNIT_EXPECT_EQ(test, priv->num_lock_reads, 0);
+	KUNIT_EXPECT_EQ(test, cs42l42_test_count_writes(priv, CS42L42_PLL_CTL1), 0);
+	KUNIT_EXPECT_EQ(test, cs42l42_test_count_writes(priv, CS42L42_MCLK_SRC_SEL), 0);
+
+	sclk = cs42l42_test_find_write(priv, CS42L42_OSC_SWITCH, 0);
+	KUNIT_ASSERT_GE(test, sclk, 0);
+	KUNIT_EXPECT_EQ(test, priv->writes[sclk].val, CS42L42_SCLK_PRESENT_MASK);
+
+	hp = cs42l42_test_find_write(priv, CS42L42_HP_CTL, sclk);
+	KUNIT_ASSERT_GT(test, hp, sclk);
+	KUNIT_EXPECT_EQ(test, priv->writes[hp].val & CS42L42_TEST_HP_MUTE_MASK, 0);
+
+	KUNIT_EXPECT_EQ(test, priv->cs42l42.stream_use, BIT(SNDRV_PCM_STREAM_PLAYBACK));
+}
+
+static int cs42l42_test_case_init(struct kunit *test)
+{
+	struct cs42l42_test_priv *priv;
+	struct regmap *regmap;
+	struct device *dev;
+
+	priv = kunit_kzalloc(test, sizeof(*priv), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, priv);
+	priv->test = test;
+	test->priv = priv;
+
+	priv->regs = kunit_kzalloc(test, CS42L42_MAX_REGISTER + 1, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, priv->regs);
+
+	dev = kunit_device_register(test, "cs42l42_test_drv");
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, dev);
+
+	regmap = devm_regmap_init(dev, NULL, priv, &cs42l42_test_regmap_config);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, regmap);
+
+	/* Construct the minimal set of driver structs */
+	priv->cs42l42.dev = dev;
+	priv->cs42l42.regmap = regmap;
+
+	priv->component.dev = dev;
+	priv->component.card = &priv->soc_card;
+	snd_soc_component_init_regmap(&priv->component, regmap);
+	snd_soc_component_set_drvdata(&priv->component, &priv->cs42l42);
+
+	priv->dai.component = &priv->component;
+
+	priv->soc_card.snd_card = &priv->card;
+#ifdef CONFIG_PM
+	init_waitqueue_head(&priv->card.power_sleep);
+	init_waitqueue_head(&priv->card.power_ref_sleep);
+#endif
+	cs42l42_test_set_power(priv, SNDRV_CTL_POWER_D0);
+
+	/* Idle codec: on the oscillator, PLL stopped, headphone muted */
+	priv->regs[CS42L42_HP_CTL] = CS42L42_TEST_HP_MUTE_MASK;
+	priv->pll_locks = true;
+
+	return 0;
+}
+
+static void cs42l42_test_clk_desc(const struct cs42l42_test_clk_param *param, char *desc)
+{
+	snprintf(desc, KUNIT_PARAM_DESC_SIZE, "SCLK %u Hz, %u Hz", param->sclk, param->rate);
+}
+
+static void cs42l42_test_power_desc(const struct cs42l42_test_power_param *param, char *desc)
+{
+	snprintf(desc, KUNIT_PARAM_DESC_SIZE, "%s", param->name);
+}
+
+KUNIT_ARRAY_PARAM(cs42l42_test_pll_clks, cs42l42_test_pll_clks, cs42l42_test_clk_desc);
+KUNIT_ARRAY_PARAM(cs42l42_test_low_power, cs42l42_test_low_power, cs42l42_test_power_desc);
+
+static struct kunit_case cs42l42_test_cases[] = {
+	KUNIT_CASE_PARAM(cs42l42_test_unmute_below_d0_does_nothing,
+			 cs42l42_test_low_power_gen_params),
+	KUNIT_CASE(cs42l42_test_resume_unmute_then_d0_unmute),
+	KUNIT_CASE_PARAM(cs42l42_test_unmute_pll_locked, cs42l42_test_pll_clks_gen_params),
+	KUNIT_CASE_PARAM(cs42l42_test_unmute_pll_lock_timeout, cs42l42_test_pll_clks_gen_params),
+	KUNIT_CASE_PARAM(cs42l42_test_unmute_after_pll_lock_timeout,
+			 cs42l42_test_pll_clks_gen_params),
+	KUNIT_CASE_PARAM(cs42l42_test_mute_returns_to_osc, cs42l42_test_pll_clks_gen_params),
+	KUNIT_CASE(cs42l42_test_unmute_no_pll),
+	{ } /* terminator */
+};
+
+static struct kunit_suite cs42l42_test_suite = {
+	.name = "snd-soc-cs42l42-test",
+	.init = cs42l42_test_case_init,
+	.test_cases = cs42l42_test_cases,
+};
+
+kunit_test_suite(cs42l42_test_suite);
+
+MODULE_IMPORT_NS("SND_SOC_CS42L42_CORE");
+MODULE_DESCRIPTION("KUnit test for Cirrus Logic cs42l42 codec driver");
+MODULE_LICENSE("GPL");
