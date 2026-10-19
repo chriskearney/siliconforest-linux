@@ -1004,6 +1004,9 @@ static void dcp_v14_external_published(struct apple_dcp_v14 *v14, const char *ke
 		ret = parse(raw->data, raw->size, &ctx);
 		if (!ret) {
 			ctx.dcp = dcp;
+			/* The fw14 RGB8 profile, DSC-required colours the sink takes compressed. */
+			ctx.v14_7_rgb8 = true;
+			ctx.v14_7_dsc = true;
 			ret = dcp_modes_replace(dcp, &ctx, generation);
 		}
 		if (ret) {

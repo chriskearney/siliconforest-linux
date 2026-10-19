@@ -21,6 +21,20 @@ struct dcp_parse_ctx {
 	/* External H17P candidates require separate publication/lookup proof. */
 	bool automatic_1080p180_rgb8;
 	bool ambiguous_180hz;
+	/*
+	 * The T6030 external processor (DCP firmware 14.7, external role): of
+	 * an external SDR catalog, an 8-bit RGB colour (sRGB or default RGB)
+	 * is preferred, ties on score going to the lower colour ID, and
+	 * interlaced, split, multi-pipe and pixel-repeated timings are refused.
+	 * A timing without such a colour keeps the common selection.
+	 */
+	bool v14_7_rgb8;
+	/*
+	 * A timing's DSC-required 8-bit RGB colour the sink takes compressed
+	 * (SupportsDSC) is admissible, the firmware compressing it on the
+	 * wire; an uncompressed colour of the timing is still preferred.
+	 */
+	bool v14_7_dsc;
 #if IS_ENABLED(CONFIG_DRM_APPLE_DCP_T6030_AUDIO)
 	/*
 	 * T6030 external processor audio elements (DCP firmware 14.7, external
@@ -128,6 +142,9 @@ struct dcp_display_mode {
 	/* Immutable receipt provenance; never retag a cached exception. */
 	struct dcp_metadata_ticket unsafe_rgb8_ticket;
 	u64 unsafe_rgb8_service_epoch;
+	/* The timing's best DSC-required colour, and whether it was taken. */
+	struct dcp_color_mode dsc_rgb;
+	bool dsc;
 };
 
 struct dimension {
@@ -167,7 +184,7 @@ int dcp_modes_replace(struct apple_dcp *dcp, struct dcp_parse_ctx *handle,
 int replace_modes(struct dcp_parse_ctx *handle,
 		  struct dcp_display_mode **modes, unsigned int *count,
 		  int width_mm, int height_mm, unsigned int notch_height,
-		  bool internal);
+		  bool internal, bool external_sdr);
 int parse_display_attributes(struct dcp_parse_ctx *handle, int *width_mm,
 			     int *height_mm, bool *backlight_control);
 int parse_display_attributes_h17p(struct dcp_parse_ctx *handle, int *width_mm,

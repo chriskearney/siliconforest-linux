@@ -426,6 +426,8 @@ struct color_mode {
 	s64 id;
 	s64 pixel_encoding;
 	s64 score;
+	/* fw14 SupportsDSC: the sink takes this colour compressed (absent: no). */
+	s64 supports_dsc;
 };
 
 static int fill_color_mode(struct dcp_color_mode *color,
@@ -477,8 +479,26 @@ static unsigned int external_sdr_rank(const struct color_mode *color)
 	}
 }
 
-/* Firmware lists color element IDs which this timing cannot safely use. */
-#define DCP_TIMING_COLOR_ID_LIMIT 64
+/*
+ * T6030 external (fw14): only an 8-bit SDR RGB colour, sRGB or default RGB,
+ * is driven; among those the highest score wins, and a tie on score goes to
+ * the lower colour ID (@best is reset so that fill_color_mode() takes it).
+ */
+static bool v14_7_rgb8_color(const struct color_mode *color, struct dcp_color_mode *best)
+{
+	if (color->depth != 8 || color->colorimetry == DCP_COLORIMETRY_BT709 ||
+	    !external_sdr_rank(color))
+		return false;
+	if (best->score >= 0 && best->score == color->score && color->id < best->id)
+		best->score = -1;
+	return true;
+}
+
+/*
+ * Firmware lists color element IDs which this timing cannot safely use. An
+ * HDMI 2.1 (FRL) sink's timing lists up to 68 on the T6030 external processor.
+ */
+#define DCP_TIMING_COLOR_ID_LIMIT 128
 
 struct timing_color_ids {
 	u32 ids[DCP_TIMING_COLOR_ID_LIMIT];
@@ -572,6 +592,7 @@ static int parse_color_modes(struct dcp_parse_ctx *handle,
 	out->sdr_rgb.score = -1;
 	out->sdr.score = -1;
 	out->best.score = -1;
+	out->dsc_rgb.score = -1;
 
 	dcp_parse_foreach_in_array(handle, outer_it) {
 		static const char * const dup_fields[] = {
@@ -615,6 +636,8 @@ static int parse_color_modes(struct dcp_parse_ctx *handle,
 				ret = parse_int(it.handle, &cmode.pixel_encoding);
 			else if (!strcmp(key, "Score"))
 				ret = parse_int(it.handle, &cmode.score);
+			else if (handle->v14_7_dsc && !strcmp(key, "SupportsDSC"))
+				ret = parse_int(it.handle, &cmode.supports_dsc);
 			else
 				skip(it.handle);
 
@@ -639,8 +662,18 @@ static int parse_color_modes(struct dcp_parse_ctx *handle,
 		if (external_sdr) {
 			unsigned int rank;
 
-			if (timing_color_contains(&limits->dsc_required, cmode.id))
+			if (timing_color_contains(&limits->dsc_required, cmode.id)) {
+				/*
+				 * fw14: the same 8-bit RGB selection among the
+				 * DSC-required colours the sink takes compressed,
+				 * never an unsafe one.
+				 */
+				if (handle->v14_7_dsc && cmode.supports_dsc > 0 &&
+				    !timing_color_contains(&limits->unsafe, cmode.id) &&
+				    v14_7_rgb8_color(&cmode, &out->dsc_rgb))
+					fill_color_mode(&out->dsc_rgb, &cmode);
 				continue;
+			}
 			rank = external_sdr_rank(&cmode);
 			if (timing_color_contains(&limits->unsafe, cmode.id)) {
 				/*
@@ -656,6 +689,24 @@ static int parse_color_modes(struct dcp_parse_ctx *handle,
 					best_unsafe_rank = rank;
 				}
 				continue;
+			}
+			if (handle->v14_7_rgb8) {
+				/*
+				 * fw14: an 8-bit RGB colour by score, then the
+				 * lower ID. Any other SDR colour stays a fallback
+				 * for a timing that offers no such colour.
+				 */
+				if (!v14_7_rgb8_color(&cmode, &out->sdr_rgb)) {
+					if (cmode.eotf == DCP_EOTF_SDR_GAMMA) {
+						if (cmode.pixel_encoding == DCP_COLOR_FORMAT_YCBCR444 &&
+						    cmode.depth <= 10)
+							fill_color_mode(&out->sdr_444, &cmode);
+						fill_color_mode(&out->sdr, &cmode);
+					}
+					fill_color_mode(&out->best, &cmode);
+					continue;
+				}
+				rank = 1;
 			}
 			if (!rank || rank < best_sdr_rank)
 				continue;
@@ -724,6 +775,7 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 	bool is_virtual = false;
 	bool preferred = false, interlaced = false;
 	bool have_preferred = false, have_interlaced = false;
+	bool split = false, single_pipe = true;
 	struct drm_display_mode *mode = &out->mode;
 
 	*out = (struct dcp_display_mode) {};
@@ -731,6 +783,7 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 	out->sdr_444.score = -1;
 	out->sdr.score = -1;
 	out->best.score = -1;
+	out->dsc_rgb.score = -1;
 	*score = -1;
 	handle->ambiguous_180hz = false;
 
@@ -792,6 +845,16 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 			else
 				ret = parse_bool(it.handle, &interlaced);
 			have_interlaced = true;
+		} else if (handle->v14_7_rgb8 && !strcmp(key, "IsSplit")) {
+			ret = parse_bool(it.handle, &split);
+		} else if (handle->v14_7_rgb8 &&
+			   (!strcmp(key, "HorizontalPipeCount") ||
+			    !strcmp(key, "VerticalPipeCount"))) {
+			s64 pipes = 0;
+
+			/* fw14 omits both counts: a single pipe. */
+			ret = parse_int_bound(it.handle, &pipes, 0, U32_MAX);
+			single_pipe &= pipes == 1;
 		} else if (!strcmp(key, "Score"))
 			ret = parse_int(it.handle, score);
 		else
@@ -834,6 +897,11 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 		best_color_mode = out->sdr.id;
 	else if (out->best.score >= 0)
 		best_color_mode = out->best.id;
+	/* No uncompressed colour: the DSC-required one, compressed by the firmware. */
+	if (best_color_mode < 0 && handle->v14_7_dsc && out->dsc_rgb.score >= 0) {
+		best_color_mode = out->dsc_rgb.id;
+		out->dsc = true;
+	}
 
 	trace_iomfb_parse_mode_success(id, &horiz, &vert, best_color_mode,
 				       is_virtual, *score);
@@ -857,6 +925,12 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 	 * DCP reports these modes at all. Treat as a recoverable error.
 	 */
 	if (is_virtual)
+		return -EINVAL;
+
+	/* fw14 external: progressive, unsplit, one pipe, no pixel repetition. */
+	if (handle->v14_7_rgb8 &&
+	    (interlaced || split || !single_pipe ||
+	     horiz.pixel_repetition != 0 || vert.pixel_repetition != 0))
 		return -EINVAL;
 
 	/*
@@ -1096,7 +1170,7 @@ struct dcp_display_mode *enumerate_modes(struct dcp_parse_ctx *handle,
 int replace_modes(struct dcp_parse_ctx *handle,
 		  struct dcp_display_mode **modes, unsigned int *count,
 		  int width_mm, int height_mm, unsigned int notch_height,
-		  bool internal)
+		  bool internal, bool external_sdr)
 {
 	struct dcp_display_mode *next;
 	struct dcp_parse_ctx extent = *handle;
@@ -1109,7 +1183,7 @@ int replace_modes(struct dcp_parse_ctx *handle,
 		return ret;
 
 	next = enumerate_modes(handle, &next_count, width_mm, height_mm,
-			       notch_height, internal, false);
+			       notch_height, internal, external_sdr);
 	if (IS_ERR(next))
 		return PTR_ERR(next);
 	if (it.len && !next_count) {
