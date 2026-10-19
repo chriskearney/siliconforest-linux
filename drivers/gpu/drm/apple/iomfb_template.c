@@ -1539,6 +1539,20 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP &&
 		    req->surf[l].base.colorspace == DCP_COLORSPACE_BG_SRGB)
 			req->surf[l].base.colorspace = DCP_COLORSPACE_NATIVE;
+
+		/* RGB planes arrive tagged "native" (plane.c). The desktop
+		 * renders sRGB, and external Apple panels (Studio Display,
+		 * XDR) are wide gamut, so a native tag puts sRGB values
+		 * straight onto P3 primaries and oversaturates everything.
+		 * Tag the surface sRGB instead and let DCP convert to the
+		 * panel gamut in hardware, as macOS does.
+		 */
+		else if (external_srgb &&
+			 dcp->connector_type != DRM_MODE_CONNECTOR_eDP &&
+			 !new_state->fb->format->is_yuv &&
+			 req->surf[l].base.colorspace == DCP_COLORSPACE_NATIVE)
+			req->surf[l].base.colorspace = DCP_COLORSPACE_BG_SRGB;
+
 	}
 
 	if (!has_surface && !crtc_state->color_mgmt_changed) {

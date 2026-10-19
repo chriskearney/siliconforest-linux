@@ -84,6 +84,11 @@ static bool unstable_edid = true;
 module_param(unstable_edid, bool, 0644);
 MODULE_PARM_DESC(unstable_edid, "Enable unstable EDID retrival support");
 
+bool external_srgb = true;
+module_param(external_srgb, bool, 0644);
+MODULE_PARM_DESC(external_srgb,
+		 "Tag RGB framebuffers for external displays as sRGB so DCP converts them to the panel's native gamut (default: Y)");
+
 /*
  * H17-generation firmware (T8140 H17P, T8142 H17G) runs aurora-wip's
  * processor lifecycle, below in the H17P section. Shared entry points
