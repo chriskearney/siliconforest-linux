@@ -1038,11 +1038,10 @@ static int macsmc_power_probe(struct platform_device *pdev)
 		apple_smc_write_u8(smc, SMC_KEY(CH0B), 0);
 
 		/* Detect charge limit method (CHWA vs CHLS) */
-		if (apple_smc_read_flag(power->smc, SMC_KEY(CHWA), &flag) == 0) {
+		if (apple_smc_read_flag(power->smc, SMC_KEY(CHWA), &flag) == 0)
 			power->has_chwa = true;
-		} else if (apple_smc_read_u16(power->smc, SMC_KEY(CHLS), &vu16) >= 0) {
+		else if (apple_smc_read_u16(power->smc, SMC_KEY(CHLS), &vu16) >= 0)
 			power->has_chls = true;
-		}
 
 		power->batt_desc.charge_behaviours =
 			macsmc_battery_charge_behaviours(power);
