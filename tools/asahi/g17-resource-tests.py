@@ -11,6 +11,7 @@ import json
 import shutil
 import os
 import re
+import resource
 import subprocess
 import tempfile
 
@@ -507,6 +508,9 @@ def controls(output, source):
 
 
 def main():
+    # Expected negative-control aborts must not produce core dumps.
+    _, hard_limit = resource.getrlimit(resource.RLIMIT_CORE)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, hard_limit))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mutations', action='store_true')
     parser.add_argument('--output', type=Path)

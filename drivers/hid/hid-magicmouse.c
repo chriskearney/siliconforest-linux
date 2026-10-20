@@ -334,7 +334,7 @@ static inline int le16_to_int(__le16 x)
 }
 
 /*
- * The J700 trackpad's transport delivers no reports while it is closed,
+ * The J700 transport can stop reports while the input device is closed,
  * lift-offs included, so a contact touching in the first report after it is
  * opened may be a new one under the ID of an old palm. Have the report path,
  * the only writer of the contact histories, forget them first.
@@ -925,7 +925,7 @@ struct tp_mouse_report {
  * byte its state; 4 means touching. Touching contacts carry their touch and
  * tool areas and orientation, as in the J314 layout. Records in the
  * approach and lift-off states can have all-zero areas; one without a touch
- * area, which reads 0 or below, is skipped, like on the other MTP trackpads.
+ * area, which reads 0 or below, is skipped.
  * A touching record is reported even without one, as an earlier capture had
  * real contacts with a zero touch area. The controller has no force sensor,
  * so the pressure word is always zero.
@@ -941,9 +941,9 @@ struct tp_mouse_report {
  * 4170 and fingers up to 3280. A contact whose tool area has passed 4400 is
  * reported as a palm until it lifts, including in its lift-off records. A
  * record that enters the touching state is a new contact, even when the
- * previous report had its ID on a contact lifting off. As no report arrives
- * while the trackpad is closed, what was learnt of the contacts before it is
- * opened again is forgotten.
+ * previous report had its ID on a contact lifting off. Reports may stop
+ * while the trackpad is closed, so its old contact history is forgotten
+ * when it is opened again.
  */
 #define MAGICMOUSE_C1FE_REPORT_ID	0x75
 #define MAGICMOUSE_C1FE_HEADER_SIZE	32

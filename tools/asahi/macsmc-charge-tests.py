@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
 import subprocess
 import tempfile
 
@@ -231,6 +232,9 @@ def fixture(source):
 
 
 def main():
+    # Expected negative-control aborts must not produce core dumps.
+    _, hard_limit = resource.getrlimit(resource.RLIMIT_CORE)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, hard_limit))
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--mutations", action="store_true")
     ap.add_argument("--output", type=Path)
