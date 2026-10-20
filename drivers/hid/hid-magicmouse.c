@@ -259,6 +259,10 @@ struct effect_job {
  * @quirks: Currently unused.
  * @query_dimensions: Whether to query and update dimensions on first open
  * @mtp_c1fe: Whether the MTP trackpad sends the J700 C1FE report layout.
+ * @c1fe_palms: C1FE contact IDs whose tool area reached palm size.
+ * @c1fe_touching: C1FE contact IDs whose record was touching in the last report.
+ * @c1fe_reset_pending: Forget @c1fe_palms and @c1fe_touching at the next
+ *	C1FE report; set when the trackpad is opened.
  * @ntouches: Number of touches in most recent touch report.
  * @scroll_accel: Number of consecutive scroll motions.
  * @scroll_jiffies: Time of last scroll motion.
@@ -285,6 +289,9 @@ struct magicmouse_sc {
 	unsigned long quirks;
 	bool query_dimensions;
 	bool mtp_c1fe;
+	DECLARE_BITMAP(c1fe_palms, U8_MAX + 1);
+	DECLARE_BITMAP(c1fe_touching, U8_MAX + 1);
+	bool c1fe_reset_pending;
 
 	int ntouches;
 	int scroll_accel;
@@ -326,11 +333,25 @@ static inline int le16_to_int(__le16 x)
 	return (signed short)le16_to_cpu(x);
 }
 
+/*
+ * The J700 transport can stop reports while the input device is closed,
+ * lift-offs included, so a contact touching in the first report after it is
+ * opened may be a new one under the ID of an old palm. Have the report path,
+ * the only writer of the contact histories, forget them first.
+ */
+static void magicmouse_c1fe_request_reset(struct magicmouse_sc *msc)
+{
+	WRITE_ONCE(msc->c1fe_reset_pending, true);
+}
+
 static int magicmouse_open(struct input_dev *dev)
 {
 	struct hid_device *hdev = input_get_drvdata(dev);
 	struct magicmouse_sc *msc = hid_get_drvdata(hdev);
 	int ret;
+
+	if (msc->mtp_c1fe)
+		magicmouse_c1fe_request_reset(msc);
 
 	ret = hid_hw_open(hdev);
 	if (ret)
@@ -900,13 +921,94 @@ struct tp_mouse_report {
  *   32           30 * N  contact records, in the struct tp_finger layout
  *   32 + 30 * N  8       trailer, not decoded
  *
- * Only the position fields of a record are known to be meaningful; the
- * touch area fields are zero on some real contacts, and the controller has
- * no force sensor.
+ * The low byte of a record's first word is the contact's ID and the high
+ * byte its state; 4 means touching. Touching contacts carry their touch and
+ * tool areas and orientation, as in the J314 layout. Records in the
+ * approach and lift-off states can have all-zero areas; one without a touch
+ * area, which reads 0 or below, is skipped.
+ * A touching record is reported even without one, as an earlier capture had
+ * real contacts with a zero touch area. The controller has no force sensor,
+ * so the pressure word is always zero.
+ *
+ * The low byte of the second word is the controller's class for the
+ * contact: 1 for a thumb, 2 and 3 for fingers, and 6, 7 or 11 for a
+ * palm. A contact is reported as a palm in the frames the controller
+ * classes it as one, so a thumb it briefly takes for a palm while landing
+ * still moves the pointer afterwards.
+ *
+ * The controller classes many palm heels as thumbs. Their tool area sets
+ * them apart: palm heels pass 4400 once scaled, while thumbs measured up to
+ * 4170 and fingers up to 3280. A contact whose tool area has passed 4400 is
+ * reported as a palm until it lifts, including in its lift-off records. A
+ * record that enters the touching state is a new contact, even when the
+ * previous report had its ID on a contact lifting off. Reports may stop
+ * while the trackpad is closed, so its old contact history is forgotten
+ * when it is opened again.
  */
 #define MAGICMOUSE_C1FE_REPORT_ID	0x75
 #define MAGICMOUSE_C1FE_HEADER_SIZE	32
 #define MAGICMOUSE_C1FE_TRAILER_SIZE	8
+#define MAGICMOUSE_C1FE_PALM_CLASSES	(BIT(6) | BIT(7) | BIT(11))
+#define MAGICMOUSE_C1FE_PALM_TOOL_MAJOR	2200
+#define MAGICMOUSE_C1FE_STATE_TOUCHING	4
+
+static u8 magicmouse_c1fe_contact_id(const struct tp_finger *f)
+{
+	return le16_to_cpu(f->unknown1) & 0xff;
+}
+
+static bool magicmouse_c1fe_touching(const struct tp_finger *f)
+{
+	return le16_to_cpu(f->unknown1) >> 8 == MAGICMOUSE_C1FE_STATE_TOUCHING;
+}
+
+static bool magicmouse_c1fe_classed_palm(const struct tp_finger *f)
+{
+	u8 class = le16_to_cpu(f->unknown2) & 0xff;
+
+	return class < BITS_PER_LONG &&
+	       (MAGICMOUSE_C1FE_PALM_CLASSES & BIT(class));
+}
+
+/*
+ * Track the contacts whose tool area has reached palm size since landing. A
+ * record touching now that was not touching in the previous report has
+ * landed, and any palm that had its ID before has lifted. Called with a
+ * well-formed report only, so that the first after an open forgets the
+ * contacts before it.
+ */
+static void magicmouse_c1fe_update_palms(struct magicmouse_sc *msc,
+					 const u8 *records, int count)
+{
+	DECLARE_BITMAP(palms, U8_MAX + 1);
+	DECLARE_BITMAP(touching, U8_MAX + 1);
+	const struct tp_finger *f;
+	bool landed;
+	u8 id;
+	int i;
+
+	if (xchg(&msc->c1fe_reset_pending, false)) {
+		bitmap_zero(msc->c1fe_palms, U8_MAX + 1);
+		bitmap_zero(msc->c1fe_touching, U8_MAX + 1);
+	}
+
+	bitmap_zero(palms, U8_MAX + 1);
+	bitmap_zero(touching, U8_MAX + 1);
+	for (i = 0; i < count; i++) {
+		f = (const struct tp_finger *)(records + i * sizeof(*f));
+		id = magicmouse_c1fe_contact_id(f);
+		landed = false;
+		if (magicmouse_c1fe_touching(f)) {
+			landed = !test_bit(id, msc->c1fe_touching);
+			__set_bit(id, touching);
+		}
+		if (le16_to_int(f->tool_major) > MAGICMOUSE_C1FE_PALM_TOOL_MAJOR ||
+		    (!landed && test_bit(id, msc->c1fe_palms)))
+			__set_bit(id, palms);
+	}
+	bitmap_copy(msc->c1fe_palms, palms, U8_MAX + 1);
+	bitmap_copy(msc->c1fe_touching, touching, U8_MAX + 1);
+}
 
 static bool magicmouse_c1fe_report_valid(const u8 *data, int size)
 {
@@ -926,36 +1028,65 @@ static bool magicmouse_c1fe_report_valid(const u8 *data, int size)
 			       MAGICMOUSE_C1FE_TRAILER_SIZE;
 }
 
-static void report_c1fe_finger_data(struct input_dev *input, int slot,
-				    const struct input_mt_pos *pos)
-{
-	input_mt_slot(input, slot);
-	input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
-	input_report_abs(input, ABS_MT_POSITION_X, pos->x);
-	input_report_abs(input, ABS_MT_POSITION_Y, pos->y);
-}
-
 static bool magicmouse_haptic_click(struct magicmouse_sc *msc, u32 pressure,
 				    bool firmware_button);
 
+/*
+ * Doubles an area field. A field with bit 15 set reads negative: double it,
+ * do not shift it. The C1FE axes are advertised from 0, so a negative C1FE
+ * area is reported as 0.
+ */
+static int magicmouse_mtp_area(__le16 field, bool c1fe)
+{
+	int area = le16_to_int(field);
+
+	return (c1fe ? max(area, 0) : area) * 2;
+}
+
+/*
+ * Whether a record is no contact, having no touch area. A C1FE touching
+ * record is a contact whatever its area. Any other C1FE record whose touch
+ * area reads 0 or below, which would be reported as 0, is none; the other
+ * trackpads keep reporting a negative one.
+ */
+static bool magicmouse_mtp_no_contact(const struct magicmouse_sc *msc,
+				      const struct tp_finger *f)
+{
+	int area = le16_to_int(f->touch_major);
+
+	if (!msc->mtp_c1fe)
+		return area == 0;
+	return !magicmouse_c1fe_touching(f) && area <= 0;
+}
+
 static void report_finger_data(struct input_dev *input, int slot,
 			       const struct input_mt_pos *pos,
-			       const struct tp_finger *f)
+			       const struct tp_finger *f, int tool, bool c1fe)
 {
+	int orientation = J314_TP_MAX_FINGER_ORIENTATION -
+			  le16_to_int(f->orientation);
+
+	/* A C1FE orientation is kept within the range advertised for it. */
+	if (c1fe)
+		orientation = clamp(orientation, -J314_TP_MAX_FINGER_ORIENTATION,
+				    J314_TP_MAX_FINGER_ORIENTATION);
+
 	input_mt_slot(input, slot);
-	input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
+	input_mt_report_slot_state(input, tool, true);
 
 	input_report_abs(input, ABS_MT_TOUCH_MAJOR,
-			 le16_to_int(f->touch_major) << 1);
+			 magicmouse_mtp_area(f->touch_major, c1fe));
 	input_report_abs(input, ABS_MT_TOUCH_MINOR,
-			 le16_to_int(f->touch_minor) << 1);
+			 magicmouse_mtp_area(f->touch_minor, c1fe));
 	input_report_abs(input, ABS_MT_WIDTH_MAJOR,
-			 le16_to_int(f->tool_major) << 1);
+			 magicmouse_mtp_area(f->tool_major, c1fe));
 	input_report_abs(input, ABS_MT_WIDTH_MINOR,
-			 le16_to_int(f->tool_minor) << 1);
-	input_report_abs(input, ABS_MT_ORIENTATION,
-			 J314_TP_MAX_FINGER_ORIENTATION - le16_to_int(f->orientation));
-	input_report_abs(input, ABS_MT_PRESSURE, le16_to_int(f->pressure));
+			 magicmouse_mtp_area(f->tool_minor, c1fe));
+	input_report_abs(input, ABS_MT_ORIENTATION, orientation);
+	/* The C1FE report carries no pressure. */
+	if (!c1fe)
+		input_report_abs(input, ABS_MT_PRESSURE,
+				 le16_to_int(f->pressure));
 	input_report_abs(input, ABS_MT_POSITION_X, pos->x);
 	input_report_abs(input, ABS_MT_POSITION_Y, pos->y);
 }
@@ -1000,10 +1131,14 @@ static int magicmouse_raw_event_mtp(struct hid_device *hdev,
 		return 0;
 	}
 
+	if (msc->mtp_c1fe)
+		magicmouse_c1fe_update_palms(msc, data + hdr_sz,
+					     tp_hdr->num_fingers);
+
 	n = 0;
 	for (i = 0; i < tp_hdr->num_fingers; i++) {
 		f = (struct tp_finger *)(data + hdr_sz + i * touch_sz);
-		if (!msc->mtp_c1fe && le16_to_int(f->touch_major) == 0)
+		if (magicmouse_mtp_no_contact(msc, f))
 			continue;
 
 		hid_dbg(hdev, "ev x:%04x y:%04x\n", le16_to_int(f->abs_x),
@@ -1018,13 +1153,17 @@ static int magicmouse_raw_event_mtp(struct hid_device *hdev,
 
 	for (i = 0; i < n; i++) {
 		int idx = map_contacs[i];
+		int tool = MT_TOOL_FINGER;
+
 		f = (struct tp_finger *)(data + hdr_sz + idx * touch_sz);
-		if (msc->mtp_c1fe) {
-			report_c1fe_finger_data(input, msc->tracking_ids[i], &msc->pos[i]);
-		} else {
-			report_finger_data(input, msc->tracking_ids[i], &msc->pos[i], f);
+		if (msc->mtp_c1fe &&
+		    (magicmouse_c1fe_classed_palm(f) ||
+		     test_bit(magicmouse_c1fe_contact_id(f), msc->c1fe_palms)))
+			tool = MT_TOOL_PALM;
+		report_finger_data(input, msc->tracking_ids[i], &msc->pos[i], f,
+				   tool, msc->mtp_c1fe);
+		if (!msc->mtp_c1fe)
 			pressure += le16_to_int(f->pressure);
-		}
 	}
 
 	input_mt_sync_frame(input);
@@ -1268,6 +1407,7 @@ static int magicmouse_setup_input_mtp(struct input_dev *input,
 {
 	int error;
 	int mt_flags = 0;
+	int area_max;
 	struct magicmouse_sc *msc = hid_get_drvdata(hdev);
 
 	__set_bit(INPUT_PROP_BUTTONPAD, input->propbit);
@@ -1286,18 +1426,31 @@ static int magicmouse_setup_input_mtp(struct input_dev *input,
 		mt_flags |= INPUT_MT_TOTAL_FORCE;
 
 	/*
-	 * The C1FE report carries positions and the button only; advertise
-	 * nothing that user space would take for a touch size or a pressure.
+	 * A palm's tool area on the C1FE trackpad exceeds 5000 once scaled, so
+	 * allow the full range of the record's 16-bit fields there.
 	 */
+	area_max = msc->mtp_c1fe ? 2 * S16_MAX : 5000;
+
+	/* finger touch area */
+	input_set_abs_params(input, ABS_MT_TOUCH_MAJOR, 0, area_max, 0, 0);
+	input_set_abs_params(input, ABS_MT_TOUCH_MINOR, 0, area_max, 0, 0);
+
+	/* finger approach area */
+	input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, area_max, 0, 0);
+	input_set_abs_params(input, ABS_MT_WIDTH_MINOR, 0, area_max, 0, 0);
+
+	/* finger orientation */
+	input_set_abs_params(input, ABS_MT_ORIENTATION,
+			     -J314_TP_MAX_FINGER_ORIENTATION,
+			     J314_TP_MAX_FINGER_ORIENTATION, 0, 0);
+
+	/* The C1FE controller classifies palms. */
+	if (msc->mtp_c1fe)
+		input_set_abs_params(input, ABS_MT_TOOL_TYPE, 0, MT_TOOL_MAX,
+				     0, 0);
+
+	/* The C1FE report carries no pressure. */
 	if (!msc->mtp_c1fe) {
-		/* finger touch area */
-		input_set_abs_params(input, ABS_MT_TOUCH_MAJOR, 0, 5000, 0, 0);
-		input_set_abs_params(input, ABS_MT_TOUCH_MINOR, 0, 5000, 0, 0);
-
-		/* finger approach area */
-		input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, 5000, 0, 0);
-		input_set_abs_params(input, ABS_MT_WIDTH_MINOR, 0, 5000, 0, 0);
-
 		input_set_abs_params(input, ABS_MT_PRESSURE, 0, 6000, 0, 0);
 
 		/*
@@ -1306,11 +1459,6 @@ static int magicmouse_setup_input_mtp(struct input_dev *input,
 		 * seems to be ~grams on these touchpads.
 		 */
 		input_abs_set_res(input, ABS_MT_PRESSURE, 1);
-
-		/* finger orientation */
-		input_set_abs_params(input, ABS_MT_ORIENTATION,
-				     -J314_TP_MAX_FINGER_ORIENTATION,
-				     J314_TP_MAX_FINGER_ORIENTATION, 0, 0);
 	}
 
 	/* Note: Touch Y position from the device is inverted relative
@@ -1346,11 +1494,6 @@ static int magicmouse_setup_input_mtp(struct input_dev *input,
 		/* hid-input may have set these from the report descriptor. */
 		__clear_bit(ABS_MT_PRESSURE, input->absbit);
 		__clear_bit(ABS_PRESSURE, input->absbit);
-		__clear_bit(ABS_MT_TOUCH_MAJOR, input->absbit);
-		__clear_bit(ABS_MT_TOUCH_MINOR, input->absbit);
-		__clear_bit(ABS_MT_WIDTH_MAJOR, input->absbit);
-		__clear_bit(ABS_MT_WIDTH_MINOR, input->absbit);
-		__clear_bit(ABS_MT_ORIENTATION, input->absbit);
 		__clear_bit(ABS_TOOL_WIDTH, input->absbit);
 	}
 
@@ -2501,3 +2644,7 @@ module_hid_driver(magicmouse_driver);
 
 MODULE_DESCRIPTION("Apple \"Magic\" Wireless Mouse driver");
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_HID_MAGICMOUSE_KUNIT_TEST)
+#include "hid-magicmouse-test.c"
+#endif

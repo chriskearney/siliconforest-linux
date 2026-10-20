@@ -347,3 +347,100 @@ in PR16 and the control repository's source-validation ledger. These are source
 and simulated-device checks. This integration makes no local camera, external
 10-bit/colourimeter/ICC or physical J613 sleep/wake qualification claim, and does
 not update a signed installer release.
+
+## G17 resources, charge limits and J700 input (2026-10-19)
+
+The integration starts at `70ba30325164`. Omacom PR154 remains explicitly held;
+this series changes no Thunderbolt bandwidth policy. Public upstream pins and
+selected commits are recorded in `SILICONFOREST-M3-SOURCES.json`.
+
+The four resource commits from [Omacom PR151](https://github.com/omacom/linux-aurora/pull/151)
+are carried after the existing telemetry integration. Unused warming can yield
+capacity without recycling published physical identities. Compute can replace
+only the exact tracked bootstrap reservations. Render-pool backing searches for
+one address available in all three VMs, keeping one allocation and rolling back
+partial aliases before releasing the canonical reservation. The ordinary MMU
+mapping wrapper retains best-fit placement; the new lowest-fit wrapper is explicit.
+
+A downstream ownership fix builds the alias-owning render object before fallible
+table initialization. Current admitted bounds and alignment appear to exclude
+those errors; this is defensive cleanup hardening, not a reproduced GPU failure.
+The host harness executes the actual constructor and placement wrappers as well
+as admission, queue-ID and common-hole methods. It checks 262144 combinations
+against an independent small-address-space oracle, and rejects thirteen executable
+mutations. It simulates the MMU/firmware dependencies and does not execute kernel
+PTE operations, firmware retirement or GPU workloads. Upstream remains draft;
+its hardware measurements do not qualify this downstream build.
+
+The final source refresh includes the pending-compute-pool-release follow-up.
+The event worker keeps observing a published release until the existing firmware
+witness permits vacancy. Exhaustion with a pending release becomes retryable;
+the retry drops both the device mutex and preparation lease before waking the
+worker or sleeping, and returns `EBUSY` after 200 ms. Ordinary exhaustion and
+other errors remain distinct. The added source-derived controls run the actual
+retry arm against simulated guards and a clock, checking settlement, unlocked
+wake/sleep and the deadline. Nine executable negative controls fail, including
+both original wake/admission failures. This is not a firmware or timing test.
+
+[Asahi PR521](https://github.com/AsahiLinux/linux/pull/521) is imported as one
+battery topic commit, excluding its unrelated aggregate history. `auto` caps
+charging and `auto-discharge` requests active discharge toward the limit on CHLS
+machines. Existing persistent CHLS settings are retained, so selecting `auto`
+is required to clear a previously enabled force-discharge preference. CHWA boards
+do not gain this mode. This integration does not write any target's SMC settings.
+
+Review fixes serialize charging-setting read-modify-writes, expose both modes
+on CHLS-only machines, and read CHLS before clearing inhibitors. The actual
+capability helper and callbacks pass 249 host cases with Clang and GCC ASan/UBSan,
+including all 32 capability combinations, SMC faults and a forced writer race.
+Eight executable mutations fail. A failed multi-key SMC write can still leave a
+partial firmware change; no atomic hardware transaction or persistence test is
+claimed.
+
+[Omacom PR155](https://github.com/omacom/linux-aurora/pull/155) adds palm
+classification and contact geometry for the Neo's J700 C1FE reports. Review
+fixes reset tool-size hysteresis when an ID lands again, retain real touching
+contacts when their area is zero, and clamp malformed C1FE area/orientation
+values. A non-touching C1FE record with negative area is treated like one with
+zero area, while other MTP/SPI reports retain their earlier numeric behaviour.
+Doubling signed areas uses multiplication instead of a signed left shift.
+
+The transport can stop reports across input close, hiding a palm's lift. Input
+open now requests a history reset; the sole serialized valid-report writer
+consumes the request with `xchg` before updating both history bitmaps. Invalid
+frames leave the request pending. Open takes no new report lock. This avoids
+both stale classification after reopen and a competing bitmap writer.
+
+The KUnit suite drives the real report entry and input core, and uses the real
+open/close callbacks with a simulated transport for the reopen case. The SPI
+fixture leaves hardware open disabled. Tests check capabilities, emitted events,
+contact IDs, button/pressure behaviour, malformed reports and non-J700 paths.
+They do not calibrate a physical palm threshold or qualify suspend/resume.
+The twelve-case suite and its source-derived controls are source validation;
+new signed board/firmware hardware reports remain required for a release.
+
+Reproduce host controls with the pinned Rust toolchain and a C compiler supporting
+ASan/UBSan (the charging tests also run with `CC=gcc`):
+
+```sh
+RUSTUP_TOOLCHAIN=1.93.1 python3 tools/asahi/g17-resource-tests.py --mutations --output /tmp/sf-g17-results
+RUSTUP_TOOLCHAIN=1.93.1 python3 tools/asahi/g17-pool-release-tests.py
+python3 tools/asahi/macsmc-charge-tests.py --mutations --output /tmp/sf-charge-results
+```
+
+The HID suite needs Clang and `qemu-system-aarch64`. Use a dedicated output
+directory; the sanitizer fragment adds KASAN, UBSan and lockdep options:
+
+```sh
+python3 tools/testing/kunit/kunit.py run --arch=arm64 --make_options=LLVM=1 --jobs=4 \
+  --build_dir=/tmp/sf-hid-kunit \
+  --kunitconfig=tools/testing/kunit/configs/siliconforest_magicmouse.config \
+  hid-magicmouse-mtp
+```
+
+Replace the fragment with `siliconforest_magicmouse_sanitize.config` and choose
+another output directory to request the sanitizer configuration. Exact final
+results, compiler versions, source hashes and production build results are
+recorded in the control repository's source-validation report. No target was
+installed or rebooted by this source integration, and the public installer
+catalog was not changed.
