@@ -24,6 +24,103 @@ def item(source, signature):
     return source[start:end]
 
 
+def retry_fixture(runtime):
+    build = item(runtime, 'fn build_compute(')
+    timeout = next(line.strip() for line in build.splitlines()
+                   if 'const POOL_RELEASE_WAIT_NS:' in line)
+    reserve = build[build.index('let reservation = match firmware.queues.reserve_compute'):]
+    retry = item(reserve, 'Err(error) if error == EAGAIN =>')
+    return r'''
+mod retry {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
+    const EBUSY: Error = -16;
+    static NOW: AtomicU64 = AtomicU64::new(0);
+    static STATE: AtomicUsize = AtomicUsize::new(0);
+    static LEASE: AtomicUsize = AtomicUsize::new(0);
+    static POLLS: AtomicUsize = AtomicUsize::new(0);
+    static SLEEPS: AtomicUsize = AtomicUsize::new(0);
+    fn now_ns() -> u64 { NOW.load(Relaxed) }
+    struct Guard(&'static AtomicUsize);
+    impl Guard {
+        fn new(count: &'static AtomicUsize) -> Self {
+            count.fetch_add(1, Relaxed);
+            Self(count)
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) { assert_eq!(self.0.fetch_sub(1, Relaxed), 1); }
+    }
+    struct Shared;
+    impl Shared {
+        fn queue_events(&self) {
+            assert_eq!(STATE.load(Relaxed), 0, "poll must not hold state");
+            assert_eq!(LEASE.load(Relaxed), 0, "poll must not hold lease");
+            POLLS.fetch_add(1, Relaxed);
+        }
+    }
+    mod kernel {
+        pub mod time {
+            pub struct Delta(pub u64);
+            impl Delta { pub fn from_millis(ms: u64) -> Self { Self(ms * 1_000_000) } }
+            pub mod delay {
+                pub fn fsleep(delta: super::Delta) {
+                    use super::super::super::{STATE, LEASE, SLEEPS, NOW, Relaxed};
+                    assert_eq!(STATE.load(Relaxed), 0, "sleep must not hold state");
+                    assert_eq!(LEASE.load(Relaxed), 0, "sleep must not hold lease");
+                    assert_eq!(delta.0, 1_000_000, "retry must yield for one millisecond");
+                    SLEEPS.fetch_add(1, Relaxed);
+                    NOW.fetch_add(delta.0, Relaxed);
+                }
+            }
+        }
+    }
+    struct Retry { shared: Shared }
+    impl Retry {
+        fn run(&self, settle_after: Option<usize>) -> Result {
+            TIMEOUT
+            let mut pool_release_wait = None;
+            // A test-only ceiling exposes a broken deadline without hanging.
+            for attempt in 0..400 {
+                if settle_after == Some(attempt) { return Ok(()); }
+                let lease = Guard::new(&LEASE);
+                let state = Guard::new(&STATE);
+                let result: Result = Err(EAGAIN);
+                match result {
+                    RETRY
+                    result => return result,
+                }
+            }
+            Ok(())
+        }
+    }
+    fn reset() {
+        assert_eq!(STATE.load(Relaxed), 0);
+        assert_eq!(LEASE.load(Relaxed), 0);
+        NOW.store(9_000_000_000, Relaxed);
+        POLLS.store(0, Relaxed);
+        SLEEPS.store(0, Relaxed);
+    }
+    pub fn check() {
+        reset();
+        assert_eq!(Retry { shared: Shared }.run(None), Err(EBUSY),
+                   "pending release must time out");
+        assert_eq!(NOW.load(Relaxed), 9_200_000_000, "deadline is relative to first backpressure");
+        assert_eq!(POLLS.load(Relaxed), 201, "one poll per retry including timeout");
+        assert_eq!(SLEEPS.load(Relaxed), 200, "timeout does not sleep again");
+        assert_eq!(STATE.load(Relaxed), 0);
+        assert_eq!(LEASE.load(Relaxed), 0);
+        reset();
+        assert_eq!(Retry { shared: Shared }.run(Some(5)), Ok(()));
+        assert_eq!(POLLS.load(Relaxed), 5, "one poll per retry before settlement");
+        assert_eq!(SLEEPS.load(Relaxed), 5);
+        assert_eq!(NOW.load(Relaxed), 9_005_000_000);
+        println!("PASS source retry arm: unlocked wake/sleep, settlement and 200ms deadline");
+    }
+}
+'''.replace('TIMEOUT', timeout).replace('RETRY', retry)
+
+
 def fixture():
     runtime = (ROOT / 'runtime.rs').read_text()
     compute = (ROOT / 'queue/compute.rs').read_text()
@@ -102,6 +199,7 @@ fn state(phase: PoolPhase, free: bool) -> Registry {
     Registry { compute: entries, identities: Identities { next: 100 }, qids: QueueIds { free, fail: None } }
 }
 fn main() {
+    retry::check();
     // Captured failure: four idle released queues, full physical namespace,
     // control-release cursor still awaiting observation, no retirement event.
     let mut registry = state(PoolPhase::ReleaseSent(3), false);
@@ -138,29 +236,52 @@ fn main() {
     assert!(registry.poll(), "existing command-retirement polling remains enabled");
     println!("PASS captured four-queue transition, settled wake removal, full/free identity capacity and error preservation");
 }
-'''.replace('PENDING', pending).replace('METHODS', methods).replace('PREDICATE', predicate)
+'''.replace('PENDING', pending).replace('METHODS', methods).replace('PREDICATE', predicate) + retry_fixture(runtime)
 
 
 def main():
     code = fixture()
     with tempfile.TemporaryDirectory(prefix='g17-pool-release-') as directory:
         root = Path(directory)
-        for mutation in ['fixed', 'no-wake', 'terminal-admission']:
+        for mutation in ['fixed', 'no-wake', 'terminal-admission', 'retry-holds-state',
+                         'retry-holds-lease', 'retry-no-wake', 'retry-no-sleep',
+                         'retry-no-timeout', 'retry-resets-deadline', 'retry-no-continue']:
             current = code
             if mutation == 'no-wake':
                 current = current.replace('queue.retirement_polling() || queue.pool_release_pending()', 'queue.retirement_polling()')
             elif mutation == 'terminal-admission':
                 current = current.replace('.map_err(|error| self.compute_admission_error(error))?', '?')
+            elif mutation == 'retry-holds-state':
+                current = current.replace('drop(state);', '')
+            elif mutation == 'retry-holds-lease':
+                current = current.replace('drop(lease);', '')
+            elif mutation == 'retry-no-wake':
+                current = current.replace('self.shared.queue_events();', '')
+            elif mutation == 'retry-no-sleep':
+                current = current.replace('kernel::time::delay::fsleep(kernel::time::Delta::from_millis(1));', '')
+            elif mutation == 'retry-no-timeout':
+                current = current.replace('>= POOL_RELEASE_WAIT_NS', '>= u64::MAX')
+            elif mutation == 'retry-resets-deadline':
+                current = current.replace('*pool_release_wait.get_or_insert(now_ns())',
+                                          '{ pool_release_wait = Some(now_ns()); pool_release_wait.unwrap() }')
+            elif mutation == 'retry-no-continue':
+                current = current.replace('continue;', 'return Err(EAGAIN);')
             path = root / (mutation + '.rs')
             path.write_text(current)
             binary = path.with_suffix('')
-            subprocess.run([os.environ.get('RUSTC', 'rustc'), '--edition=2021', str(path), '-o', str(binary)], check=True)
-            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            subprocess.run([os.environ.get('RUSTC', 'rustc'), '--edition=2021', str(path), '-o', str(binary)], check=True, timeout=60)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60)
             if mutation == 'fixed':
                 assert result.returncode == 0, result.stderr
                 print(result.stdout.strip())
             else:
-                expected = 'release needs a worker wake' if mutation == 'no-wake' else 'pending release is temporary'
+                expected = {
+                    'no-wake': 'release needs a worker wake',
+                    'terminal-admission': 'pending release is temporary',
+                    'retry-holds-state': 'poll must not hold state',
+                    'retry-holds-lease': 'poll must not hold lease',
+                    'retry-no-wake': 'one poll per retry',
+                }.get(mutation, 'pending release must time out')
                 assert result.returncode != 0 and expected in result.stderr, result.stderr
                 print('PASS negative control:', mutation)
 
