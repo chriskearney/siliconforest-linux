@@ -386,3 +386,50 @@ including all 32 capability combinations, SMC faults and a forced writer race.
 Eight executable mutations fail. A failed multi-key SMC write can still leave a
 partial firmware change; no atomic hardware transaction or persistence test is
 claimed.
+
+[Omacom PR155](https://github.com/omacom/linux-aurora/pull/155) adds palm
+classification and contact geometry for the Neo's J700 C1FE reports. Review
+fixes reset tool-size hysteresis when an ID lands again, retain real touching
+contacts when their area is zero, and clamp malformed C1FE area/orientation
+values. A non-touching C1FE record with negative area is treated like one with
+zero area, while other MTP/SPI reports retain their earlier numeric behaviour.
+Doubling signed areas uses multiplication instead of a signed left shift.
+
+The transport can stop reports across input close, hiding a palm's lift. Input
+open now requests a history reset; the sole serialized valid-report writer
+consumes the request with `xchg` before updating both history bitmaps. Invalid
+frames leave the request pending. Open takes no new report lock. This avoids
+both stale classification after reopen and a competing bitmap writer.
+
+The KUnit suite drives the real report entry and input core, and uses the real
+open/close callbacks with a simulated transport for the reopen case. The SPI
+fixture leaves hardware open disabled. Tests check capabilities, emitted events,
+contact IDs, button/pressure behaviour, malformed reports and non-J700 paths.
+They do not calibrate a physical palm threshold or qualify suspend/resume.
+The twelve-case suite and its source-derived controls are source validation;
+new signed board/firmware hardware reports remain required for a release.
+
+Reproduce host controls with the pinned Rust toolchain and a C compiler supporting
+ASan/UBSan (the charging tests also run with `CC=gcc`):
+
+```sh
+RUSTUP_TOOLCHAIN=1.93.1 python3 tools/asahi/g17-resource-tests.py --mutations --output /tmp/sf-g17-results
+python3 tools/asahi/macsmc-charge-tests.py --mutations --output /tmp/sf-charge-results
+```
+
+The HID suite needs Clang and `qemu-system-aarch64`. Use a dedicated output
+directory; the sanitizer fragment adds KASAN, UBSan and lockdep options:
+
+```sh
+python3 tools/testing/kunit/kunit.py run --arch=arm64 --make_options=LLVM=1 --jobs=4 \
+  --build_dir=/tmp/sf-hid-kunit \
+  --kunitconfig=tools/testing/kunit/configs/siliconforest_magicmouse.config \
+  hid-magicmouse-mtp
+```
+
+Replace the fragment with `siliconforest_magicmouse_sanitize.config` and choose
+another output directory to request the sanitizer configuration. Exact final
+results, compiler versions, source hashes and production build results are
+recorded in the control repository's source-validation report. No target was
+installed or rebooted by this source integration, and the public installer
+catalog was not changed.
