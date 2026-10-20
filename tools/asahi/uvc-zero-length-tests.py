@@ -233,6 +233,12 @@ def main():
         variants["block-discovery"] = (ctrl.replace("size = ctrl->info.size;", "size = ctrl->info.size;\n" + guard, 1), video)
         variants["wrong-zero-errno"] = (ctrl.replace("ret = -ENODATA;", "ret = -EINVAL;", 1), video)
     receipt = {"source_ref": args.ref, "bodies_sha256": hashlib.sha256((ctrl+video).encode()).hexdigest(), "variants": {}}
+    failures = {
+        "no-xu-guard": r"Assertion .*xu\(values\[i\], 0\) == -ENODATA.* failed",
+        "no-transport-guard": r"AddressSanitizer: SEGV[^\n]*0x0*10\b",
+        "block-discovery": r"Assertion .*xu\(UVC_GET_LEN, 2\) == 0.* failed",
+        "wrong-zero-errno": r"Assertion .*xu\(values\[i\], 0\) == -ENODATA.* failed",
+    }
     with tempfile.TemporaryDirectory(prefix="sf-uvc-tests-") as tmp:
         for name, (cbody, vbody) in variants.items():
             source = Path(tmp) / f"{name}.c"
@@ -244,7 +250,7 @@ def main():
             passed = run.returncode == 0
             if name == "real" and not passed:
                 raise SystemExit(run.stdout + run.stderr)
-            if name != "real" and (passed or not re.search(r"Assertion .* failed|AddressSanitizer|runtime error:", run.stderr)):
+            if name != "real" and (passed or not re.search(failures[name], run.stderr)):
                 raise SystemExit(f"mutation {name} did not fail its runtime control: {run.stderr}")
             receipt["variants"][name] = {"exit": run.returncode, "stdout": run.stdout.strip(), "expected_failure": name != "real"}
     print(json.dumps(receipt, indent=2))
