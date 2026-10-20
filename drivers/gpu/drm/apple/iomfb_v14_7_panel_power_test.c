@@ -703,6 +703,43 @@ static void v14_pp_lid_unread(struct kunit *test)
 }
 
 /*
+ * The lid closed with the panel's power-off refused: IOMFB takes no frame
+ * for it then. Switching its CRTC off sends no black frame, and retries
+ * A472(0) once, through the lid path; DPMS off's own power-off, which
+ * needs a completed black frame, adds no second one. A later retry that
+ * the firmware accepts powers the panel off.
+ */
+static void v14_pp_lid_closed_refused_off(struct kunit *test)
+{
+	struct v14_pp *s = v14_pp_clamshell(test, 1);
+	struct apple_dcp_v14 *v14 = s->v14;
+
+	v14_pp_show(test, s, 0);
+	s->dcp->clamshell_crtc_on = true;
+	s->refuse = V14_PP_OFF;
+	iomfb_v14_7_set_lid(s->dcp, true);
+	V14_PP_EXPECT(s, V14_PP_BLACK, V14_PP_LID_CLOSED, V14_PP_OFF);
+	KUNIT_EXPECT_FALSE(test, v14->panel_off);
+	KUNIT_EXPECT_EQ(test, v14->lid, 2U);
+
+	s->refuse = V14_PP_OFF;
+	iomfb_v14_7_poweroff(s->dcp);
+	V14_PP_EXPECT(s, V14_PP_OFF);
+	KUNIT_EXPECT_FALSE(test, v14->panel_off);
+	KUNIT_EXPECT_TRUE(test, v14->panel_blank);
+	KUNIT_EXPECT_FALSE(test, v14->failed);
+	KUNIT_EXPECT_FALSE(test, iomfb_v14_7_clamshell_panel_off(s->dcp));
+
+	/* The CRTC on with the lid closed: nothing; off again: retried. */
+	iomfb_v14_7_poweron(s->dcp);
+	V14_PP_EXPECT_NONE(s);
+	iomfb_v14_7_poweroff(s->dcp);
+	V14_PP_EXPECT(s, V14_PP_OFF);
+	KUNIT_EXPECT_TRUE(test, v14->panel_off);
+	KUNIT_EXPECT_TRUE(test, iomfb_v14_7_clamshell_panel_off(s->dcp));
+}
+
+/*
  * The pipe driving the display on its Type-C route: DPMS powers that
  * display, not the panel, which stays as it was; no black frame.
  */
@@ -792,6 +829,7 @@ static struct kunit_case v14_pp_cases[] = {
 	KUNIT_CASE(v14_pp_callbacks),
 	KUNIT_CASE(v14_pp_lid),
 	KUNIT_CASE(v14_pp_lid_unread),
+	KUNIT_CASE(v14_pp_lid_closed_refused_off),
 	KUNIT_CASE(v14_pp_typec),
 	KUNIT_CASE(v14_pp_sleep),
 	KUNIT_CASE(v14_pp_inactive),
