@@ -39,7 +39,6 @@ STUBS = r'''
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32;
 #define BIT(n) (1U << (n))
 #define fallthrough __attribute__((fallthrough))
@@ -47,8 +46,21 @@ enum key { KEY_CH0I, KEY_CHTE, KEY_CH0C, KEY_CHLS, KEY_CHWA, KEY_COUNT };
 #define SMC_KEY(k) KEY_##k
 struct mutex { pthread_mutex_t real; };
 static _Thread_local int role;
+static pthread_mutex_t control = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
+static bool paused, second_started, second_done, second_waiting, race, fail_chls_read;
 static struct mutex *lock_mutex(struct mutex *m)
-{ assert(!pthread_mutex_lock(&m->real)); return m; }
+{
+    if (race && role == 2) {
+        int rc = pthread_mutex_trylock(&m->real);
+        if (!rc) return m;
+        assert(rc == EBUSY);
+        assert(!pthread_mutex_lock(&control)); second_waiting = true;
+        assert(!pthread_cond_broadcast(&condition));
+        assert(!pthread_mutex_unlock(&control));
+    }
+    assert(!pthread_mutex_lock(&m->real)); return m;
+}
 static void unlock_mutex(struct mutex **m)
 { assert(!pthread_mutex_unlock(&(*m)->real)); }
 #define guard(kind) struct mutex *held_lock __attribute__((cleanup(unlock_mutex), unused)) = lock_mutex
@@ -62,9 +74,6 @@ union power_supply_propval { int intval; };
 struct power_supply { struct macsmc_power *data; };
 static struct macsmc_power *power_supply_get_drvdata(struct power_supply *p)
 { return p->data; }
-static pthread_mutex_t control = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
-static bool paused, second_started, second_done, race, fail_chls_read;
 static int io(struct apple_smc *s)
 { s->calls++; return s->fault == s->calls ? -EIO : 0; }
 static int apple_smc_read_u16(struct apple_smc *s, enum key k, u16 *v)
@@ -76,14 +85,8 @@ static int apple_smc_read_u16(struct apple_smc *s, enum key k, u16 *v)
         assert(!pthread_mutex_lock(&control)); paused = true;
         assert(!pthread_cond_broadcast(&condition));
         while (!second_started) assert(!pthread_cond_wait(&condition, &control));
-        struct timespec limit; assert(!clock_gettime(CLOCK_REALTIME, &limit));
-        limit.tv_nsec += 100000000;
-        if (limit.tv_nsec >= 1000000000) { limit.tv_sec++; limit.tv_nsec -= 1000000000; }
-        while (!second_done) {
-            int wait = pthread_cond_timedwait(&condition, &control, &limit);
-            if (wait == ETIMEDOUT) break;
-            assert(!wait);
-        }
+        while (!second_done && !second_waiting)
+            assert(!pthread_cond_wait(&condition, &control));
         assert(!pthread_mutex_unlock(&control));
     }
     return 0;
@@ -203,7 +206,7 @@ static void *behaviour_writer(void *unused)
 static void interleaving(void)
 {
   reset();power.has_chls=true;smc.keys[KEY_CHLS]=80;race=true;
-  paused=second_started=second_done=false;pthread_t a,b;
+  paused=second_started=second_done=second_waiting=false;pthread_t a,b;
   assert(!pthread_create(&a,NULL,threshold_writer,NULL));
   assert(!pthread_create(&b,NULL,behaviour_writer,NULL));
   assert(!pthread_join(a,NULL));assert(!pthread_join(b,NULL));
