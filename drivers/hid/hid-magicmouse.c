@@ -1005,26 +1005,44 @@ static bool magicmouse_c1fe_report_valid(const u8 *data, int size)
 static bool magicmouse_haptic_click(struct magicmouse_sc *msc, u32 pressure,
 				    bool firmware_button);
 
+/*
+ * Doubles an area field. A field with bit 15 set reads negative: double it,
+ * do not shift it. The C1FE axes are advertised from 0, so a negative C1FE
+ * area is reported as 0.
+ */
+static int magicmouse_mtp_area(__le16 field, bool c1fe)
+{
+	int area = le16_to_int(field);
+
+	return (c1fe ? max(area, 0) : area) * 2;
+}
+
 static void report_finger_data(struct input_dev *input, int slot,
 			       const struct input_mt_pos *pos,
-			       const struct tp_finger *f, int tool,
-			       bool has_pressure)
+			       const struct tp_finger *f, int tool, bool c1fe)
 {
+	int orientation = J314_TP_MAX_FINGER_ORIENTATION -
+			  le16_to_int(f->orientation);
+
+	/* A C1FE orientation is kept within the range advertised for it. */
+	if (c1fe)
+		orientation = clamp(orientation, -J314_TP_MAX_FINGER_ORIENTATION,
+				    J314_TP_MAX_FINGER_ORIENTATION);
+
 	input_mt_slot(input, slot);
 	input_mt_report_slot_state(input, tool, true);
 
-	/* A field with bit 15 set reads negative: double it, do not shift it. */
 	input_report_abs(input, ABS_MT_TOUCH_MAJOR,
-			 le16_to_int(f->touch_major) * 2);
+			 magicmouse_mtp_area(f->touch_major, c1fe));
 	input_report_abs(input, ABS_MT_TOUCH_MINOR,
-			 le16_to_int(f->touch_minor) * 2);
+			 magicmouse_mtp_area(f->touch_minor, c1fe));
 	input_report_abs(input, ABS_MT_WIDTH_MAJOR,
-			 le16_to_int(f->tool_major) * 2);
+			 magicmouse_mtp_area(f->tool_major, c1fe));
 	input_report_abs(input, ABS_MT_WIDTH_MINOR,
-			 le16_to_int(f->tool_minor) * 2);
-	input_report_abs(input, ABS_MT_ORIENTATION,
-			 J314_TP_MAX_FINGER_ORIENTATION - le16_to_int(f->orientation));
-	if (has_pressure)
+			 magicmouse_mtp_area(f->tool_minor, c1fe));
+	input_report_abs(input, ABS_MT_ORIENTATION, orientation);
+	/* The C1FE report carries no pressure. */
+	if (!c1fe)
 		input_report_abs(input, ABS_MT_PRESSURE,
 				 le16_to_int(f->pressure));
 	input_report_abs(input, ABS_MT_POSITION_X, pos->x);
@@ -1102,7 +1120,7 @@ static int magicmouse_raw_event_mtp(struct hid_device *hdev,
 		     test_bit(magicmouse_c1fe_contact_id(f), msc->c1fe_palms)))
 			tool = MT_TOOL_PALM;
 		report_finger_data(input, msc->tracking_ids[i], &msc->pos[i], f,
-				   tool, !msc->mtp_c1fe);
+				   tool, msc->mtp_c1fe);
 		if (!msc->mtp_c1fe)
 			pressure += le16_to_int(f->pressure);
 	}
