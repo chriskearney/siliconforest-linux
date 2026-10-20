@@ -908,10 +908,10 @@ struct tp_mouse_report {
  * byte its state; 4 means touching. Touching contacts carry their touch and
  * tool areas and orientation, as in the J314 layout. Records in the
  * approach and lift-off states can have all-zero areas; one without a touch
- * area is skipped, like on the other MTP trackpads. A touching record is
- * reported even without one, as an earlier capture had real contacts with a
- * zero touch area. The controller has no force sensor, so the pressure word
- * is always zero.
+ * area, which reads 0 or below, is skipped, like on the other MTP trackpads.
+ * A touching record is reported even without one, as an earlier capture had
+ * real contacts with a zero touch area. The controller has no force sensor,
+ * so the pressure word is always zero.
  *
  * The low byte of the second word is the controller's class for the
  * contact: 1 for a thumb, 2 and 3 for fingers, and 6, 7 or 11 for a
@@ -1017,6 +1017,22 @@ static int magicmouse_mtp_area(__le16 field, bool c1fe)
 	return (c1fe ? max(area, 0) : area) * 2;
 }
 
+/*
+ * Whether a record is no contact, having no touch area. A C1FE touching
+ * record is a contact whatever its area. Any other C1FE record whose touch
+ * area reads 0 or below, which would be reported as 0, is none; the other
+ * trackpads keep reporting a negative one.
+ */
+static bool magicmouse_mtp_no_contact(const struct magicmouse_sc *msc,
+				      const struct tp_finger *f)
+{
+	int area = le16_to_int(f->touch_major);
+
+	if (!msc->mtp_c1fe)
+		return area == 0;
+	return !magicmouse_c1fe_touching(f) && area <= 0;
+}
+
 static void report_finger_data(struct input_dev *input, int slot,
 			       const struct input_mt_pos *pos,
 			       const struct tp_finger *f, int tool, bool c1fe)
@@ -1096,8 +1112,7 @@ static int magicmouse_raw_event_mtp(struct hid_device *hdev,
 	n = 0;
 	for (i = 0; i < tp_hdr->num_fingers; i++) {
 		f = (struct tp_finger *)(data + hdr_sz + i * touch_sz);
-		if (le16_to_int(f->touch_major) == 0 &&
-		    !(msc->mtp_c1fe && magicmouse_c1fe_touching(f)))
+		if (magicmouse_mtp_no_contact(msc, f))
 			continue;
 
 		hid_dbg(hdev, "ev x:%04x y:%04x\n", le16_to_int(f->abs_x),
