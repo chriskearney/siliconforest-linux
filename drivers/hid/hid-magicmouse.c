@@ -2603,3 +2603,7 @@ module_hid_driver(magicmouse_driver);
 
 MODULE_DESCRIPTION("Apple \"Magic\" Wireless Mouse driver");
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_HID_MAGICMOUSE_KUNIT_TEST)
+#include "hid-magicmouse-test.c"
+#endif
