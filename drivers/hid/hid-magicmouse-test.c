@@ -524,7 +524,8 @@ static void mm_c1fe_lift_reuse(struct kunit *test)
 
 /*
  * A touching record without a touch area is still the same contact; records
- * without one that approach or lift off are not reported.
+ * without one that approach or lift off are not reported, nor are they with
+ * one that reads negative.
  */
 static void mm_c1fe_zero_area(struct kunit *test)
 {
@@ -553,17 +554,30 @@ static void mm_c1fe_zero_area(struct kunit *test)
 	r.touch_major = 0;
 	mm_send1(s, r);
 	KUNIT_EXPECT_EQ(test, mm_active(s), 0);
+	r.touch_major = 0x8000;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_active(s), 0);
+	r.state = MM_LIFTING;
+	r.touch_major = 0xffff;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_active(s), 0);
 
 	/* Approach and lift-off records with a touch area are reported. */
+	r.state = MM_APPROACH;
 	r.touch_major = 100;
 	mm_send1(s, r);
 	KUNIT_EXPECT_EQ(test, mm_active(s), 1);
+	r.state = MM_LIFTING;
+	r.x = 12;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_get(s, 12, 10, ABS_MT_TOUCH_MAJOR), 200);
 }
 
 /*
  * Fields with bit 15 set read negative: J700 areas are reported as 0 and its
- * orientation within range, and such a tool area makes no palm. The largest
- * positive fields fill the advertised ranges.
+ * orientation within range, and such a tool area makes no palm. Such a touch
+ * area makes no contact of an approach or lift-off record, but a touching
+ * record is one. The largest positive fields fill the advertised ranges.
  */
 static void mm_c1fe_high_bit(struct kunit *test)
 {
@@ -598,6 +612,22 @@ static void mm_c1fe_high_bit(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mm_get(s, 23, 30, ABS_MT_TOUCH_MAJOR), 2 * S16_MAX);
 	KUNIT_EXPECT_EQ(test, mm_get(s, 23, 30, ABS_MT_WIDTH_MINOR), 2 * S16_MAX);
 	KUNIT_EXPECT_EQ(test, mm_tool(s, 23, 30), MT_TOOL_PALM);
+
+	mm_send0(s);
+	r = mm_finger(3, 40, 30);
+	r.state = MM_APPROACH;
+	r.touch_major = 0x8000;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_active(s), 0);
+	r.state = MM_LIFTING;
+	r.touch_major = 0xffff;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_active(s), 0);
+	r.state = MM_TOUCHING;
+	r.touch_major = 0x8000;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_active(s), 1);
+	KUNIT_EXPECT_EQ(test, mm_get(s, 40, 30, ABS_MT_TOUCH_MAJOR), 0);
 }
 
 /*
@@ -684,8 +714,8 @@ static void mm_c1fe_two_contacts(struct kunit *test)
 /*
  * The other MTP and SPI trackpads report what they did before palm
  * rejection: zero-area records are skipped whatever their state, palm-sized
- * contacts are fingers, the areas are doubled, negative ones included, and
- * pressure and the firmware's button are reported.
+ * contacts are fingers, the areas are doubled, negative ones included and in
+ * any state, and pressure and the firmware's button are reported.
  */
 static void mm_other_reports(struct kunit *test)
 {
@@ -694,9 +724,9 @@ static void mm_other_reports(struct kunit *test)
 
 	for (i = 0; i < ARRAY_SIZE(boards); i++) {
 		struct mm_test *s = mm_setup(test, boards[i]);
-		struct mm_rec r[3] = {
+		struct mm_rec r[4] = {
 			mm_palm(1, 100, 100), mm_finger(2, 900, 900),
-			mm_finger(3, 500, 500),
+			mm_finger(3, 500, 500), mm_finger(4, 300, 300),
 		};
 
 		r[0].class = 6;
@@ -706,8 +736,11 @@ static void mm_other_reports(struct kunit *test)
 		r[1].tool_minor = 0xffff;
 		r[1].orientation = 0x8000;
 		r[2].touch_major = 0;
-		mm_send(s, r, 3, 1);
-		KUNIT_EXPECT_EQ(test, mm_active(s), 2);
+		r[3].state = MM_LIFTING;
+		r[3].touch_major = 0x8000;
+		mm_send(s, r, 4, 1);
+		KUNIT_EXPECT_EQ(test, mm_active(s), 3);
+		KUNIT_EXPECT_EQ(test, mm_get(s, 300, 300, ABS_MT_TOUCH_MAJOR), -65536);
 		KUNIT_EXPECT_NULL(test, mm_slot(s, 500, 500));
 		KUNIT_EXPECT_EQ(test, mm_tool(s, 100, 100), MT_TOOL_FINGER);
 		KUNIT_EXPECT_EQ(test, mm_get(s, 100, 100, ABS_MT_TOUCH_MAJOR), 3000);
