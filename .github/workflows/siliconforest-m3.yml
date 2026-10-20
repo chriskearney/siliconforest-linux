@@ -17,6 +17,8 @@ jobs:
           RUSTUP_TOOLCHAIN: 1.93.1
       - name: USB3 handoff failure and retry controls
         run: python3 tools/asahi/atc-usb3-tests.py --mutations
+      - name: UVC zero-length control and USB error-path controls
+        run: python3 tools/asahi/uvc-zero-length-tests.py --mutations
       - name: J516C record-word exception controls
         env:
           RUSTUP_TOOLCHAIN: 1.93.1
