@@ -1013,14 +1013,15 @@ static void report_finger_data(struct input_dev *input, int slot,
 	input_mt_slot(input, slot);
 	input_mt_report_slot_state(input, tool, true);
 
+	/* A field with bit 15 set reads negative: double it, do not shift it. */
 	input_report_abs(input, ABS_MT_TOUCH_MAJOR,
-			 le16_to_int(f->touch_major) << 1);
+			 le16_to_int(f->touch_major) * 2);
 	input_report_abs(input, ABS_MT_TOUCH_MINOR,
-			 le16_to_int(f->touch_minor) << 1);
+			 le16_to_int(f->touch_minor) * 2);
 	input_report_abs(input, ABS_MT_WIDTH_MAJOR,
-			 le16_to_int(f->tool_major) << 1);
+			 le16_to_int(f->tool_major) * 2);
 	input_report_abs(input, ABS_MT_WIDTH_MINOR,
-			 le16_to_int(f->tool_minor) << 1);
+			 le16_to_int(f->tool_minor) * 2);
 	input_report_abs(input, ABS_MT_ORIENTATION,
 			 J314_TP_MAX_FINGER_ORIENTATION - le16_to_int(f->orientation));
 	if (has_pressure)
