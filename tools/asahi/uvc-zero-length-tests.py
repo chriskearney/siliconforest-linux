@@ -62,7 +62,7 @@ typedef uint32_t u32;
 #define dev_warn_once(...) ((void)0)
 #define dev_err(...) ((void)0)
 #define dev_err_ratelimited(...) ((void)0)
-struct uvc_control { unsigned index; struct { u16 size; u32 flags; } info; };
+struct uvc_control { u8 index; struct { u16 size; u32 flags; } info; };
 struct uvc_entity { int type, id; unsigned ncontrols; u8 guid[16]; struct uvc_control *controls; };
 struct uvc_device { int intfnum; };
 struct uvc_video_chain { struct uvc_entity *entities; struct uvc_device *dev; int ctrl_mutex; };
