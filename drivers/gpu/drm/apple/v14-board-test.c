@@ -174,12 +174,52 @@ static void v14_board_unchanged(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, known);
 }
 
+/*
+ * DPMS panel power is the J613's, on its own 14.7 image only: not the J615
+ * on the same DCP and image, nor the T6030 or T6031 panels.
+ */
+static void v14_board_panel_power(struct kunit *test)
+{
+	static const char *const j615[] = { "apple,j615", "apple,t8122", "apple,arm-platform",
+					    NULL };
+	const struct dcp_v14_board *b;
+	bool known;
+
+	b = board_for("apple,t8122-dcp", j613, &known);
+	KUNIT_ASSERT_NOT_NULL(test, b);
+	KUNIT_EXPECT_TRUE(test, b->panel_power);
+	KUNIT_EXPECT_FALSE(test, b->panel_nits);
+	KUNIT_EXPECT_TRUE(test, dcp_v14_board_admits(b, J613_DCP_IMAGE));
+	KUNIT_EXPECT_FALSE(test, dcp_v14_board_admits(b, T6030_DCP_IMAGE));
+	KUNIT_EXPECT_FALSE(test, dcp_v14_board_admits(b, J516C_DCP_IMAGE));
+	KUNIT_EXPECT_FALSE(test, dcp_v14_board_admits(b, NULL));
+
+	b = board_for("apple,t8122-dcp", j615, &known);
+	KUNIT_ASSERT_NOT_NULL(test, b);
+	KUNIT_EXPECT_STREQ(test, b->name, "J615");
+	KUNIT_EXPECT_FALSE(test, b->panel_power);
+
+	b = board_for("apple,t6030-dcp", j516s, &known);
+	KUNIT_ASSERT_NOT_NULL(test, b);
+	KUNIT_EXPECT_FALSE(test, b->panel_power);
+	KUNIT_EXPECT_TRUE(test, b->panel_nits);
+
+	b = board_for("apple,t6031-dcp", j516c, &known);
+	KUNIT_ASSERT_NOT_NULL(test, b);
+	KUNIT_EXPECT_FALSE(test, b->panel_power);
+
+	b = board_for("apple,t6031-dcp", j514c, &known);
+	KUNIT_ASSERT_NOT_NULL(test, b);
+	KUNIT_EXPECT_FALSE(test, b->panel_power);
+}
+
 static struct kunit_case v14_board_cases[] = {
 	KUNIT_CASE(v14_board_j516c),
 	KUNIT_CASE(v14_board_j514c),
 	KUNIT_CASE(v14_board_t6031_other_boards),
 	KUNIT_CASE(v14_board_j516c_image),
 	KUNIT_CASE(v14_board_unchanged),
+	KUNIT_CASE(v14_board_panel_power),
 	{}
 };
 

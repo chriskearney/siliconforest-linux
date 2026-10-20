@@ -555,6 +555,17 @@ static void dcp_v14_stopped_work(struct work_struct *work)
 	}
 }
 
+/* The call on the link; the KUnit tests answer it as the firmware would. */
+static int dcp_v14_link_rpc(struct apple_dcp_v14 *v14, u32 tag, const void *in, u32 in_size,
+			    void *out, u32 out_size, u32 completion,
+			    dcp_v14_admit_fn admit, void *admit_cookie, bool *vetoed)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_link_rpc, v14, tag, in, in_size, out, out_size,
+				   completion, admit, admit_cookie, vetoed);
+	return dcp_v14_link_call_guarded(&v14->link, tag, in, in_size, out, out_size, completion,
+					 dcp_v14_callback, v14, admit, admit_cookie, vetoed);
+}
+
 /* Called with the lock held, or from a callback. */
 static int dcp_v14_call_guarded(struct apple_dcp_v14 *v14, u32 tag, const void *in, u32 in_size,
 			void *out, u32 out_size, u32 completion,
@@ -571,8 +582,8 @@ static int dcp_v14_call_guarded(struct apple_dcp_v14 *v14, u32 tag, const void *
 		return -EAGAIN;
 	}
 	dev_dbg(v14->dev, "call %#x in %u out %u\n", tag, in_size, out_size);
-	ret = dcp_v14_link_call_guarded(&v14->link, tag, in, in_size, out, out_size, completion,
-				dcp_v14_callback, v14, admit, admit_cookie, &vetoed);
+	ret = dcp_v14_link_rpc(v14, tag, in, in_size, out, out_size, completion,
+			       admit, admit_cookie, &vetoed);
 	if (ret && !vetoed) {
 		v14->failed = true;
 		dev_err(v14->dev, "DCP call %#x failed: %d; recovery requires a reboot\n",
@@ -4204,4 +4215,5 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 #include "iomfb_v14_7_external_audio_test.c"
 #include "iomfb_v14_7_catalog_profile_test.c"
 #include "iomfb_v14_7_kept_on_test.c"
+#include "iomfb_v14_7_panel_power_test.c"
 #endif
