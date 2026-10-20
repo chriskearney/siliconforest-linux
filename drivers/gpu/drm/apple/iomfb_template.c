@@ -1453,6 +1453,7 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 	struct drm_plane_state *new_state, *old_state;
 	struct drm_crtc_state *crtc_state;
 	struct DCP_FW_NAME(dcp_swap_submit_req) *req = &DCP_FW_UNION(dcp->swap);
+	bool use_external_srgb = READ_ONCE(external_srgb);
 	int plane_idx, l;
 	int has_surface = 0;
 
@@ -1540,14 +1541,12 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		    req->surf[l].base.colorspace == DCP_COLORSPACE_BG_SRGB)
 			req->surf[l].base.colorspace = DCP_COLORSPACE_NATIVE;
 
-		/* RGB planes arrive tagged "native" (plane.c). The desktop
-		 * renders sRGB, and external Apple panels (Studio Display,
-		 * XDR) are wide gamut, so a native tag puts sRGB values
-		 * straight onto P3 primaries and oversaturates everything.
-		 * Tag the surface sRGB instead and let DCP convert to the
-		 * panel gamut in hardware, as macOS does.
+		/*
+		 * Opt in to DCP conversion for an unmanaged sRGB desktop on a
+		 * wide-gamut external panel. A compositor doing its own gamut
+		 * mapping must keep this off to avoid a second conversion.
 		 */
-		else if (external_srgb &&
+		else if (use_external_srgb &&
 			 dcp->connector_type != DRM_MODE_CONNECTOR_eDP &&
 			 !new_state->fb->format->is_yuv &&
 			 req->surf[l].base.colorspace == DCP_COLORSPACE_NATIVE)

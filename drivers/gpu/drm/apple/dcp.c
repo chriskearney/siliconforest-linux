@@ -84,10 +84,10 @@ static bool unstable_edid = true;
 module_param(unstable_edid, bool, 0644);
 MODULE_PARM_DESC(unstable_edid, "Enable unstable EDID retrival support");
 
-bool external_srgb = true;
+bool external_srgb;
 module_param(external_srgb, bool, 0644);
 MODULE_PARM_DESC(external_srgb,
-		 "Tag RGB framebuffers for external displays as sRGB so DCP converts them to the panel's native gamut (default: Y)");
+		 "Opt in to tagging external RGB framebuffers as sRGB (default: N; disable for compositor colour management)");
 
 /*
  * H17-generation firmware (T8140 H17P, T8142 H17G) runs aurora-wip's
