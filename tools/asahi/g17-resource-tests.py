@@ -371,6 +371,47 @@ fn main() {
     checked_run([os.environ.get('RUSTC','rustc'),'--edition=2021',str(fixture),'-o',str(root/'shared-alias-controls')],check=True)
     checked_run([str(root/'shared-alias-controls')],check=True)
 
+def placement_mode_tests(root, source):
+    text = (source / 'mmu.rs').read_text()
+    methods = []
+    for name in ['map_in_range_with_guard_size', 'map_in_range_lowest']:
+        start = text.index('    pub(crate) fn ' + name + '(')
+        begin = text.index('{', start)
+        end, depth = begin + 1, 1
+        while depth:
+            depth += (text[end] == '{') - (text[end] == '}')
+            end += 1
+        methods.append(text[start:end])
+    fixture = root / 'placement-mode-controls.rs'
+    fixture.write_text("""#![allow(dead_code)]
+use std::ops::Range;
+type Result<T> = std::result::Result<T,i32>;
+type Prot=u8;
+mod gem {pub struct Object;}
+mod mm {#[derive(Clone,Copy,Debug,PartialEq)] pub enum InsertMode {Best,Low}}
+struct KernelMapping {object:Range<usize>,alignment:u64,range:Range<u64>,prot:Prot,guard:usize,mode:mm::InsertMode}
+struct Vm;
+impl Vm {
+ fn map_in_range_with_mode(&self,_gem:&gem::Object,object:Range<usize>,alignment:u64,range:Range<u64>,prot:Prot,guard:usize,mode:mm::InsertMode)->Result<KernelMapping> {
+ Ok(KernelMapping {object,alignment,range,prot,guard,mode}) }
+""" + '\n'.join(methods) + """
+}
+fn main() {
+ for guard in [0,16384,32768] {
+  let ordinary=Vm.map_in_range_with_guard_size(&gem::Object,16384..49152,16384,0x7004000000..0x7080000000,3,guard).unwrap();
+  let search=Vm.map_in_range_lowest(&gem::Object,16384..49152,16384,0x7004000000..0x7080000000,3,guard).unwrap();
+  for (m,mode) in [(ordinary,mm::InsertMode::Best),(search,mm::InsertMode::Low)] {
+   assert_eq!(m.mode,mode);assert_eq!(m.object,16384..49152);assert_eq!(m.alignment,16384);
+   assert_eq!(m.range,0x7004000000..0x7080000000);assert_eq!(m.prot,3);assert_eq!(m.guard,guard);
+  }
+ }
+ println!("shared MMU wrappers: ordinary best-fit, explicit lowest-fit, all arguments and three guard sizes preserved");
+}
+""")
+    checked_run([os.environ.get('RUSTC', 'rustc'), '--edition=2021', str(fixture), '-o', str(root / 'placement-mode-controls')])
+    checked_run([str(root / 'placement-mode-controls')])
+
+
 def backing_lifetime_tests(root, source):
     text = (source / 'g17/freelist.rs').read_text()
     def item(text, start):
@@ -462,6 +503,7 @@ def controls(output, source):
     queue_tests(output, source)
     shared_alias_tests(output, source)
     backing_lifetime_tests(output, source)
+    placement_mode_tests(output, source)
 
 
 def main():
@@ -470,6 +512,8 @@ def main():
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     mutations = {
+        "ordinary-placement-becomes-lowest": ("mmu.rs",
+            "prot, guard_size, mm::InsertMode::Best,", "prot, guard_size, mm::InsertMode::Low,"),
         "initialize-before-owning-aliases": ("g17/freelist.rs", 'let mut value = Self {\n            _client: client,\n            _global: global,\n            pages: Pages { backing, blocks, layout: RunLayout::Render },\n        };\n        value.pages.initialize()?;\n        Ok(value)', 'let pages = Pages::from_backing(backing, blocks, RunLayout::Render)?;\n        Ok(Self { _client: client, _global: global, pages })'),
         'reassign-wrong-owner': ('g17/queue/admission.rs',
             '|| expected.is_some_and(|expected| expected != old)', '|| false'),
