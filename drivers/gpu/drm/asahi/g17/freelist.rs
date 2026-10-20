@@ -84,15 +84,17 @@ impl Pages {
         )?;
         Self::from_backing(backing, blocks, layout)
     }
-    fn from_backing(mut backing: KernelObject, blocks: usize, layout: RunLayout) -> Result<Self> {
-        backing.classify_memory(crate::agx_memory_stats::KernelCategory::FreeList);
-        let base = backing.gpu_va();
-        backing.initialize::<PoolTables>(0, |tables| tables.init(base, blocks, layout))?;
-        Ok(Self {
-            backing,
-            blocks,
-            layout,
-        })
+    fn from_backing(backing: KernelObject, blocks: usize, layout: RunLayout) -> Result<Self> {
+        let mut pages = Self { backing, blocks, layout };
+        pages.initialize()?;
+        Ok(pages)
+    }
+    fn initialize(&mut self) -> Result {
+        self.backing.classify_memory(crate::agx_memory_stats::KernelCategory::FreeList);
+        let base = self.backing.gpu_va();
+        let blocks = self.blocks;
+        let layout = self.layout;
+        self.backing.initialize::<PoolTables>(0, |tables| tables.init(base, blocks, layout))
     }
     /// Fresh compute backing at the admitted capacity, built off-lock.
     pub(crate) fn compute_sized(alloc: &Allocator<'_>, blocks: usize) -> Result<Self> {
@@ -155,12 +157,15 @@ impl RenderBacking {
             CpuMap::WriteCombined,
             [render_global, client],
         )?;
-        let pages = Pages::from_backing(backing, blocks, RunLayout::Render)?;
-        Ok(Self {
+        // Own aliases before the backing through every fallible initialization
+        // path, as well as through normal destruction of a completed pool.
+        let mut value = Self {
             _client: client,
             _global: global,
-            pages,
-        })
+            pages: Pages { backing, blocks, layout: RunLayout::Render },
+        };
+        value.pages.initialize()?;
+        Ok(value)
     }
 }
 
