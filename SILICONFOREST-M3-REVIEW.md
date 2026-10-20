@@ -347,3 +347,42 @@ in PR16 and the control repository's source-validation ledger. These are source
 and simulated-device checks. This integration makes no local camera, external
 10-bit/colourimeter/ICC or physical J613 sleep/wake qualification claim, and does
 not update a signed installer release.
+
+## G17 resources, charge limits and J700 input (2026-10-19)
+
+The integration starts at `70ba30325164`. Omacom PR154 remains explicitly held;
+this series changes no Thunderbolt bandwidth policy. Public upstream pins and
+selected commits are recorded in `SILICONFOREST-M3-SOURCES.json`.
+
+Only the three new resource commits from [Omacom PR151](https://github.com/omacom/linux-aurora/pull/151)
+are carried after the existing telemetry integration. Unused warming can yield
+capacity without recycling published physical identities. Compute can replace
+only the exact tracked bootstrap reservations. Render-pool backing searches for
+one address available in all three VMs, keeping one allocation and rolling back
+partial aliases before releasing the canonical reservation. The ordinary MMU
+mapping wrapper retains best-fit placement; the new lowest-fit wrapper is explicit.
+
+A downstream ownership fix builds the alias-owning render object before fallible
+table initialization. Current admitted bounds and alignment appear to exclude
+those errors; this is defensive cleanup hardening, not a reproduced GPU failure.
+The host harness executes the actual constructor and placement wrappers as well
+as admission, queue-ID and common-hole methods. It checks 262144 combinations
+against an independent small-address-space oracle, and rejects thirteen executable
+mutations. It simulates the MMU/firmware dependencies and does not execute kernel
+PTE operations, firmware retirement or GPU workloads. Upstream remains draft;
+its hardware measurements do not qualify this downstream build.
+
+[Asahi PR521](https://github.com/AsahiLinux/linux/pull/521) is imported as one
+battery topic commit, excluding its unrelated aggregate history. `auto` caps
+charging and `auto-discharge` requests active discharge toward the limit on CHLS
+machines. Existing persistent CHLS settings are retained, so selecting `auto`
+is required to clear a previously enabled force-discharge preference. CHWA boards
+do not gain this mode. This integration does not write any target's SMC settings.
+
+Review fixes serialize charging-setting read-modify-writes, expose both modes
+on CHLS-only machines, and read CHLS before clearing inhibitors. The actual
+capability helper and callbacks pass 249 host cases with Clang and GCC ASan/UBSan,
+including all 32 capability combinations, SMC faults and a forced writer race.
+Eight executable mutations fail. A failed multi-key SMC write can still leave a
+partial firmware change; no atomic hardware transaction or persistence test is
+claimed.

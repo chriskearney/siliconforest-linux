@@ -173,6 +173,51 @@
         "Source and QEMU tests do not qualify J613 DPMS/suspend/resume on physical hardware.",
         "No local J613 hardware test, panel-power measurement or lock-screen security qualification."
       ]
+    },
+    {
+      "author": "Dj",
+      "url": "https://github.com/omacom/linux-aurora/pull/151",
+      "head": "8f429c0693cfed05f652a166da976f1f8d87ad31",
+      "selected_upstream_commits": [
+        "c61760ecddda6ee51b6ea19ef036a0e919cf559e",
+        "d14aac52817a8b1d650cc9dcf3a274b6e0a27404",
+        "8f429c0693cfed05f652a166da976f1f8d87ad31"
+      ],
+      "downstream_carries": [
+        "e540178c523d",
+        "a7e6b4189764",
+        "e28bdd9a4ac1"
+      ],
+      "downstream_fixes": [
+        "f52334603f88"
+      ],
+      "scope": "G17-only reclaim of unused warming, exact unused bootstrap queue-ID replacement, and common render-backing address search. Existing telemetry lifetime fixes retained; shared MMU wrappers preserve ordinary best-fit placement.",
+      "review_notes": [
+        "Upstream remains draft; only the three new resource commits follow already-carried telemetry.",
+        "Own both aliases before fallible render-table initialization; enforce drop ordering on success and injected failures. Current valid bounds appear to exclude those initialization failures, so no reproduced hardware bug is claimed."
+      ],
+      "validation_limits": "Source-derived host controls and production compilation; no new Neo/G17 hardware, firmware execution, timing or game qualification."
+    },
+    {
+      "author": "James A DellaMorte",
+      "url": "https://github.com/AsahiLinux/linux/pull/521",
+      "head": "922f0e157063a5aa20da5410fced6a68edf1e12a",
+      "selected_upstream_commits": [
+        "922f0e157063a5aa20da5410fced6a68edf1e12a"
+      ],
+      "downstream_carries": [
+        "db1a4e4a72e6"
+      ],
+      "downstream_fixes": [
+        "b2e573ff0cff"
+      ],
+      "scope": "Expose optional auto-discharge on CHLS machines and preserve its setting when changing the threshold. Import the topic commit only, not the PR aggregate history.",
+      "review_notes": [
+        "Serialize threshold and behaviour read-modify-writes with a per-device charging mutex.",
+        "Advertise auto and auto-discharge on CHLS-only machines.",
+        "Read CHLS before clearing inhibitors; preserve existing persistent preferences and CHWA behaviour."
+      ],
+      "validation_limits": "SMC transport and locking are simulated in host tests. No battery discharge, migration, firmware persistence or board hardware test is claimed. Multi-key SMC write failures can still leave partial changes and are reported to the caller."
     }
   ],
   "import_seed_with_initial_review_fixes": "8a29680940cde36759e2061d3c8a8e7e9df70fa9",
@@ -275,5 +320,15 @@
       "record_mutations_rejected": 3
     },
     "provenance": "Chris-authored downstream implementation and tests, with Generated-by trailers. Existing upstream authorship and supplied sign-offs are retained in the earlier carries."
+  },
+  "resource_input_power_review": {
+    "siliconforest_base": "70ba3032516419b6c7d643c5c82da68d8b470d05",
+    "held": [
+      {
+        "url": "https://github.com/omacom/linux-aurora/pull/154",
+        "reason": "Owner explicitly deferred; no Thunderbolt bandwidth-sharing changes imported."
+      }
+    ],
+    "hardware_qualification": "Not performed by this source integration; no public release or installer artifact changes."
   }
 }
