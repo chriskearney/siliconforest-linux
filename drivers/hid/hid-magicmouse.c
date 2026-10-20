@@ -261,6 +261,8 @@ struct effect_job {
  * @mtp_c1fe: Whether the MTP trackpad sends the J700 C1FE report layout.
  * @c1fe_palms: C1FE contact IDs whose tool area reached palm size.
  * @c1fe_touching: C1FE contact IDs whose record was touching in the last report.
+ * @c1fe_reset_pending: Forget @c1fe_palms and @c1fe_touching at the next
+ *	C1FE report; set when the trackpad is opened.
  * @ntouches: Number of touches in most recent touch report.
  * @scroll_accel: Number of consecutive scroll motions.
  * @scroll_jiffies: Time of last scroll motion.
@@ -289,6 +291,7 @@ struct magicmouse_sc {
 	bool mtp_c1fe;
 	DECLARE_BITMAP(c1fe_palms, U8_MAX + 1);
 	DECLARE_BITMAP(c1fe_touching, U8_MAX + 1);
+	bool c1fe_reset_pending;
 
 	int ntouches;
 	int scroll_accel;
@@ -330,11 +333,25 @@ static inline int le16_to_int(__le16 x)
 	return (signed short)le16_to_cpu(x);
 }
 
+/*
+ * The J700 trackpad's transport delivers no reports while it is closed,
+ * lift-offs included, so a contact touching in the first report after it is
+ * opened may be a new one under the ID of an old palm. Have the report path,
+ * the only writer of the contact histories, forget them first.
+ */
+static void magicmouse_c1fe_request_reset(struct magicmouse_sc *msc)
+{
+	WRITE_ONCE(msc->c1fe_reset_pending, true);
+}
+
 static int magicmouse_open(struct input_dev *dev)
 {
 	struct hid_device *hdev = input_get_drvdata(dev);
 	struct magicmouse_sc *msc = hid_get_drvdata(hdev);
 	int ret;
+
+	if (msc->mtp_c1fe)
+		magicmouse_c1fe_request_reset(msc);
 
 	ret = hid_hw_open(hdev);
 	if (ret)
@@ -924,7 +941,9 @@ struct tp_mouse_report {
  * 4170 and fingers up to 3280. A contact whose tool area has passed 4400 is
  * reported as a palm until it lifts, including in its lift-off records. A
  * record that enters the touching state is a new contact, even when the
- * previous report had its ID on a contact lifting off.
+ * previous report had its ID on a contact lifting off. As no report arrives
+ * while the trackpad is closed, what was learnt of the contacts before it is
+ * opened again is forgotten.
  */
 #define MAGICMOUSE_C1FE_REPORT_ID	0x75
 #define MAGICMOUSE_C1FE_HEADER_SIZE	32
@@ -954,7 +973,9 @@ static bool magicmouse_c1fe_classed_palm(const struct tp_finger *f)
 /*
  * Track the contacts whose tool area has reached palm size since landing. A
  * record touching now that was not touching in the previous report has
- * landed, and any palm that had its ID before has lifted.
+ * landed, and any palm that had its ID before has lifted. Called with a
+ * well-formed report only, so that the first after an open forgets the
+ * contacts before it.
  */
 static void magicmouse_c1fe_update_palms(struct magicmouse_sc *msc,
 					 const u8 *records, int count)
@@ -965,6 +986,11 @@ static void magicmouse_c1fe_update_palms(struct magicmouse_sc *msc,
 	bool landed;
 	u8 id;
 	int i;
+
+	if (xchg(&msc->c1fe_reset_pending, false)) {
+		bitmap_zero(msc->c1fe_palms, U8_MAX + 1);
+		bitmap_zero(msc->c1fe_touching, U8_MAX + 1);
+	}
 
 	bitmap_zero(palms, U8_MAX + 1);
 	bitmap_zero(touching, U8_MAX + 1);
