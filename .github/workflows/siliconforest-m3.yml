@@ -19,6 +19,8 @@ jobs:
         run: python3 tools/asahi/atc-usb3-tests.py --mutations
       - name: UVC zero-length control and USB error-path controls
         run: python3 tools/asahi/uvc-zero-length-tests.py --mutations
+      - name: Display colour selection and surface-format controls
+        run: python3 tools/asahi/display-colour-tests.py --mutations
       - name: J516C record-word exception controls
         env:
           RUSTUP_TOOLCHAIN: 1.93.1
