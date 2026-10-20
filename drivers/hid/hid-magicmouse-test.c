@@ -30,6 +30,7 @@ struct mm_test {
 	struct input_dev *input;
 	struct input_handler handler;
 	struct input_device_id ids[2];
+	struct input_handle *handle;
 	u8 *buf;
 	unsigned int events;
 	unsigned int pressure_events;
@@ -95,6 +96,7 @@ static int mm_connect(struct input_handler *handler, struct input_dev *dev,
 	handle->dev = dev;
 	handle->handler = handler;
 	handle->name = "magicmouse-kunit";
+	((struct mm_test *)handler->private)->handle = handle;
 
 	ret = input_register_handle(handle);
 	if (ret)
@@ -117,6 +119,21 @@ static void mm_disconnect(struct input_handle *handle)
 	input_unregister_handle(handle);
 	kfree(handle);
 }
+
+/* A transport for the trackpad's open and close to reach; nothing to start. */
+static int mm_ll_open(struct hid_device *hdev)
+{
+	return 0;
+}
+
+static void mm_ll_close(struct hid_device *hdev)
+{
+}
+
+static const struct hid_ll_driver mm_ll_driver = {
+	.open = mm_ll_open,
+	.close = mm_ll_close,
+};
 
 static void mm_unregister_handler(void *handler)
 {
@@ -147,6 +164,9 @@ static struct mm_test *mm_setup(struct kunit *test, enum mm_board board)
 
 	s->hdev->bus = board == MM_SPI ? BUS_SPI : BUS_HOST;
 	s->hdev->dev.init_name = "magicmouse-kunit";
+	s->hdev->ll_driver = &mm_ll_driver;
+	s->hdev->driver = &magicmouse_driver;
+	mutex_init(&s->hdev->ll_open_lock);
 	s->msc->hdev = s->hdev;
 	s->msc->mtp_c1fe = board == MM_C1FE;
 	if (board == MM_SPI) {
@@ -162,6 +182,7 @@ static struct mm_test *mm_setup(struct kunit *test, enum mm_board board)
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, input);
 	input->name = "magicmouse-kunit";
 	input->id.bustype = s->hdev->bus;
+	input_set_drvdata(input, s->hdev);
 	s->msc->input = input;
 
 	/* What hid-input may have mapped from the report descriptor. */
@@ -175,9 +196,16 @@ static struct mm_test *mm_setup(struct kunit *test, enum mm_board board)
 		input_free_device(input);
 		KUNIT_FAIL_AND_ABORT(test, "setup_input: %d", ret);
 	}
-	/* Opening would start the transport, which there is none of. */
-	input->open = NULL;
-	input->close = NULL;
+	/*
+	 * The handler opens the device through the driver's open, which has
+	 * no dimensions to query here. An SPI trackpad's open would send it
+	 * the multitouch enable, so that one is left out.
+	 */
+	s->msc->query_dimensions = false;
+	if (board == MM_SPI) {
+		input->open = NULL;
+		input->close = NULL;
+	}
 
 	ret = input_register_device(input);
 	if (ret) {
@@ -763,6 +791,65 @@ static void mm_other_reports(struct kunit *test)
 	}
 }
 
+/*
+ * No report arrives while the J700 trackpad is closed, so a lift-off can go
+ * unseen: once it is opened again, a contact touching under the ID of an old
+ * palm is a new one. Reports of the wrong shape leave that for the next good
+ * one, and the other trackpads are not asked to forget anything.
+ */
+static void mm_c1fe_reopen(struct kunit *test)
+{
+	struct mm_test *s = mm_setup(test, MM_C1FE);
+	struct mm_rec r = mm_palm(7, 100, 100);
+	int size;
+
+	mm_send1(s, r);
+	KUNIT_EXPECT_FALSE(test, READ_ONCE(s->msc->c1fe_reset_pending));
+	r.tool_major = 900;
+	r.x = 110;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_tool(s, 110, 100), MT_TOOL_PALM);
+
+	input_close_device(s->handle);
+	KUNIT_EXPECT_EQ(test, s->input->users, 0U);
+	KUNIT_ASSERT_EQ(test, input_open_device(s->handle), 0);
+	KUNIT_EXPECT_TRUE(test, READ_ONCE(s->msc->c1fe_reset_pending));
+
+	size = mm_build(s, &r, 1, 0);
+	s->buf[3] = 5;
+	KUNIT_EXPECT_EQ(test, mm_send_raw(s, size), 0);
+	size = mm_build(s, &r, 1, 0);
+	KUNIT_EXPECT_EQ(test, mm_send_raw(s, size + 1), 0);
+	KUNIT_EXPECT_TRUE(test, READ_ONCE(s->msc->c1fe_reset_pending));
+
+	/* The palm lifted unseen; a finger touches under its ID. */
+	r = mm_finger(7, -500, 400);
+	mm_send1(s, r);
+	KUNIT_EXPECT_FALSE(test, READ_ONCE(s->msc->c1fe_reset_pending));
+	KUNIT_EXPECT_EQ(test, mm_tool(s, -500, 400), MT_TOOL_FINGER);
+
+	/* From there on the latch works as before. */
+	r.tool_major = 2600;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_tool(s, -500, 400), MT_TOOL_PALM);
+	r.tool_major = 900;
+	r.x = -490;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_tool(s, -490, 400), MT_TOOL_PALM);
+
+	/* A palm still palm-sized after an open is still one. */
+	input_close_device(s->handle);
+	KUNIT_ASSERT_EQ(test, input_open_device(s->handle), 0);
+	r.tool_major = 2600;
+	r.x = -480;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_tool(s, -480, 400), MT_TOOL_PALM);
+
+	s = mm_setup(test, MM_MTP);
+	KUNIT_EXPECT_EQ(test, s->input->users, 1U);
+	KUNIT_EXPECT_FALSE(test, READ_ONCE(s->msc->c1fe_reset_pending));
+}
+
 static struct kunit_case magicmouse_mtp_cases[] = {
 	KUNIT_CASE(mm_c1fe_caps),
 	KUNIT_CASE(mm_other_caps),
@@ -774,6 +861,7 @@ static struct kunit_case magicmouse_mtp_cases[] = {
 	KUNIT_CASE(mm_c1fe_high_bit),
 	KUNIT_CASE(mm_c1fe_malformed),
 	KUNIT_CASE(mm_c1fe_two_contacts),
+	KUNIT_CASE(mm_c1fe_reopen),
 	KUNIT_CASE(mm_other_reports),
 	{}
 };
