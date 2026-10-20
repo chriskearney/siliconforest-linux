@@ -822,10 +822,20 @@ static void mm_c1fe_reopen(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, mm_send_raw(s, size + 1), 0);
 	KUNIT_EXPECT_TRUE(test, READ_ONCE(s->msc->c1fe_reset_pending));
 
-	/* The palm lifted unseen; a finger touches under its ID. */
+	/*
+	 * The palm lifted unseen; a finger approaches under its ID, with a
+	 * small touch area, and touches. A record that is not touching does
+	 * not land, so only the forgetting makes it no palm.
+	 */
 	r = mm_finger(7, -500, 400);
+	r.state = MM_APPROACH;
+	r.touch_major = 100;
+	r.tool_major = 300;
 	mm_send1(s, r);
 	KUNIT_EXPECT_FALSE(test, READ_ONCE(s->msc->c1fe_reset_pending));
+	KUNIT_EXPECT_EQ(test, mm_tool(s, -500, 400), MT_TOOL_FINGER);
+	r = mm_finger(7, -500, 400);
+	mm_send1(s, r);
 	KUNIT_EXPECT_EQ(test, mm_tool(s, -500, 400), MT_TOOL_FINGER);
 
 	/* From there on the latch works as before. */
@@ -837,10 +847,22 @@ static void mm_c1fe_reopen(struct kunit *test)
 	mm_send1(s, r);
 	KUNIT_EXPECT_EQ(test, mm_tool(s, -490, 400), MT_TOOL_PALM);
 
-	/* A palm still palm-sized after an open is still one. */
+	/* Closed and opened again, a finger touches under the palm's ID. */
 	input_close_device(s->handle);
 	KUNIT_ASSERT_EQ(test, input_open_device(s->handle), 0);
+	r = mm_finger(7, 300, -300);
+	mm_send1(s, r);
+	KUNIT_EXPECT_FALSE(test, READ_ONCE(s->msc->c1fe_reset_pending));
+	KUNIT_EXPECT_EQ(test, mm_tool(s, 300, -300), MT_TOOL_FINGER);
+
+	/* A palm still palm-sized after an open is still one. */
 	r.tool_major = 2600;
+	r.x = -490;
+	r.y = 400;
+	mm_send1(s, r);
+	KUNIT_EXPECT_EQ(test, mm_tool(s, -490, 400), MT_TOOL_PALM);
+	input_close_device(s->handle);
+	KUNIT_ASSERT_EQ(test, input_open_device(s->handle), 0);
 	r.x = -480;
 	mm_send1(s, r);
 	KUNIT_EXPECT_EQ(test, mm_tool(s, -480, 400), MT_TOOL_PALM);
