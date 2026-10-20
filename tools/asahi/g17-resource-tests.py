@@ -17,7 +17,7 @@ import tempfile
 DRIVER = Path(__file__).resolve().parents[2] / 'drivers/gpu/drm/asahi'
 
 def checked_run(command, check=True):
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
     if result.returncode:
         raise subprocess.CalledProcessError(result.returncode, command,
                                             output=result.stdout, stderr=result.stderr)
