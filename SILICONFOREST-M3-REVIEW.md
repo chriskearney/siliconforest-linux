@@ -297,3 +297,53 @@ VM cleanup and mapping admission paths; the model does not execute a close
 lifecycle. Ledger-reset reuse is not a full recovery test. Native build and layout
 results are recorded separately in the control repository's source-validation
 report. Hardware qualification remains outstanding.
+
+## Camera controls and display power/colour (2026-10-19)
+
+The reviewed carries are Omacom [PR153](https://github.com/omacom/linux-aurora/pull/153)
+at `31f6cbb232df` and [PR157](https://github.com/omacom/linux-aurora/pull/157)
+at `9d3aeb24cb86`, plus an adaptation of Aurora Silicon
+[PR365](https://github.com/aurora-silicon/linux/pull/365) at `9cd46b2bac71`.
+The source pins, authors and limitations are in `SILICONFOREST-M3-SOURCES.json`.
+The integration and validation ledger is [SiliconForest PR16](https://github.com/iconidentify/siliconforest-linux/pull/16).
+
+Zero-length UVC extension-unit value queries return `ENODATA` before allocating
+or issuing a USB request. Length/info discovery remains available. The lower-level
+stall path does not borrow a byte from a zero-length buffer. Actual-body host
+checks cover 60 cases with Clang/GCC ASan/UBSan and four deliberate regressions.
+
+XRGB2101010 uses the existing black-background premultiplication workaround.
+New colour controls preserve the existing policy by default:
+
+- `appledrm.external_colorimetry=-1` uses firmware scores. Valid colourimetry
+  preferences (for example, `10` for sRGB) affect ordinary external SDR RGB
+  catalogues; unsupported values retain the old policy. Changes take effect when
+  modes are parsed again, normally on replug or reboot. Internal displays and
+  strict firmware admission keep their existing rules.
+- `appledrm.external_srgb=N` keeps source tagging as before. Opting in tags native
+  RGB surfaces as sRGB in the common template flush, excluding YUV. Keep it off
+  when the compositor already performs gamut mapping. Native 14.7 and H17P use
+  separate presentation paths; this switch does not add source conversion there.
+
+The writable policies are read once per mode-list/frame. A preferred colour is
+validated in temporary storage before replacing the accepted RGB candidate or
+ranking state. Missing depth/range in a preferred entry cannot erase a valid
+fallback. Serialized-parser KUnit cases cover both input orders and strict
+profile admission. Host controls exercise 63 production decisions and six
+runtime mutations; restoring unchecked promotion also fails the serialized test.
+
+The J613 power adaptation extends the existing `panel_blank`/`panel_off`/lid
+state. A completed black frame and power-off share `present_lock`; panel power
+state changes only after firmware acknowledgment. Wake establishes the internal
+panel selection before powering it on when needed, and invalidates its colour
+matrix. Type-C routing retains its lid and CRTC ownership requirements. The
+KUnit power suite runs real present, power, callback and mailbox code against a
+fake firmware link, including concurrent presentation and refusal/failure paths.
+Test cleanup joins the presenter before fixture memory is released.
+
+The combined ordinary display KUnit run is 360 tests: 359 pass and one existing
+skip. Compiler, debug-kernel, mutation and independent-review results are recorded
+in PR16 and the control repository's source-validation ledger. These are source
+and simulated-device checks. This integration makes no local camera, external
+10-bit/colourimeter/ICC or physical J613 sleep/wake qualification claim, and does
+not update a signed installer release.

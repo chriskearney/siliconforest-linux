@@ -123,6 +123,55 @@
           "siliconforest_tested_head": "709f0f08316ad528181027abe1cf00b3083b9bf0"
         }
       ]
+    },
+    {
+      "author": "Brian Toll",
+      "url": "https://github.com/omacom/linux-aurora/pull/153",
+      "head": "31f6cbb232df411ed46d96733b8861259d50711d",
+      "scope": "Reject zero-length UVC extension-unit value queries before allocation/USB and avoid borrowing an empty buffer on a stalled low-level query. GET_LEN/GET_INFO remain available.",
+      "downstream_validation": "Actual query bodies under ASan/UBSan with both Clang/GCC; 60 cases, four runtime mutations; production-config W=1 UVC objects. No local camera hardware qualification."
+    },
+    {
+      "author": "Brian Toll",
+      "url": "https://github.com/omacom/linux-aurora/pull/157",
+      "head": "9d3aeb24cb864d5f99a7172e9004884bf3c1a9a0",
+      "selected_upstream_commits": [
+        "5d2a74d3313bb1166722256bc2bed851ac908e7e",
+        "6c38a3dc701ac11411925b5d5836465b7a7e9f05",
+        "9d3aeb24cb864d5f99a7172e9004884bf3c1a9a0"
+      ],
+      "scope": "XRGB2101010 black-background premultiplication; opt-in ordinary external SDR RGB link preference and template-driven external RGB source tagging.",
+      "downstream_fixes": [
+        "Both colour controls preserve existing defaults: external_colorimetry=-1, external_srgb=false.",
+        "Snapshot the writable preference once per colour-mode list and source-tag policy once per template frame.",
+        "Validate a temporary preferred colour candidate before replacing the accepted RGB candidate or ranking state.",
+        "Invalid colourimetry preferences use firmware score; existing strict firmware profiles retain their admission rules."
+      ],
+      "validation_limits": [
+        "No colourimeter, 10-bit scanout, ICC interaction or external-display hardware qualification.",
+        "Source tagging is the common template path; native 14.7 and H17P use separate presentation code."
+      ],
+      "downstream_validation": "Three serialized-parser KUnit cases, including malformed preferred metadata in both orders; 63 actual host decisions and six runtime mutations under Clang/GCC ASan/UBSan. Restoring unchecked promotion fails the serialized KUnit case."
+    },
+    {
+      "author": "garymeyerca",
+      "url": "https://github.com/aurora-silicon/linux/pull/365",
+      "head": "9cd46b2bac71c0e40b5af2288fe4d3955f4399a1",
+      "scope": "Adapt J613 14.7 panel power-off for DPMS and system sleep onto the existing SiliconForest lid/Type-C state. The admitted J613 board alone sets panel_power.",
+      "downstream_adaptation_commits": [
+        "58da6e3bc5131150ca05def480137a4507b32470",
+        "f05b6d0b5dfc250af4a35971661c9060ecb727e3"
+      ],
+      "preserved_contracts": [
+        "panel_blank describes CRTC ownership; panel_off changes only after a power acknowledgment.",
+        "Hold present_lock through completed black frame and power-off; refused or failed black does not free scanout or claim power-off.",
+        "Existing lid-closed Type-C routing, external kept_on state, mailbox hold/release order and other board records remain in force."
+      ],
+      "provenance": "Chris-authored adaptation credits the public PR and its author; no sign-off was supplied or invented.",
+      "validation_limits": [
+        "Source and QEMU tests do not qualify J613 DPMS/suspend/resume on physical hardware.",
+        "No local J613 hardware test, panel-power measurement or lock-screen security qualification."
+      ]
     }
   ],
   "import_seed_with_initial_review_fixes": "8a29680940cde36759e2061d3c8a8e7e9df70fa9",
