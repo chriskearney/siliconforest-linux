@@ -159,8 +159,8 @@
       "head": "9cd46b2bac71c0e40b5af2288fe4d3955f4399a1",
       "scope": "Adapt J613 14.7 panel power-off for DPMS and system sleep onto the existing SiliconForest lid/Type-C state. The admitted J613 board alone sets panel_power.",
       "downstream_adaptation_commits": [
-        "58da6e3bc5131150ca05def480137a4507b32470",
-        "f05b6d0b5dfc250af4a35971661c9060ecb727e3"
+        "617f79bd9638cff9135f83fc24237ca9f53ba656",
+        "f5e0375670102f0f057f5509577e70e172b557e8"
       ],
       "preserved_contracts": [
         "panel_blank describes CRTC ownership; panel_off changes only after a power acknowledgment.",
