@@ -260,6 +260,7 @@ struct effect_job {
  * @query_dimensions: Whether to query and update dimensions on first open
  * @mtp_c1fe: Whether the MTP trackpad sends the J700 C1FE report layout.
  * @c1fe_palms: C1FE contact IDs whose tool area reached palm size.
+ * @c1fe_touching: C1FE contact IDs whose record was touching in the last report.
  * @ntouches: Number of touches in most recent touch report.
  * @scroll_accel: Number of consecutive scroll motions.
  * @scroll_jiffies: Time of last scroll motion.
@@ -287,6 +288,7 @@ struct magicmouse_sc {
 	bool query_dimensions;
 	bool mtp_c1fe;
 	DECLARE_BITMAP(c1fe_palms, U8_MAX + 1);
+	DECLARE_BITMAP(c1fe_touching, U8_MAX + 1);
 
 	int ntouches;
 	int scroll_accel;
@@ -918,17 +920,25 @@ struct tp_mouse_report {
  * The controller classes many palm heels as thumbs. Their tool area sets
  * them apart: palm heels pass 4400 once scaled, while thumbs measured up to
  * 4170 and fingers up to 3280. A contact whose tool area has passed 4400 is
- * reported as a palm until it lifts.
+ * reported as a palm until it lifts, including in its lift-off records. A
+ * record that enters the touching state is a new contact, even when the
+ * previous report had its ID on a contact lifting off.
  */
 #define MAGICMOUSE_C1FE_REPORT_ID	0x75
 #define MAGICMOUSE_C1FE_HEADER_SIZE	32
 #define MAGICMOUSE_C1FE_TRAILER_SIZE	8
 #define MAGICMOUSE_C1FE_PALM_CLASSES	(BIT(6) | BIT(7) | BIT(11))
 #define MAGICMOUSE_C1FE_PALM_TOOL_MAJOR	2200
+#define MAGICMOUSE_C1FE_STATE_TOUCHING	4
 
 static u8 magicmouse_c1fe_contact_id(const struct tp_finger *f)
 {
 	return le16_to_cpu(f->unknown1) & 0xff;
+}
+
+static bool magicmouse_c1fe_touching(const struct tp_finger *f)
+{
+	return le16_to_cpu(f->unknown1) >> 8 == MAGICMOUSE_C1FE_STATE_TOUCHING;
 }
 
 static bool magicmouse_c1fe_classed_palm(const struct tp_finger *f)
@@ -939,24 +949,37 @@ static bool magicmouse_c1fe_classed_palm(const struct tp_finger *f)
 	       (MAGICMOUSE_C1FE_PALM_CLASSES & BIT(class));
 }
 
-/* Track the contacts whose tool area has reached palm size since landing. */
+/*
+ * Track the contacts whose tool area has reached palm size since landing. A
+ * record touching now that was not touching in the previous report has
+ * landed, and any palm that had its ID before has lifted.
+ */
 static void magicmouse_c1fe_update_palms(struct magicmouse_sc *msc,
 					 const u8 *records, int count)
 {
 	DECLARE_BITMAP(palms, U8_MAX + 1);
+	DECLARE_BITMAP(touching, U8_MAX + 1);
 	const struct tp_finger *f;
+	bool landed;
 	u8 id;
 	int i;
 
 	bitmap_zero(palms, U8_MAX + 1);
+	bitmap_zero(touching, U8_MAX + 1);
 	for (i = 0; i < count; i++) {
 		f = (const struct tp_finger *)(records + i * sizeof(*f));
 		id = magicmouse_c1fe_contact_id(f);
+		landed = false;
+		if (magicmouse_c1fe_touching(f)) {
+			landed = !test_bit(id, msc->c1fe_touching);
+			__set_bit(id, touching);
+		}
 		if (le16_to_int(f->tool_major) > MAGICMOUSE_C1FE_PALM_TOOL_MAJOR ||
-		    test_bit(id, msc->c1fe_palms))
+		    (!landed && test_bit(id, msc->c1fe_palms)))
 			__set_bit(id, palms);
 	}
 	bitmap_copy(msc->c1fe_palms, palms, U8_MAX + 1);
+	bitmap_copy(msc->c1fe_touching, touching, U8_MAX + 1);
 }
 
 static bool magicmouse_c1fe_report_valid(const u8 *data, int size)
