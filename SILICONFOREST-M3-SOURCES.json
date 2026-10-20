@@ -177,26 +177,31 @@
     {
       "author": "Dj",
       "url": "https://github.com/omacom/linux-aurora/pull/151",
-      "head": "8f429c0693cfed05f652a166da976f1f8d87ad31",
+      "head": "a5806fdc14736a14daace495ebe39153e5e55f0b",
       "selected_upstream_commits": [
         "c61760ecddda6ee51b6ea19ef036a0e919cf559e",
         "d14aac52817a8b1d650cc9dcf3a274b6e0a27404",
-        "8f429c0693cfed05f652a166da976f1f8d87ad31"
+        "8f429c0693cfed05f652a166da976f1f8d87ad31",
+        "a5806fdc14736a14daace495ebe39153e5e55f0b"
       ],
       "downstream_carries": [
         "e540178c523d15695c9d38d70a355144c33092e4",
         "a7e6b4189764f69c9bca24fb7f41a1afad290d0d",
-        "e28bdd9a4ac1a9123a1cecc4a8708e5a2a752b22"
+        "e28bdd9a4ac1a9123a1cecc4a8708e5a2a752b22",
+        "3534b63c6aba6587ab2bbddcceac3ab7640901b6"
       ],
       "downstream_fixes": [
         "f52334603f88e41e5deb6236ad03163004458921"
       ],
-      "scope": "G17-only reclaim of unused warming, exact unused bootstrap queue-ID replacement, and common render-backing address search. Existing telemetry lifetime fixes retained; shared MMU wrappers preserve ordinary best-fit placement.",
+      "scope": "G17-only reclaim of unused warming, exact unused bootstrap queue-ID replacement, and common render-backing address search. Existing telemetry lifetime fixes retained; shared MMU wrappers preserve ordinary best-fit placement. Pending compute pool releases keep observation polling alive; physical-ID exhaustion waits outside the mutex and preparation lease for up to 200ms, then returns EBUSY.",
       "review_notes": [
-        "Upstream remains draft; only the three new resource commits follow already-carried telemetry.",
+        "Upstream remains draft; four resource commits follow already-carried telemetry. The final refresh includes the additional pending-pool-release follow-up.",
         "Own both aliases before fallible render-table initialization; enforce drop ordering on success and injected failures. Current valid bounds appear to exclude those initialization failures, so no reproduced hardware bug is claimed."
       ],
-      "validation_limits": "Source-derived host controls and production compilation; no new Neo/G17 hardware, firmware execution, timing or game qualification."
+      "validation_limits": "Source-derived host controls and production compilation; no new Neo/G17 hardware, firmware execution, timing or game qualification.",
+      "test_followups": [
+        "80c4ba29ebc81cf83759a8857d6fc789f3fa63b8"
+      ]
     },
     {
       "author": "James A DellaMorte",
@@ -240,7 +245,8 @@
       "test_commits": [
         "395643c90dd47156fd06129c684655f00e545569",
         "6f6285023b53f44e639960e8d78cd7906efdd729",
-        "b3e0aaf562f1eddff3fddaf08dcf962d2d6ceb73"
+        "b3e0aaf562f1eddff3fddaf08dcf962d2d6ceb73",
+        "5fd3713f9b0651a4d727021f92b4ae90a01efb9e"
       ],
       "scope": "J700 C1FE palm classes and tool-size hysteresis, with liftoff/ID-reuse and open-epoch fixes. Preserve real touching contacts with zero/negative area. Clamp C1FE areas/orientation; preserve non-C1FE MTP/SPI numerical behaviour.",
       "review_notes": [

@@ -354,7 +354,7 @@ The integration starts at `70ba30325164`. Omacom PR154 remains explicitly held;
 this series changes no Thunderbolt bandwidth policy. Public upstream pins and
 selected commits are recorded in `SILICONFOREST-M3-SOURCES.json`.
 
-Only the three new resource commits from [Omacom PR151](https://github.com/omacom/linux-aurora/pull/151)
+The four resource commits from [Omacom PR151](https://github.com/omacom/linux-aurora/pull/151)
 are carried after the existing telemetry integration. Unused warming can yield
 capacity without recycling published physical identities. Compute can replace
 only the exact tracked bootstrap reservations. Render-pool backing searches for
@@ -371,6 +371,16 @@ against an independent small-address-space oracle, and rejects thirteen executab
 mutations. It simulates the MMU/firmware dependencies and does not execute kernel
 PTE operations, firmware retirement or GPU workloads. Upstream remains draft;
 its hardware measurements do not qualify this downstream build.
+
+The final source refresh includes the pending-compute-pool-release follow-up.
+The event worker keeps observing a published release until the existing firmware
+witness permits vacancy. Exhaustion with a pending release becomes retryable;
+the retry drops both the device mutex and preparation lease before waking the
+worker or sleeping, and returns `EBUSY` after 200 ms. Ordinary exhaustion and
+other errors remain distinct. The added source-derived controls run the actual
+retry arm against simulated guards and a clock, checking settlement, unlocked
+wake/sleep and the deadline. Nine executable negative controls fail, including
+both original wake/admission failures. This is not a firmware or timing test.
 
 [Asahi PR521](https://github.com/AsahiLinux/linux/pull/521) is imported as one
 battery topic commit, excluding its unrelated aggregate history. `auto` caps
@@ -414,6 +424,7 @@ ASan/UBSan (the charging tests also run with `CC=gcc`):
 
 ```sh
 RUSTUP_TOOLCHAIN=1.93.1 python3 tools/asahi/g17-resource-tests.py --mutations --output /tmp/sf-g17-results
+RUSTUP_TOOLCHAIN=1.93.1 python3 tools/asahi/g17-pool-release-tests.py
 python3 tools/asahi/macsmc-charge-tests.py --mutations --output /tmp/sf-charge-results
 ```
 
