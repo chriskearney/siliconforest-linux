@@ -341,7 +341,7 @@ KUnit power suite runs real present, power, callback and mailbox code against a
 fake firmware link, including concurrent presentation and refusal/failure paths.
 Test cleanup joins the presenter before fixture memory is released.
 
-The combined ordinary display KUnit run is 360 tests: 359 pass and one existing
+The combined ordinary display KUnit run is 361 tests: 360 pass and one existing
 skip. Compiler, debug-kernel, mutation and independent-review results are recorded
 in PR16 and the control repository's source-validation ledger. These are source
 and simulated-device checks. This integration makes no local camera, external

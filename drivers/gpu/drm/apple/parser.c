@@ -472,12 +472,10 @@ static int fill_color_mode(struct dcp_color_mode *color,
 static int external_colorimetry = -1;
 module_param(external_colorimetry, int, 0644);
 MODULE_PARM_DESC(external_colorimetry,
-		 "Preferred ordinary external SDR RGB link colorimetry "
-		 "(-1/default or invalid: firmware score, 10: sRGB, 1: BT.709, 14: DCI-P3 D65, 9: BT.2020 RGB)");
+		 "Preferred ordinary external SDR RGB link colorimetry (-1/default or invalid: firmware score, 10: sRGB, 1: BT.709, 14: DCI-P3 D65, 9: BT.2020 RGB)");
 
 /* Tiers for external_colorimetry; equal tiers fall back to firmware score. */
-static unsigned int external_colorimetry_rank(const struct color_mode *color,
-					     int preferred)
+static unsigned int external_colorimetry_rank(const struct color_mode *color, int preferred)
 {
 	if (color->colorimetry == preferred)
 		return 3;
