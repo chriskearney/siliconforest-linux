@@ -80,4 +80,6 @@ config DRM_APPLE_DISPLAY_KUNIT_TEST
 	  invalidation when a sink or display route changes. Check connector
 	  status updates before hotplug notifications and same-state retrains.
 	  Check which 14.x board record an internal display gets on which
-	  machine, and which DCP firmware image each record admits.
+	  machine, and which DCP firmware image each record admits. Check the
+	  order and failure handling of the J613 panel's power-off and
+	  power-on for DPMS and system sleep, against a faked firmware link.

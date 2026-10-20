@@ -106,6 +106,11 @@ static const struct dcp_v14_board dcp_v14_board_j613 = {
 	.promotion = false,
 	.ctm_set = A(421),
 	.ctm_get = A(420),
+	/*
+	 * Its 14.7 power-off path only shows a black frame: without A472(0) the
+	 * backlight stays lit through DPMS off and system sleep.
+	 */
+	.panel_power = true,
 };
 
 /* J615 (MacBook Air 15", M3): the same DCP image, a 2880x1864 60 Hz panel. */
@@ -236,9 +241,10 @@ struct apple_dcp_v14 {
 	bool rx_held;
 	/*
 	 * J613 internal pipe with a Type-C route (iomfb_v14_7_clamshell_start()):
-	 * the lid state IOMFB was told (A475: 1 open, 2 closed, 0 not yet), the
-	 * panel's CRTC is off (panel_blank), and the panel was powered off
-	 * because the lid is closed (panel_off, A472(0)).
+	 * the lid state IOMFB was told (A475: 1 open, 2 closed, 0 not yet), and
+	 * the panel's CRTC is off (panel_blank). The firmware acknowledged
+	 * powering the panel off (panel_off, A472(0)): because the lid is
+	 * closed, or (panel_power boards) for DPMS off or system sleep.
 	 */
 	bool clamshell;
 	u32 lid;
@@ -360,6 +366,12 @@ static bool dcp_v14_board_nits(const struct apple_dcp_v14 *v14)
 bool iomfb_v14_7_panel_nits(struct apple_dcp *dcp)
 {
 	return dcp->v14 && !dcp->external && dcp_v14_board_nits(dcp->v14);
+}
+
+/* The internal panel of a board whose DPMS panel power was validated (J613). */
+static bool dcp_v14_board_panel_power(const struct apple_dcp_v14 *v14)
+{
+	return !v14->external && v14->board && v14->board->panel_power;
 }
 
 static enum dcp_v14_bl_gate dcp_v14_bl_gate_get(struct apple_dcp_v14 *v14)
@@ -543,6 +555,17 @@ static void dcp_v14_stopped_work(struct work_struct *work)
 	}
 }
 
+/* The call on the link; the KUnit tests answer it as the firmware would. */
+static int dcp_v14_link_rpc(struct apple_dcp_v14 *v14, u32 tag, const void *in, u32 in_size,
+			    void *out, u32 out_size, u32 completion,
+			    dcp_v14_admit_fn admit, void *admit_cookie, bool *vetoed)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_v14_link_rpc, v14, tag, in, in_size, out, out_size,
+				   completion, admit, admit_cookie, vetoed);
+	return dcp_v14_link_call_guarded(&v14->link, tag, in, in_size, out, out_size, completion,
+					 dcp_v14_callback, v14, admit, admit_cookie, vetoed);
+}
+
 /* Called with the lock held, or from a callback. */
 static int dcp_v14_call_guarded(struct apple_dcp_v14 *v14, u32 tag, const void *in, u32 in_size,
 			void *out, u32 out_size, u32 completion,
@@ -559,8 +582,8 @@ static int dcp_v14_call_guarded(struct apple_dcp_v14 *v14, u32 tag, const void *
 		return -EAGAIN;
 	}
 	dev_dbg(v14->dev, "call %#x in %u out %u\n", tag, in_size, out_size);
-	ret = dcp_v14_link_call_guarded(&v14->link, tag, in, in_size, out, out_size, completion,
-				dcp_v14_callback, v14, admit, admit_cookie, &vetoed);
+	ret = dcp_v14_link_rpc(v14, tag, in, in_size, out, out_size, completion,
+			       admit, admit_cookie, &vetoed);
 	if (ret && !vetoed) {
 		v14->failed = true;
 		dev_err(v14->dev, "DCP call %#x failed: %d; recovery requires a reboot\n",
@@ -1326,6 +1349,7 @@ static int dcp_v14_callback(void *cookie, u32 tag, const void *input, u32 in_siz
 	u8 *out = output;
 	struct dcp_v14_property *p;
 	u32 count, offset, service, key_offset, id;
+	bool panel_power;
 	int ret;
 
 	if (v14->external || (v14->typec && dcp_v14_description_tag(tag))) {
@@ -1336,16 +1360,18 @@ static int dcp_v14_callback(void *cookie, u32 tag, const void *input, u32 in_siz
 
 #define SHAPE(i, o) (in_size == (i) && out_size == (o))
 	/*
-	 * J613: powering the panel off and on with the lid closed sends what an
-	 * external pipe's power changes send (see dcp_v14_external_callback()),
-	 * and D593 with four bytes once after power-on, whose meaning is not
-	 * known. Nothing to do for any of them.
+	 * J613: powering the panel off and on, with the lid closed or for DPMS
+	 * and system sleep (panel_power), sends what an external pipe's power
+	 * changes send (see dcp_v14_external_callback()), and D593 with four
+	 * bytes once after power-on, whose meaning is not known. Nothing to do
+	 * for any of them; the ones held through system sleep come on resume.
 	 */
-	if (v14->clamshell &&
+	panel_power = v14->clamshell || dcp_v14_board_panel_power(v14);
+	if (panel_power &&
 	    ((tag == D(2) && SHAPE(0, 0)) || (tag == D(591) && SHAPE(20, 0)) ||
 	     (tag == D(593) && SHAPE(4, 0))))
 		return 0;
-	if (v14->clamshell && tag == D(574) && SHAPE(4, 4))
+	if (panel_power && tag == D(574) && SHAPE(4, 4))
 		return in[0] > 1 ? -EINVAL : 0;
 	/*
 	 * Backlight correction notification: one signed 32-bit factor, no
@@ -2996,7 +3022,8 @@ static bool dcp_v14_external_described(struct apple_dcp_v14 *v14);
  * J613: the panel takes no swaps while the lid is closed. Once IOMFB was
  * told so (A475(2)) it treats the pipe as one for a second external display
  * and swallows panel swaps, which then never complete and stop the DCP; a
- * panel powered off with the lid closed shows nothing anyway.
+ * panel powered off, with the lid closed or for DPMS off, shows nothing
+ * anyway.
  */
 static bool dcp_v14_panel_dark(struct apple_dcp_v14 *v14)
 {
@@ -3309,16 +3336,17 @@ static bool dcp_v14_bl_dpms_applies(struct apple_dcp_v14 *v14, struct apple_dcp 
 }
 
 /*
- * Blank the panel to the black background. Once Linux has set a level, the
- * blank present also carries 0 nits (the policy's DPMS off), in the same
- * swap: present_lock keeps a queued brightness-only present out until then.
+ * Blank the panel to the black background; returns whether that swap
+ * completed. Once Linux has set a level, the blank present also carries
+ * 0 nits (the policy's DPMS off), in the same swap: present_lock, which the
+ * caller holds, keeps a queued brightness-only present out until then.
  */
-static void dcp_v14_blank(struct apple_dcp_v14 *v14, struct apple_dcp *dcp)
+static bool dcp_v14_blank_locked(struct apple_dcp_v14 *v14, struct apple_dcp *dcp)
 {
-	guard(mutex)(&v14->present_lock);
+	lockdep_assert_held(&v14->present_lock);
 	if (dcp_v14_bl_dpms_applies(v14, dcp))
 		dcp_backlight_dpms(dcp, false);
-	__dcp_v14_present(v14, NULL, 0, 0, 0, NULL);
+	return __dcp_v14_present(v14, NULL, 0, 0, 0, NULL);
 }
 
 /* Releases helper waiters without reporting a completed flip. */
@@ -3852,27 +3880,72 @@ static void dcp_v14_panel_off_locked(struct apple_dcp_v14 *v14)
 }
 
 /*
- * J613: power the panel on again (A472(1)), its colour matrix with it, once
- * IOMFB knows the lid is open: with the lid closed IOMFB takes the pipe for
- * a second external display at power-on and the panel gets no frame. Called
- * with the lock held.
+ * J613 (panel_power), DPMS off and system sleep with the lid open or no
+ * lid switch: power the panel off (A472(0)), but only once its black frame
+ * completed (@blanked). A black frame that failed leaves the last frame
+ * shown and pinned, and the panel as it was. The panel is off only once
+ * the firmware acknowledged A472(0); refused, it stays on, black, and the
+ * next DPMS off tries again. Called with present_lock and the lock held:
+ * no present comes between the black frame and the power-off, and any
+ * later one finds the panel dark (dcp_v14_panel_dark()).
  */
-static void dcp_v14_panel_on_locked(struct apple_dcp_v14 *v14)
+static void dcp_v14_panel_dpms_off_locked(struct apple_dcp_v14 *v14, bool blanked)
 {
 	int ret;
 
+	lockdep_assert_held(&v14->present_lock);
+	lockdep_assert_held(&v14->lock);
+	if (!blanked || !dcp_v14_board_panel_power(v14) || v14->typec || v14->panel_off ||
+	    v14->failed)
+		return;
+	ret = dcp_v14_power_call(v14, false);
+	if (!ret)
+		v14->panel_off = true;
+	if (ret)
+		dev_warn(v14->dev, "panel off (A472(0)) refused: %d; it stays on, black\n", ret);
+	else
+		dev_info(v14->dev, "panel off (A472(0)): 0\n");
+}
+
+/*
+ * J613: power the panel on again (A472(1)), its colour matrix with it, once
+ * IOMFB knows the lid is open: with the lid closed IOMFB takes the pipe for
+ * a second external display at power-on and the panel gets no frame. One
+ * never told the lid state (no lid switch, or none read yet) can do the
+ * same, so it is told the lid is open first (A475(1)): at every power-on
+ * without a lid switch, as the J613 DPMS wake was validated, and once with
+ * one, whose lid work keeps what IOMFB was told. On only once the firmware
+ * acknowledged A472(1). Called with the lock held.
+ */
+static void dcp_v14_panel_on_locked(struct apple_dcp_v14 *v14)
+{
+	const char *step = "A472(1)";
+	bool told = false;
+	int ret = 0;
+
 	if (v14->lid == 2 || v14->typec || !v14->panel_off || v14->failed)
 		return;
-	ret = dcp_v14_power_call(v14, true);
+	if (v14->lid != 1) {
+		__le32 open = cpu_to_le32(1);
+
+		ret = dcp_v14_call(v14, A(475), &open, sizeof(open), NULL, 0, 0);
+		if (ret)
+			step = "A475(1)";
+		else if (v14->clamshell)
+			v14->lid = 1;
+		told = !ret;
+	}
+	if (!ret)
+		ret = dcp_v14_power_call(v14, true);
 	if (!ret) {
 		v14->panel_off = false;
 		v14->ctm_valid = false;
 	}
 	if (ret)
-		dev_warn(v14->dev, "panel on (A472(1)) refused: %d; it stays dark until its CRTC is switched on again\n",
-			 ret);
+		dev_warn(v14->dev, "panel on (%s) refused: %d; it stays dark until its CRTC is switched on again\n",
+			 step, ret);
 	else
-		dev_info(v14->dev, "panel on (A472(1)): 0\n");
+		dev_info(v14->dev, "panel on (%sA472(1)): 0\n", told ? "A475(1), " : "");
 }
 
 /*
@@ -4046,7 +4119,7 @@ void iomfb_v14_7_poweron(struct apple_dcp *dcp)
 	struct apple_dcp_v14 *v14 = dcp->v14;
 
 	/*
-	 * The panel stays on; the next swap shows the plane again. A display
+	 * A panel left on shows the plane again with the next swap. A display
 	 * on the J613 internal pipe's Type-C route is powered by its mode set.
 	 */
 	if (dcp->external || !v14 || !v14->started || READ_ONCE(v14->typec))
@@ -4054,10 +4127,12 @@ void iomfb_v14_7_poweron(struct apple_dcp *dcp)
 	mutex_lock(&v14->lock);
 	v14->panel_blank = false;
 	/*
-	 * Powered off with the lid closed: on again once the lid is open. A
-	 * CRTC switched on while it is closed (the panel's connector reads
-	 * disconnected then) leaves the panel off and gets no frames; the lid
-	 * opening powers the panel on (iomfb_v14_7_set_lid()).
+	 * Powered off (J613), for DPMS off or system sleep or with the lid
+	 * closed: on again now, unless the lid is closed. A CRTC switched on
+	 * while it is closed (the panel's connector reads disconnected then)
+	 * leaves the panel off and gets no frames; the lid opening powers the
+	 * panel on (iomfb_v14_7_set_lid()). A refused power-on leaves it off
+	 * until the CRTC is switched on again.
 	 */
 	if (v14->panel_off && v14->lid == 2)
 		dev_warn_once(dcp->dev, "panel CRTC on with the lid closed: the panel stays off until the lid opens\n");
@@ -4111,17 +4186,24 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 		return;
 	}
 	/*
-	 * Blank to black; the panel and the DCP stay powered, unless the lid
-	 * is closed (J613): then the panel is powered off.
+	 * Blank to black; the DCP stays powered, and so does the panel unless
+	 * (J613) the lid is closed, or the board powers it off for DPMS off
+	 * and system sleep (panel_power) once the black frame completed. From
+	 * the black frame to the power-off present_lock is held, so no other
+	 * present (the lid work's black frame, a brightness-only present)
+	 * comes between them.
 	 */
 	if (v14 && v14->started) {
-		if (!dcp_v14_panel_dark(v14))
-			dcp_v14_blank(v14, dcp);
-		mutex_lock(&v14->lock);
-		v14->panel_blank = true;
-		if (v14->clamshell)
-			dcp_v14_panel_off_locked(v14);
-		mutex_unlock(&v14->lock);
+		scoped_guard(mutex, &v14->present_lock) {
+			bool blanked = !dcp_v14_panel_dark(v14) && dcp_v14_blank_locked(v14, dcp);
+
+			mutex_lock(&v14->lock);
+			v14->panel_blank = true;
+			if (v14->clamshell)
+				dcp_v14_panel_off_locked(v14);
+			dcp_v14_panel_dpms_off_locked(v14, blanked);
+			mutex_unlock(&v14->lock);
+		}
 		if (v14->clamshell)
 			dcp_clamshell_changed(dcp);
 	}
@@ -4133,4 +4215,5 @@ void iomfb_v14_7_poweroff(struct apple_dcp *dcp)
 #include "iomfb_v14_7_external_audio_test.c"
 #include "iomfb_v14_7_catalog_profile_test.c"
 #include "iomfb_v14_7_kept_on_test.c"
+#include "iomfb_v14_7_panel_power_test.c"
 #endif

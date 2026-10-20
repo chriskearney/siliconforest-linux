@@ -9,6 +9,7 @@
 #include <linux/math64.h>
 #include <linux/slab.h>
 #include <kunit/visibility.h>
+#include <linux/module.h>
 
 #if IS_ENABLED(CONFIG_DRM_APPLE_AUDIO)
 #include <sound/pcm.h> // for sound format masks
@@ -460,6 +461,36 @@ static int fill_color_mode(struct dcp_color_mode *color,
 	return 0;
 }
 
+/*
+ * Colorimetry the SDR RGB link to an external display should prefer. By
+ * firmware score alone DCP picks the widest colorimetry the display offers
+ * (BT.2020 RGB on a Studio Display XDR), which puts the desktop's sRGB pixels
+ * on a BT.2020 link. -1 keeps the firmware score; otherwise a dcp_colorimetry
+ * value: 10 sRGB, 1 BT.709, 14 DCI-P3 D65, 16 default RGB, 9 BT.2020 RGB.
+ * Read when a display's modes are parsed, so a change needs a replug.
+ */
+static int external_colorimetry = -1;
+module_param(external_colorimetry, int, 0644);
+MODULE_PARM_DESC(external_colorimetry,
+		 "Preferred ordinary external SDR RGB link colorimetry (-1/default or invalid: firmware score, 10: sRGB, 1: BT.709, 14: DCI-P3 D65, 9: BT.2020 RGB)");
+
+/* Tiers for external_colorimetry; equal tiers fall back to firmware score. */
+static unsigned int external_colorimetry_rank(const struct color_mode *color, int preferred)
+{
+	if (color->colorimetry == preferred)
+		return 3;
+
+	switch (color->colorimetry) {
+	case DCP_COLORIMETRY_SRGB:
+	case DCP_COLORIMETRY_BT709:
+		return 2;
+	case DCP_COLORIMETRY_RGB:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 /* External SDR scanout must not select a wide-gamut mode by score alone. */
 static unsigned int external_sdr_rank(const struct color_mode *color)
 {
@@ -583,12 +614,16 @@ static int parse_timing_color_restrictions(struct dcp_parse_ctx *handle,
 }
 
 static int parse_color_modes(struct dcp_parse_ctx *handle,
-			     struct dcp_display_mode *out, bool external_sdr,
+			     struct dcp_display_mode *out, bool internal,
+			     bool external_sdr,
 			     const struct timing_color_restrictions *limits,
 			     struct dcp_color_mode *unsafe_rgb8)
 {
 	struct iterator outer_it;
 	unsigned int best_sdr_rank = 0, best_unsafe_rank = 0;
+	int preferred = READ_ONCE(external_colorimetry);
+	bool prefer_colorimetry = !internal && !external_sdr && preferred >= 0 &&
+				  preferred < DCP_COLORIMETRY_COUNT;
 	int ret = 0;
 	out->sdr_444.score = -1;
 	out->sdr_rgb.score = -1;
@@ -721,9 +756,22 @@ static int parse_color_modes(struct dcp_parse_ctx *handle,
 
 		if (cmode.eotf == DCP_EOTF_SDR_GAMMA) {
 			if (cmode.pixel_encoding == DCP_COLOR_FORMAT_RGB &&
-				cmode.depth <= 10)
-				fill_color_mode(&out->sdr_rgb, &cmode);
-			else if (cmode.pixel_encoding == DCP_COLOR_FORMAT_YCBCR444 &&
+				cmode.depth <= 10) {
+				unsigned int rank = prefer_colorimetry ?
+					external_colorimetry_rank(&cmode, preferred) : 0;
+
+				if (rank >= best_sdr_rank) {
+					struct dcp_color_mode candidate = out->sdr_rgb;
+
+					if (rank > best_sdr_rank)
+						candidate.score = -1;
+					/* A refused entry must not erase a valid fallback. */
+					if (!fill_color_mode(&candidate, &cmode)) {
+						out->sdr_rgb = candidate;
+						best_sdr_rank = rank;
+					}
+				}
+			} else if (cmode.pixel_encoding == DCP_COLOR_FORMAT_YCBCR444 &&
 				cmode.depth <= 10)
 				fill_color_mode(&out->sdr_444, &cmode);
 			fill_color_mode(&out->sdr, &cmode);
@@ -826,8 +874,9 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 		else if (!strcmp(key, "MaximumVariableRefreshRate"))
 			ret = parse_int_bound(it.handle, &max_vrr, 0, U32_MAX);
 		else if (!strcmp(key, "ColorModes"))
-			ret = parse_color_modes(it.handle, out, external_sdr, &limits,
-						handle->automatic_1080p180_rgb8 ?
+			ret = parse_color_modes(it.handle, out, internal,
+						external_sdr, &limits,
+					handle->automatic_1080p180_rgb8 ?
 						&unsafe_rgb8 : NULL);
 		else if (!strcmp(key, "ID"))
 			ret = parse_int(it.handle, &id);
@@ -2064,3 +2113,7 @@ int parse_system_log_mnits(struct dcp_parse_ctx *handle, struct dcp_system_ev_mn
 
 	return 0;
 }
+
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+#include "parser-color-test.c"
+#endif

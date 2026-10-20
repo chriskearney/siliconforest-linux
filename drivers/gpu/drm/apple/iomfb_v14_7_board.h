@@ -44,6 +44,14 @@ struct dcp_v14_board {
 	 * board's panel: Linux registers its backlight and presents levels.
 	 */
 	bool panel_nits;
+	/*
+	 * DPMS off and system sleep power the panel off (A472(0)) after a
+	 * completed black frame, and its CRTC enable powers it on again (A475(1),
+	 * then A472(1)); the power callbacks that come with it are answered.
+	 * Otherwise the panel is only blanked, and powered off only with the lid
+	 * closed on a pipe with a Type-C route.
+	 */
+	bool panel_power;
 };
 
 /* Whether the DCP node or the machine (as @ctx gives them) has @compat. */
