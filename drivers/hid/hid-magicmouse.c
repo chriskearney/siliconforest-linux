@@ -907,9 +907,11 @@ struct tp_mouse_report {
  * The low byte of a record's first word is the contact's ID and the high
  * byte its state; 4 means touching. Touching contacts carry their touch and
  * tool areas and orientation, as in the J314 layout. Records in the
- * approach and lift-off states can have all-zero areas, and are skipped like
- * on the other MTP trackpads. The controller has no force sensor, so the
- * pressure word is always zero.
+ * approach and lift-off states can have all-zero areas; one without a touch
+ * area is skipped, like on the other MTP trackpads. A touching record is
+ * reported even without one, as an earlier capture had real contacts with a
+ * zero touch area. The controller has no force sensor, so the pressure word
+ * is always zero.
  *
  * The low byte of the second word is the controller's class for the
  * contact: 1 for a thumb, 2 and 3 for fingers, and 6, 7 or 11 for a
@@ -1075,7 +1077,8 @@ static int magicmouse_raw_event_mtp(struct hid_device *hdev,
 	n = 0;
 	for (i = 0; i < tp_hdr->num_fingers; i++) {
 		f = (struct tp_finger *)(data + hdr_sz + i * touch_sz);
-		if (le16_to_int(f->touch_major) == 0)
+		if (le16_to_int(f->touch_major) == 0 &&
+		    !(msc->mtp_c1fe && magicmouse_c1fe_touching(f)))
 			continue;
 
 		hid_dbg(hdev, "ev x:%04x y:%04x\n", le16_to_int(f->abs_x),
