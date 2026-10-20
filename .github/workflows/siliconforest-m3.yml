@@ -21,6 +21,12 @@ jobs:
         run: python3 tools/asahi/uvc-zero-length-tests.py --mutations
       - name: Display colour selection and surface-format controls
         run: python3 tools/asahi/display-colour-tests.py --mutations
+      - name: Charge-limit modes, SMC faults and concurrent writers
+        run: python3 tools/asahi/macsmc-charge-tests.py --mutations --output "$RUNNER_TEMP/charge-controls"
+      - name: G17 resource ownership and common-address allocation
+        env:
+          RUSTUP_TOOLCHAIN: 1.93.1
+        run: python3 tools/asahi/g17-resource-tests.py --mutations --output "$RUNNER_TEMP/g17-resources"
       - name: J516C record-word exception controls
         env:
           RUSTUP_TOOLCHAIN: 1.93.1

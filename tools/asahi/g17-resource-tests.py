@@ -5,12 +5,26 @@
 Run with Python and rustc; temporary host binaries are removed after the checks.
 """
 from pathlib import Path
+import argparse
+import hashlib
+import json
+import shutil
 import os
 import re
 import subprocess
 import tempfile
 
 DRIVER = Path(__file__).resolve().parents[2] / 'drivers/gpu/drm/asahi'
+
+def checked_run(command, check=True):
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command,
+                                            output=result.stdout, stderr=result.stderr)
+    if result.stdout:
+        print(result.stdout, end='')
+    return result
+
 
 def admission_tests(root, source):
     s=(source/'g17/queue/admission.rs').read_text();cfg=(source/'hw/t8140.rs').read_text()
@@ -61,6 +75,11 @@ def admission_tests(root, source):
      guarded.quarantined |= 1u64<<first;
      assert!(!guarded.reassign_unused_spare(spare as u8,Some(1),Some(2)),"keep another usable pair");
      guarded.quarantined=0;
+     guarded.quarantined=1u64<<spare;
+     assert!(!guarded.reassign_unused_spare(spare as u8,Some(1),Some(2)));
+     guarded.quarantined=0;guarded.kill_hold=1u64<<spare;
+     assert!(!guarded.reassign_unused_spare(spare as u8,Some(1),Some(2)));
+     guarded.kill_hold=0;
      assert!(guarded.reassign_unused_spare(spare as u8,Some(1),Some(2)));
      assert!(!guarded.reassign_unused_spare(first,None,Some(2)),"never take an owner's last pair");
      assert!(!guarded.reassign_unused_spare(0,None,Some(3)));
@@ -77,6 +96,8 @@ def admission_tests(root, source):
      recency.take_idle(9,1);let epoch=recency.epochs[9];
      assert_eq!(recency.borrow_warm_sibling(1,9),Some(2));
      assert_eq!(recency.epochs[2],0);assert_eq!(recency.epochs[9],epoch);
+     assert_eq!(recency.refs[2],1,"warming holds a live host borrower");
+     assert!(recency.active&(1<<2)!=0);
      recency.release(2);recency.release(9);
      for _ in 0..32 {let slot=recency.acquire(1).unwrap();assert_eq!(slot,9);recency.release(slot);}
      let a=recency.acquire(1).unwrap();let b=recency.acquire(1).unwrap();assert_ne!(a,b);
@@ -103,8 +124,8 @@ def admission_tests(root, source):
     }
     '''
     fixture=root/'admission-capacity-fixed-controls.rs';fixture.write_text(code)
-    subprocess.run([os.environ.get('RUSTC', 'rustc'),'--edition=2021',str(fixture),'-o',str(root/'admission-capacity-fixed-controls')],check=True)
-    subprocess.run([str(root/'admission-capacity-fixed-controls')],check=True)
+    checked_run([os.environ.get('RUSTC', 'rustc'),'--edition=2021',str(fixture),'-o',str(root/'admission-capacity-fixed-controls')],check=True)
+    checked_run([str(root/'admission-capacity-fixed-controls')],check=True)
 
 def queue_tests(root, source):
     source = source / "g17"
@@ -179,8 +200,8 @@ def queue_tests(root, source):
     }
     '''
     fixture=root/'queue-id-capacity-controls.rs';fixture.write_text(header+test)
-    subprocess.run([os.environ.get('RUSTC', 'rustc'),'--edition=2021',str(fixture),'-o',str(root/'queue-id-capacity-controls')],check=True)
-    subprocess.run([str(root/'queue-id-capacity-controls')],check=True)
+    checked_run([os.environ.get('RUSTC', 'rustc'),'--edition=2021',str(fixture),'-o',str(root/'queue-id-capacity-controls')],check=True)
+    checked_run([str(root/'queue-id-capacity-controls')],check=True)
     s=(source/'queue/render/parked.rs').read_text();guard=item(s,'pub(crate) fn can_yield_unused')
     fixture=root/'unused-render-guard-controls.rs';fixture.write_text('''#![allow(dead_code, unused_macros)]
     type Result<T> = std::result::Result<T,i32>;
@@ -204,8 +225,8 @@ def queue_tests(root, source):
      println!("unused graph: eight eligibility/error controls protect every publication boundary");
     }
     ''')
-    subprocess.run([os.environ.get('RUSTC', 'rustc'),'--edition=2021',str(fixture),'-o',str(root/'unused-render-guard-controls')],check=True)
-    subprocess.run([str(root/'unused-render-guard-controls')],check=True)
+    checked_run([os.environ.get('RUSTC', 'rustc'),'--edition=2021',str(fixture),'-o',str(root/'unused-render-guard-controls')],check=True)
+    checked_run([str(root/'unused-render-guard-controls')],check=True)
 
 def shared_alias_tests(root, source):
     s=(source/'g17/object.rs').read_text()
@@ -238,7 +259,7 @@ impl Drop for Mapping {fn drop(&mut self) {
 fn overlaps(s:&State,vm:usize,start:u64,size:u64)->bool {s.regions.iter().any(|r|r.vm==vm&&r.start<start+size&&start<r.start+r.size)}
 fn claim(vm:&Vm,address:u64,size:u64,object:u64)->Result<Mapping> {
  let mut state=vm.state.borrow_mut();
- if state.fault==Some(vm.id) {return Err(EIO)}
+ if state.fault==Some(vm.id) {state.fault=None;return Err(EIO)}
  if overlaps(&state,vm.id,address,size) {return Err(ENOSPC)}
  state.regions.push(Region {vm:vm.id,start:address,size,object});
  Ok(Mapping {vm:vm.id,address,size,object,state:vm.state.clone()})
@@ -347,11 +368,201 @@ fn main() {
  exhaustive_common_holes();
 }
 ''')
-    subprocess.run([os.environ.get('RUSTC','rustc'),'--edition=2021',str(fixture),'-o',str(root/'shared-alias-controls')],check=True)
-    subprocess.run([str(root/'shared-alias-controls')],check=True)
+    checked_run([os.environ.get('RUSTC','rustc'),'--edition=2021',str(fixture),'-o',str(root/'shared-alias-controls')],check=True)
+    checked_run([str(root/'shared-alias-controls')],check=True)
+
+def backing_lifetime_tests(root, source):
+    text = (source / 'g17/freelist.rs').read_text()
+    def item(text, start):
+        at = text.index(start)
+        begin = text.index('{', at)
+        end, depth = begin + 1, 1
+        while depth:
+            depth += (text[end] == '{') - (text[end] == '}')
+            end += 1
+        return text[at:end]
+    pages = text[text.index('impl Pages {'):text.index('/// Pool-object identities')]
+    render = text[text.index('impl RenderBacking {'):]
+    fw = (source / 'g17/fw/freelist.rs').read_text()
+    init = (source / 'g17/fw/initdata.rs').read_text()
+    constants = '\n'.join(re.search(r'(?:pub\(crate\) )?const ' + name + r': [^;]+;', body).group()
+                          for body, names in [(fw, ['TABLE_SIZE', 'PAGE_LIST_SIZE', 'RUN_LIST_SIZE', 'RENDER_BLOCKS']),
+                                              (init, ['FREE_LIST_PAGE_SIZE', 'FREE_LIST_BLOCK_PAGES', 'FREE_LIST_BLOCK_SIZE'])]
+                          for name in names)
+    code = r'''#![allow(dead_code)]
+use std::{cell::RefCell,rc::Rc};
+type Result<T=()> = std::result::Result<T,i32>;
+const EINVAL:i32=-22;const EIO:i32=-5;
+#[derive(Clone,Copy)] enum RunLayout {Render,Compute}
+enum CpuMap {WriteCombined}
+mod agx_memory_stats {pub enum KernelCategory {FreeList}}
+mod mmu {pub const UAT_PGSZ:usize=16384;pub const PROT_GPU_SHARED_RW:u8=3;
+ pub type KernelMapping=super::Mapping;pub type Vm=super::Vm;}
+#[derive(Default)] struct State {aliases:usize,canonical:bool,fail:u8,events:Vec<&'static str>}
+struct Vm;
+struct Mapping {state:Rc<RefCell<State>>}
+impl Drop for Mapping {fn drop(&mut self) {let mut s=self.state.borrow_mut();
+ assert!(s.canonical,"alias outlived canonical reservation");s.aliases-=1;s.events.push("alias");}}
+struct KernelObject {state:Rc<RefCell<State>>}
+impl Drop for KernelObject {fn drop(&mut self) {let mut s=self.state.borrow_mut();
+ assert_eq!(s.aliases,0,"canonical reservation returned before aliases");
+ s.canonical=false;s.events.push("backing");}}
+struct PoolTables {state:Rc<RefCell<State>>}
+impl PoolTables {fn init(&mut self,_base:u64,_blocks:usize,_layout:RunLayout)->Result {
+ if self.state.borrow().fail==2 {Err(EINVAL)} else {Ok(())}}}
+impl KernelObject {
+ fn classify_memory(&self,_category:agx_memory_stats::KernelCategory) {}
+ fn gpu_va(&self)->u64 {0x7004000000}
+ fn initialize<T>(&mut self,_offset:usize,init:impl FnOnce(&mut PoolTables)->Result)->Result {
+  let _=std::mem::size_of::<T>();
+  if self.state.borrow().fail==1 {return Err(EIO)}
+  init(&mut PoolTables {state:self.state.clone()})
+ }
+}
+struct Allocator<'a> {state:&'a Rc<RefCell<State>>}
+impl Allocator<'_> {fn lower_with_aliases(&self,_size:usize,_alignment:u64,_prot:u8,
+ _cpu:CpuMap,_aliases:[&Vm;2])->Result<(KernelObject,[Mapping;2])> {
+ let mut s=self.state.borrow_mut();s.canonical=true;s.aliases=2;
+ Ok((KernelObject {state:self.state.clone()},[Mapping {state:self.state.clone()},Mapping {state:self.state.clone()}]))
+}}
+'''
+    code += constants + '\n' + item(text, 'pub(crate) struct Pages')
+    code += '\nimpl Pages {\n' + item(pages, '    fn from_backing(') + '\n'
+    code += item(pages, '    fn initialize(') + '\n}\n'
+    code += item(text, 'pub(crate) struct RenderBacking')
+    code += '\nimpl RenderBacking {\n' + item(render, '    pub(crate) fn new(') + '\n}\n'
+    code += r'''
+fn main() {
+ for fail in [0,1,2] {
+  let state=Rc::new(RefCell::new(State {fail,..State::default()}));
+  let alloc=Allocator {state:&state};let vm=Vm;
+  let result=RenderBacking::new(&alloc,&vm,&vm,RENDER_BLOCKS);
+  match fail {0=>assert!(result.is_ok()),1=>assert!(matches!(result,Err(EIO))),2=>assert!(matches!(result,Err(EINVAL))),_=>unreachable!()}
+  drop(result);let s=state.borrow();assert_eq!(s.aliases,0);assert!(!s.canonical);
+  assert_eq!(s.events,["alias","alias","backing"]);
+ }
+ println!("render backing: success and both initialization error paths drop aliases before canonical backing");
+}
+'''
+    fixture = root / 'backing-lifetime-controls.rs'
+    fixture.write_text(code)
+    checked_run([os.environ.get('RUSTC', 'rustc'), '--edition=2021', str(fixture), '-o', str(root / 'backing-lifetime-controls')])
+    checked_run([str(root / 'backing-lifetime-controls')])
+
+
+SOURCE_FILES = [
+    'g17/queue/admission.rs', 'hw/t8140.rs', 'mmu.rs', 'g17/kick.rs',
+    'g17/fw/kick.rs', 'g17/queue/render/parked.rs', 'g17/object.rs',
+    'g17/freelist.rs', 'g17/fw/freelist.rs', 'g17/fw/initdata.rs',
+]
+
+
+def controls(output, source):
+    admission_tests(output, source)
+    queue_tests(output, source)
+    shared_alias_tests(output, source)
+    backing_lifetime_tests(output, source)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--mutations', action='store_true')
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    mutations = {
+        "initialize-before-owning-aliases": ("g17/freelist.rs", 'let mut value = Self {\n            _client: client,\n            _global: global,\n            pages: Pages { backing, blocks, layout: RunLayout::Render },\n        };\n        value.pages.initialize()?;\n        Ok(value)', 'let pages = Pages::from_backing(backing, blocks, RunLayout::Render)?;\n        Ok(Self { _client: client, _global: global, pages })'),
+        'reassign-wrong-owner': ('g17/queue/admission.rs',
+            '|| expected.is_some_and(|expected| expected != old)', '|| false'),
+        'reassign-quarantined': ('g17/queue/admission.rs',
+            '(self.active | self.quarantined | self.kill_hold) & bit != 0', 'false'),
+        'take-last-live-pair': ('g17/queue/admission.rs',
+            'self.released & bit == 0', 'false'),
+        'warm-without-reference': ('g17/queue/admission.rs',
+            'self.refs[usize::from(slot)] += 1;', 'self.refs[usize::from(slot)] += 0;'),
+        'warm-without-active-bit': ('g17/queue/admission.rs',
+            'self.active |= 1u64 << slot;', 'self.active |= 0;'),
+        'reuse-published-identity': ('g17/kick.rs',
+            'entry.id == id && !entry.published', 'entry.id == id'),
+        'accept-stale-identity': ('g17/kick.rs',
+            'entry.id == id && !entry.published', '!entry.published'),
+        'consume-render-minimum': ('g17/kick.rs',
+            'COMPUTE_RENDER_RESERVE.saturating_sub(render - replacement)', '0'),
+        'yield-published-graph': ('g17/queue/render/parked.rs',
+            '!self.graph_started && self.can_park_backing', 'self.can_park_backing'),
+        'retry-transport-error': ('g17/object.rs',
+            'error == ENOSPC && end < range.end', 'end < range.end'),
+        'skip-earlier-hole': ('g17/object.rs',
+            'range.start\n                    };', 'end\n                    };'),
+    }
+    results = {}
+    with tempfile.TemporaryDirectory(prefix='asahi-resource-tests-') as temporary:
+        work = Path(temporary)
+        for name in ['real'] + (list(mutations) if args.mutations else []):
+            source, output = work / name / 'source', work / name / 'output'
+            source.mkdir(parents=True)
+            output.mkdir()
+            for relative in SOURCE_FILES:
+                target = source / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(DRIVER / relative, target)
+            if name != 'real':
+                path, old, new = mutations[name]
+                target = source / path
+                text = target.read_text()
+                scope = None
+                if name in ('reassign-live-borrower', 'reassign-wrong-owner',
+                            'reassign-quarantined', 'take-last-live-pair'):
+                    begin = text.index('    fn reassign_unused_spare(')
+                    end = text.index('    fn warmable_sibling(', begin)
+                    scope = (begin, end)
+                    full = text
+                    text = text[begin:end]
+                if name == 'warm-without-active-bit':
+                    begin = text.index('    fn borrow_warm_sibling(')
+                    end = text.index('    fn cancel_empty_slot(', begin)
+                    scope = (begin, end)
+                    full = text
+                    text = text[begin:end]
+                if name in ('reuse-published-identity', 'accept-stale-identity'):
+                    begin = text.index('    pub(crate) fn can_cancel_unpublished(')
+                    end = text.index('    pub(crate) fn cancel_unpublished(', begin)
+                    scope = (begin, end)
+                    full = text
+                    text = text[begin:end]
+                if text.count(old) != 1:
+                    raise ValueError('mutation anchor must be unique: ' + name)
+                text = text.replace(old, new, 1)
+                if scope is not None:
+                    text = full[:scope[0]] + text + full[scope[1]:]
+                target.write_text(text)
+            # Capture fixture compiler/runtime output without confusing a compile
+            # failure with a mutation detected by a running test.
+            try:
+                controls(output, source)
+            except subprocess.CalledProcessError as error:
+                compiler = Path(os.environ.get('RUSTC', 'rustc')).name
+                if (name == 'real' or Path(str(error.cmd[0])).name == compiler
+                        or error.returncode not in (101, -6)
+                        or 'panicked at' not in (error.stderr or '')
+                        or str(output) not in (error.stderr or '')):
+                    raise RuntimeError((error.stderr or '') + '\n' + str(error)) from error
+                results[name] = {'runtime_rejected': True, 'returncode': error.returncode,
+                                 'stderr': error.stderr.replace(str(work), '<temporary>')}
+            else:
+                if name != 'real':
+                    raise RuntimeError('mutation survived: ' + name)
+                results[name] = {'passed': True}
+            print(name + (': PASS' if name == 'real' else ': runtime mutation rejected'))
+    receipt = {
+        'source_sha256': {p: hashlib.sha256((DRIVER / p).read_bytes()).hexdigest()
+                          for p in SOURCE_FILES},
+        'results': results,
+        'scope': 'Source-derived host controls; no GPU hardware or timing claim.',
+    }
+    if args.output:
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+
 
 if __name__ == '__main__':
-    with tempfile.TemporaryDirectory(prefix='asahi-resource-tests-') as temporary:
-        admission_tests(Path(temporary), DRIVER)
-        queue_tests(Path(temporary), DRIVER)
-        shared_alias_tests(Path(temporary), DRIVER)
+    main()
