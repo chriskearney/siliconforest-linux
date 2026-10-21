@@ -52,6 +52,17 @@ MODULE_PARM_DESC(asym_threshold,
 		"threshold (Mb/s) when to Gen 4 switch link symmetry. 0 disables. (default: "
 		__MODULE_STRING(TB_ASYM_THRESHOLD) ")");
 
+/*
+ * DIAGNOSTIC BUILD ONLY. Never promote this default to a release.
+ * Reverse the initial T6030 host DP IN preference to distinguish a fault
+ * following DPIN1 from one following the dock's downstream HDMI converter.
+ * No clock, adapter register, bandwidth or display mode is changed here.
+ */
+static bool apple_dpin_reverse = true;
+module_param(apple_dpin_reverse, bool, 0444);
+MODULE_PARM_DESC(apple_dpin_reverse,
+		"Diagnostic only: reverse initial dual-stream T6030 host DP IN preference");
+
 /**
  * struct tb_cm - Simple Thunderbolt connection manager
  * @tunnel_list: List of active tunnels
@@ -116,6 +127,12 @@ static void tb_add_dp_resources(struct tb_switch *sw)
 {
 	struct tb_cm *tcm = tb_priv(sw->tb);
 	struct tb_port *port;
+	bool reverse = apple_dpin_reverse && !tb_route(sw) &&
+		       sw->tb->nhi->host_dp_dual_stream &&
+		       of_machine_is_compatible("apple,t6030");
+
+	if (reverse)
+		tb_sw_warn(sw, "DIAGNOSTIC: reversed initial host DP IN preference\n");
 
 	tb_switch_for_each_port(sw, port) {
 		if (!tb_port_is_dpin(port))
@@ -130,7 +147,7 @@ static void tb_add_dp_resources(struct tb_switch *sw)
 		 * before DP IN of the host router. This way external GPU(s)
 		 * will be prioritized when pairing DP IN to a DP OUT.
 		 */
-		if (tb_route(sw))
+		if (tb_route(sw) || reverse)
 			list_add(&port->list, &tcm->dp_resources);
 		else
 			list_add_tail(&port->list, &tcm->dp_resources);
