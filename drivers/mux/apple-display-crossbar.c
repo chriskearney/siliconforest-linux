@@ -291,6 +291,23 @@ static void apple_dpxbar_t6030_link(struct apple_dpxbar *xbar,
 	}
 	/* No T8103 cycle-slip workaround: T602X does not require one. */
 	xbar->tunnel_link_up[index] = up;
+	dev_dbg(xbar->dev,
+		"T6030 %s source=%u up=%u pclk=%u mux=%08x rdsel=%08x outsel=%08x gates=%08x/%08x/%08x clocks=%08x/%08x/%08x/%08x/%08x status=%08x/%08x/%08x/%08x/%08x\n",
+		apple_dpxbar_names[index], state, up, pclk2 ? 2 : 1,
+		readl(xbar->regs + T602X_MUX_SELECT),
+		readl(xbar->regs + T602X_RD_SELECT),
+		readl(xbar->regs + T602X_OUT_SELECT),
+		readl(xbar->regs + T602X_FIFO_WR_N_CLK_EN),
+		readl(xbar->regs + T602X_RD_GATE),
+		readl(xbar->regs + T602X_OUT_GATE),
+		readl(xbar->regs + T602X_FIFO_WR_DPTX_CLK_EN),
+		readl(xbar->regs + T602X_RD_PCLK1),
+		readl(xbar->regs + T602X_RD_PCLK2),
+		readl(xbar->regs + T602X_OUT_PCLK1),
+		readl(xbar->regs + T602X_OUT_PCLK2),
+		readl(xbar->regs + 0x800), readl(xbar->regs + 0x808),
+		readl(xbar->regs + 0x80c), readl(xbar->regs + 0x814),
+		readl(xbar->regs + 0x818));
 }
 
 /* Standard mux ownership, but Activate only routes; DidChange enables clocks. */
