@@ -137,11 +137,73 @@ static void hdmi_service_waits_for_the_link(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, t->hdmi->refused, 0U);
 }
 
+static void hdmi_service_usb4_is_opt_in(struct kunit *test)
+{
+	static const int results[] = { 0 };
+	struct hdmi_test *t = hdmi_test_setup(test);
+	struct apple_dcp_typec_route route = {};
+	bool saved = usb4_sink_service;
+
+	t->results = results;
+	t->count = ARRAY_SIZE(results);
+	t->dcp->active_typec_route = &route;
+	t->dcp->dptx_tunnel = true;
+	usb4_sink_service = false;
+	KUNIT_EXPECT_TRUE(test, hdmi_test_run(t));
+	KUNIT_EXPECT_EQ(test, t->calls, 0U);
+	usb4_sink_service = true;
+	KUNIT_EXPECT_TRUE(test, hdmi_test_run(t));
+	KUNIT_EXPECT_TRUE(test, dcp_hdmi_link_up(t->dcp));
+	KUNIT_EXPECT_EQ(test, t->calls, 1U);
+	KUNIT_EXPECT_EQ(test, t->hdmi->refused, 0U);
+	usb4_sink_service = saved;
+	t->dcp->active_typec_route = NULL;
+}
+
+static void hdmi_service_usb4_refuses_direct_typec(struct kunit *test)
+{
+	struct hdmi_test *t = hdmi_test_setup(test);
+	struct apple_dcp_typec_route route = {};
+	bool saved = usb4_sink_service;
+
+	t->dcp->active_typec_route = &route;
+	usb4_sink_service = true;
+	KUNIT_EXPECT_FALSE(test, dcp_hdmi_link_up(t->dcp));
+	KUNIT_EXPECT_TRUE(test, hdmi_test_run(t));
+	KUNIT_EXPECT_EQ(test, t->calls, 0U);
+	usb4_sink_service = saved;
+	t->dcp->active_typec_route = NULL;
+}
+
+static void hdmi_service_usb4_needs_a_live_link(struct kunit *test)
+{
+	struct hdmi_test *t = hdmi_test_setup(test);
+	struct apple_dcp_typec_route route = {};
+	bool saved = usb4_sink_service;
+
+	t->dcp->active_typec_route = &route;
+	t->dcp->dptx_tunnel = true;
+	usb4_sink_service = true;
+	t->dcp->crashed = true;
+	KUNIT_EXPECT_FALSE(test, dcp_hdmi_link_up(t->dcp));
+	t->dcp->crashed = false;
+	t->dcp->dptxport[0].connected = false;
+	KUNIT_EXPECT_FALSE(test, dcp_hdmi_link_up(t->dcp));
+	t->dcp->dptxport[0].connected = true;
+	t->dcp->dptxport[0].enabled = false;
+	KUNIT_EXPECT_FALSE(test, dcp_hdmi_link_up(t->dcp));
+	usb4_sink_service = saved;
+	t->dcp->active_typec_route = NULL;
+}
+
 static struct kunit_case hdmi_service_cases[] = {
 	KUNIT_CASE(hdmi_service_failure_is_retried),
 	KUNIT_CASE(hdmi_service_stops_after_three_refusals),
 	KUNIT_CASE(hdmi_service_refusals_must_be_in_a_row),
 	KUNIT_CASE(hdmi_service_waits_for_the_link),
+	KUNIT_CASE(hdmi_service_usb4_is_opt_in),
+	KUNIT_CASE(hdmi_service_usb4_refuses_direct_typec),
+	KUNIT_CASE(hdmi_service_usb4_needs_a_live_link),
 	{}
 };
 
