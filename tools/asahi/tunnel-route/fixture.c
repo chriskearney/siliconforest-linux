@@ -41,6 +41,7 @@ struct apple_dcp_typec_port {
     bool dp_wanted, dp_hpd;
 };
 static bool t6030;
+static int t6030_dpin0_source = -1;
 static bool of_machine_is_compatible(const char *compatible)
 {
     assert(!strcmp(compatible, "apple,t6030"));
@@ -87,6 +88,23 @@ int main(void)
             /* Late migration checks the real route, even with a stale snapshot. */
             source2.core.tunnel_clock_blocked = 0;
             assert(dcp_typec_tunnel_ctl(&source2, 0) == &chip.mux[1]);
+        }
+    }
+    for (unsigned int soc = 0; soc < 2; soc++) {
+        t6030 = soc;
+        for (int first = 0; first <= 2; first += 2) {
+            t6030_dpin0_source = first;
+            dcp_fabric_snapshot_port(&port, true);
+            assert(source0.core.tunnel_clock_blocked ==
+                   (soc ? BIT(first == 0 ? 1 : 0) : 0));
+            assert(source2.core.tunnel_clock_blocked ==
+                   (soc ? BIT(first == 2 ? 1 : 0) : 0));
+            for (unsigned int dpin = 0; dpin < 2; dpin++) {
+                assert(!!dcp_typec_tunnel_ctl(&source0, dpin) ==
+                       (!soc || dpin == (first == 0 ? 0 : 1)));
+                assert(!!dcp_typec_tunnel_ctl(&source2, dpin) ==
+                       (!soc || dpin == (first == 2 ? 0 : 1)));
+            }
         }
     }
     puts("PASS: DCP snapshot, named/legacy controls, invalid DP IN, stale snapshot");

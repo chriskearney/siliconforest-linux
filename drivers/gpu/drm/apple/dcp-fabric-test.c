@@ -2152,6 +2152,66 @@ static void fabric_t6030_clock_routes_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, dcp_fabric_tunnel_clock_blocked(false, 2), (u8)0);
 }
 
+static void fabric_t6030_forced_pairing_test(struct kunit *test)
+{
+	struct fabric_fixture f;
+	unsigned int first, p, r;
+
+	for (first = 0; first <= 2; first += 2) {
+		fabric_t6030_init(&f);
+		for (p = 0; p < 3; p++)
+			for (r = 0; r < 2; r++)
+				f.route[p][r].tunnel_clock_blocked =
+					dcp_fabric_tunnel_source_mask(true, 2 * r, first);
+		/* Wait for the selected processor instead of testing the wrong one. */
+		f.pipeline[first / 2].services_ready = false;
+		KUNIT_EXPECT_EQ(test, fabric_tunnel(&f, 0, 0), -EAGAIN);
+		f.pipeline[first / 2].services_ready = true;
+		KUNIT_ASSERT_EQ(test, fabric_tunnel(&f, 0, 0), 0);
+		KUNIT_EXPECT_PTR_EQ(test, f.port[0].owner[0], &f.route[0][first / 2]);
+		KUNIT_ASSERT_EQ(test, fabric_tunnel(&f, 0, 1), 0);
+		KUNIT_EXPECT_PTR_EQ(test, f.port[0].owner[1], &f.route[0][1 - first / 2]);
+		fabric_release(&f, 0, 0);
+		fabric_release(&f, 0, 1);
+		/* The same fixed pairing holds if the second stream arrives first. */
+		KUNIT_ASSERT_EQ(test, fabric_tunnel(&f, 0, 1), 0);
+		KUNIT_EXPECT_PTR_EQ(test, f.port[0].owner[1], &f.route[0][1 - first / 2]);
+		KUNIT_ASSERT_EQ(test, fabric_tunnel(&f, 0, 0), 0);
+		KUNIT_EXPECT_PTR_EQ(test, f.port[0].owner[0], &f.route[0][first / 2]);
+		fabric_release(&f, 0, 0);
+		fabric_release(&f, 0, 1);
+		/* A real HDMI owner stays protected during the diagnostic. */
+		f.pipeline[first / 2].fixed_busy = true;
+		KUNIT_EXPECT_EQ(test, fabric_tunnel(&f, 0, 0), -EBUSY);
+	}
+}
+
+static void fabric_t6030_source_mask_test(struct kunit *test)
+{
+	static const int preferences[] = { -1, 0, 2, 1, -2, INT_MAX };
+	unsigned int source, i;
+
+	for (source = 0; source < 9; source++) {
+		for (i = 0; i < ARRAY_SIZE(preferences); i++) {
+			int first = preferences[i];
+			u8 expected;
+
+			KUNIT_EXPECT_EQ(test,
+				dcp_fabric_tunnel_source_mask(false, source, first), (u8)0);
+			if (source != 0 && source != 2)
+				expected = 3;
+			else if (first == -1)
+				expected = 0;
+			else if (first != 0 && first != 2)
+				expected = 3;
+			else
+				expected = source == (unsigned int)first ? BIT(1) : BIT(0);
+			KUNIT_EXPECT_EQ(test,
+				dcp_fabric_tunnel_source_mask(true, source, first), expected);
+		}
+	}
+}
+
 static void fabric_t6030_plan_test(struct kunit *test)
 {
 	struct fabric_fixture f;
@@ -2326,6 +2386,8 @@ static struct kunit_case fabric_tests[] = {
 	KUNIT_CASE(relink_stamp_test),
 	KUNIT_CASE(fabric_t6030_dual_policy_test),
 	KUNIT_CASE(fabric_t6030_clock_routes_test),
+	KUNIT_CASE(fabric_t6030_forced_pairing_test),
+	KUNIT_CASE(fabric_t6030_source_mask_test),
 	KUNIT_CASE(fabric_t6030_plan_test),
 	KUNIT_CASE(fabric_t6030_follow_test),
 	KUNIT_CASE(fabric_reclaim_transaction_test),

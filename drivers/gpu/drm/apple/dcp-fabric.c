@@ -5,6 +5,7 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/jiffies.h>
+#include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/mux/driver.h>
 #include <linux/of_device.h>
@@ -37,6 +38,29 @@ static bool typec_follow_crtc = true;
 module_param(typec_follow_crtc, bool, 0444);
 MODULE_PARM_DESC(typec_follow_crtc,
 		 "Let direct DP-alt routes follow their selected CRTC (default: on)");
+
+/* Attended isolation build only; never promote this default to a release. */
+static int t6030_dpin0_source = 0;
+
+static int dcp_t6030_source_set(const char *value, const struct kernel_param *parameter)
+{
+	int source, ret = kstrtoint(value, 0, &source);
+
+	if (ret)
+		return ret;
+	if (source != -1 && source != 0 && source != 2)
+		return -EINVAL;
+	*(int *)parameter->arg = source;
+	return 0;
+}
+
+static const struct kernel_param_ops dcp_t6030_source_ops = {
+	.set = dcp_t6030_source_set,
+	.get = param_get_int,
+};
+module_param_cb(t6030_dpin0_source, &dcp_t6030_source_ops, &t6030_dpin0_source, 0444);
+MODULE_PARM_DESC(t6030_dpin0_source,
+		 "diagnostic: pin M3 Pro dock DPIN0 to source 0 or 2 and DPIN1 to the other source (-1 automatic; this diagnostic build defaults to 0)");
 
 struct apple_dcp_typec_port {
 	struct dcp_fabric_port core;
@@ -960,8 +984,9 @@ static void dcp_fabric_snapshot_port(struct apple_dcp_typec_port *port,
 		route->core.pipeline = pipeline;
 		route->core.tunnel = route->tunnel;
 		route->core.dpin = route->tunnel_dpin;
-		route->core.tunnel_clock_blocked = dcp_fabric_tunnel_clock_blocked(
-			of_machine_is_compatible("apple,t6030"), route->mux_index);
+		route->core.tunnel_clock_blocked = dcp_fabric_tunnel_source_mask(
+			of_machine_is_compatible("apple,t6030"), route->mux_index,
+			t6030_dpin0_source);
 		*tail = &route->core;
 		tail = &route->core.next;
 	}
@@ -2296,8 +2321,9 @@ static struct mux_control *
 dcp_typec_tunnel_ctl(struct apple_dcp_typec_route *route, unsigned int dpin)
 {
 	if (dpin > 1 ||
-	    (dcp_fabric_tunnel_clock_blocked(of_machine_is_compatible("apple,t6030"),
-					     route->mux_index) & BIT(dpin)))
+	    (dcp_fabric_tunnel_source_mask(of_machine_is_compatible("apple,t6030"),
+					   route->mux_index,
+					   t6030_dpin0_source) & BIT(dpin)))
 		return NULL;
 	if (route->dpin[dpin])
 		return route->dpin[dpin];

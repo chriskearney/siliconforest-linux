@@ -34,6 +34,19 @@ u8 dcp_fabric_tunnel_clock_blocked(bool t6030, unsigned int source)
 }
 EXPORT_SYMBOL_GPL(dcp_fabric_tunnel_clock_blocked);
 
+/* Diagnostic pairing restriction; never expands the admitted clock sources. */
+u8 dcp_fabric_tunnel_source_mask(bool t6030, unsigned int source, int dpin0_source)
+{
+	u8 blocked = dcp_fabric_tunnel_clock_blocked(t6030, source);
+
+	if (!t6030 || dpin0_source == -1)
+		return blocked;
+	if (dpin0_source != 0 && dpin0_source != 2)
+		return BIT(0) | BIT(1);
+	return blocked | BIT(source == (unsigned int)dpin0_source ? 1 : 0);
+}
+EXPORT_SYMBOL_GPL(dcp_fabric_tunnel_source_mask);
+
 int dcp_fabric_tunnel_request(const struct dcp_fabric_port *ports,
 			      unsigned long key, unsigned int dpin,
 			      const struct dcp_fabric_port **found)
