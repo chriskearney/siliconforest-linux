@@ -6450,3 +6450,7 @@ void __exit dcp_unregister(void)
 {
 	platform_driver_unregister(&apple_platform_driver);
 }
+
+#if IS_ENABLED(CONFIG_DRM_APPLE_DISPLAY_KUNIT_TEST)
+#include "dcp_h17p_refusal_test.c"
+#endif
