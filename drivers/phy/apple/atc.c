@@ -715,7 +715,8 @@ struct atcphy_hw {
  * @tunnel_rate: DP link rate code the t8103 tunnel pixel clock is set up for
  * @tunnel_users: DP IN adapters (BIT(dpin)) whose tunnel pixel clock runs; on
  *	t8103 and t600x both share the one clock
- * @tunnel_dpin_rate: DP link rate code each T602X DP IN adapter's clock runs at
+ * @tunnel_dpin_rate: DP link rate code each T602X/T6030 DP IN clock runs at
+ * @tunnel_source: T6030 display source owning each DP IN clock
  * @dp_t8122: DisplayPort state of a T8122 generation PHY
  * @dp_t8122.aux: The AUX channel block is powered
  * @dp_t8122.pll: The AUSPLL runs for the DisplayPort main link
@@ -802,7 +803,7 @@ struct apple_atcphy {
 	u8 tunnel_rate;
 	u8 tunnel_users;
 	u8 tunnel_dpin_rate[2];
-	unsigned int tunnel_source; /* T6030 source owning the single DP IN0 clock */
+	unsigned int tunnel_source[2]; /* T6030 source owning each DP IN clock */
 
 	struct {
 		bool aux;
@@ -2548,10 +2549,40 @@ static int atc_t8122_tunnel_stop(struct apple_atcphy *atcphy)
 	}
 	atcphy->tunnel_clock_on = false;
 	atcphy->tunnel_rate = 0;
+	atcphy->tunnel_users = 0;
+	atcphy->tunnel_dpin_rate[0] = 0;
+	atcphy->tunnel_dpin_rate[1] = 0;
 	return 0;
 }
 
-static int atc_t8122_tunnel_start(struct apple_atcphy *atcphy, u8 rate)
+static void atc_t8122_tunnel_pclk(struct apple_atcphy *atcphy,
+				 unsigned int pclk, u32 selector)
+{
+	u32 enable = pclk ? DPTX_PCLK2_ENABLE : DPTX_PCLK1_ENABLE;
+	u32 select = pclk ? DPTX_PCLK2_SELECT : DPTX_PCLK1_SELECT;
+	u32 value = pclk ? FIELD_PREP(DPTX_PCLK2_SELECT, selector) :
+			   FIELD_PREP(DPTX_PCLK1_SELECT, selector);
+
+	lockdep_assert_held(&atcphy->lock);
+	/* PCLK1 is also DPIN1's prerequisite: retuning DPIN0 must not gate it. */
+	if (!pclk && (atcphy->tunnel_users & BIT(1)))
+		value |= DPTX_PCLK1_ENABLE;
+	core_mask32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0,
+		    enable | select, value);
+	/* Enable the prerequisite before the second stream's pixel clock. */
+	if (pclk) {
+		if (!(atcphy->tunnel_users & BIT(0)))
+			core_mask32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0,
+				    DPTX_PCLK1_SELECT,
+				    FIELD_PREP(DPTX_PCLK1_SELECT, selector));
+		core_set32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0,
+			   DPTX_PCLK1_ENABLE);
+	}
+	core_set32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0, enable);
+}
+
+static int atc_t8122_tunnel_start(struct apple_atcphy *atcphy,
+				unsigned int pclk, u8 rate)
 {
 	u32 selector, value, saved_tx;
 	int ret, cleanup;
@@ -2577,13 +2608,7 @@ static int atc_t8122_tunnel_start(struct apple_atcphy *atcphy, u8 rate)
 		/* A failed shutdown retains ownership, but is not a running clock. */
 		if (!atcphy->tunnel_rate)
 			return -EBUSY;
-		if (atcphy->tunnel_rate == rate)
-			return 0;
-		core_mask32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0,
-			    DPTX_PCLK1_ENABLE | DPTX_PCLK1_SELECT,
-			    FIELD_PREP(DPTX_PCLK1_SELECT, selector));
-		core_set32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0,
-			   DPTX_PCLK1_ENABLE);
+		atc_t8122_tunnel_pclk(atcphy, pclk, selector);
 		atcphy->tunnel_rate = rate;
 		return 0;
 	}
@@ -2596,7 +2621,8 @@ static int atc_t8122_tunnel_start(struct apple_atcphy *atcphy, u8 rate)
 
 	/* Inactive slots use selector zero; all gates stay off during PLL setup. */
 	core_mask32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0, GENMASK(15, 4),
-		    FIELD_PREP(DPTX_PCLK1_SELECT, selector));
+		    FIELD_PREP(DPTX_PCLK1_SELECT, selector) |
+		    (pclk ? FIELD_PREP(DPTX_PCLK2_SELECT, selector) : 0));
 	core_set32(atcphy, ACIOPHY_CFG0, ACIOPHY_CFG0_COMMON_SMALL);
 	core_set32(atcphy, ACIOPHY_CFG0, ACIOPHY_CFG0_COMMON_SMALL_OV);
 	udelay(1);
@@ -2638,7 +2664,7 @@ static int atc_t8122_tunnel_start(struct apple_atcphy *atcphy, u8 rate)
 		goto fail;
 	core_set32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0,
 		   DPTXPHY_PMA_LANE_RESET_N | DPTXPHY_PMA_LANE_RESET_N_OV);
-	core_set32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0, DPTX_PCLK1_ENABLE);
+	atc_t8122_tunnel_pclk(atcphy, pclk, selector);
 	atcphy->tunnel_rate = rate;
 	return 0;
 
@@ -3124,7 +3150,7 @@ static int atc_tunnel_set_t602x(struct apple_atcphy *atcphy, unsigned int dpin,
 	return 0;
 }
 
-/* T6030 (M3 Pro): T8122-generation PHYs, only the DP IN0 route so far. */
+/* T6030 (M3 Pro) uses T8122-generation PHYs for both DP IN clock outputs. */
 static bool apple_atc_tunnel_is_t6030(struct apple_atcphy *atcphy)
 {
 	return of_machine_is_compatible("apple,t6030") &&
@@ -3921,27 +3947,51 @@ int apple_atc_dp_tunnel_rate_source(struct phy *phy, unsigned int source,
 				    unsigned int dpin, u8 rate)
 {
 	struct apple_atcphy *atcphy;
-	int ret;
+	int pclk, ret;
 
 	if (!phy || phy->ops != &apple_atc_dp_phy_ops || dpin > 1)
 		return -EINVAL;
 	atcphy = phy_get_drvdata(phy);
-	if (!apple_atc_tunnel_is_t6030(atcphy) ||
-	    apple_dp_tunnel_t6030_pclk(source, dpin) < 0)
+	pclk = apple_dp_tunnel_t6030_pclk(source, dpin);
+	if (!apple_atc_tunnel_is_t6030(atcphy) || pclk < 0)
 		return -EOPNOTSUPP;
 	guard(mutex)(&atcphy->lock);
 	atcphy_restore_after_pd_off(atcphy);
 	/* A stale source must not retune or stop another source's clock. */
-	if (atcphy->tunnel_clock_on && atcphy->tunnel_source != source)
+	if ((atcphy->tunnel_users & BIT(dpin)) &&
+	    atcphy->tunnel_source[dpin] != source)
 		return -ESTALE;
-	if (!rate)
-		return atc_t8122_tunnel_stop(atcphy);
+	if (!rate) {
+		if (!(atcphy->tunnel_users & BIT(dpin)))
+			return 0;
+		if (!(atcphy->tunnel_users & ~BIT(dpin)))
+			return atc_t8122_tunnel_stop(atcphy);
+		/* Release only this stream; the other stream keeps its PLL and gates. */
+		if (pclk)
+			core_clear32(atcphy, ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0,
+				     DPTX_PCLK2_ENABLE);
+		atcphy->tunnel_users &= ~BIT(dpin);
+		atcphy->tunnel_dpin_rate[dpin] = 0;
+		return 0;
+	}
 	if (atcphy->mode != APPLE_ATCPHY_MODE_USB4 &&
 	    atcphy->mode != APPLE_ATCPHY_MODE_TBT)
 		return -EBUSY;
+	if (atcphy->tunnel_clock_on && !atcphy->tunnel_rate)
+		return -EBUSY;
 	/* Keep this owner if a failed start cannot shut the PLL down. */
-	atcphy->tunnel_source = source;
-	ret = atc_t8122_tunnel_start(atcphy, rate);
+	if ((atcphy->tunnel_users & BIT(1 - dpin)) &&
+	    atcphy->tunnel_source[1 - dpin] == source)
+		return -EBUSY;
+	if ((atcphy->tunnel_users & BIT(dpin)) &&
+	    atcphy->tunnel_dpin_rate[dpin] == rate && atcphy->tunnel_rate)
+		return 0;
+	atcphy->tunnel_source[dpin] = source;
+	ret = atc_t8122_tunnel_start(atcphy, pclk, rate);
+	if (!ret || (atcphy->tunnel_clock_on && !atcphy->tunnel_rate)) {
+		atcphy->tunnel_users |= BIT(dpin);
+		atcphy->tunnel_dpin_rate[dpin] = ret ? 0 : rate;
+	}
 	dev_dbg(atcphy->dev, "DP tunnel source %u rate 0x%x: %d (TX_DP_CTRL0=%08x PCLK_STAT=%08x)\n",
 		source, rate, ret,
 		readl(atcphy->regs.core + ACIOPHY_LANE_DP_CFG_BLK_TX_DP_CTRL0),

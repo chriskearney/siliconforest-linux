@@ -186,7 +186,7 @@ static bool dcp_typec_route_available(struct apple_dcp_typec_route *route)
 		.fixed_busy = dcp_typec_route_busy(route),
 	};
 
-	struct dcp_fabric_policy policy = { .dual_stream = dcp_typec_dual_stream() };
+	struct dcp_fabric_policy policy = { .dual_stream = dcp_typec_ordered_dual_stream() };
 
 	/* Only H17P routes prepare SAFE: their pipeline stays owned until commit. */
 	list_for_each_entry(port, &dcp_typec_ports, link) {
@@ -206,6 +206,13 @@ static bool dcp_typec_route_available(struct apple_dcp_typec_route *route)
 bool dcp_typec_dual_stream(void)
 {
 	return atomic_read(&dcp_dual_stream_routes) > 0;
+}
+
+/* Keep native T6030 routes pinned to their owning processor, on either DPIN. */
+bool dcp_typec_ordered_dual_stream(void)
+{
+	return dcp_fabric_ordered_dual_stream(dcp_typec_dual_stream(),
+					    of_machine_is_compatible("apple,t6030"));
 }
 
 /*
@@ -235,7 +242,7 @@ static bool dcp_typec_port_follows(struct apple_dcp_typec_port *port)
 /* Is a routed port's possible_crtcs narrowed to the pipeline driving it? */
 static bool dcp_typec_narrows(struct apple_dcp *dcp)
 {
-	return !dcp_typec_dual_stream() && !dcp_typec_follows_crtc(dcp);
+	return !dcp_typec_ordered_dual_stream() && !dcp_typec_follows_crtc(dcp);
 }
 
 bool dcp_is_typec_only(struct platform_device *pdev)
@@ -501,7 +508,7 @@ static int dcp_typec_route_release(struct apple_dcp_typec_route *route)
 		schedule_work(&connector->bl_sync_wq);
 
 		/* Unrouted: the port could go to any of its pipelines again. */
-		if (connector->port_encoder && !dcp_typec_dual_stream())
+		if (connector->port_encoder && !dcp_typec_ordered_dual_stream())
 			connector->port_encoder->possible_crtcs =
 				connector->candidate_crtcs;
 	}
@@ -644,7 +651,7 @@ static bool dcp_typec_keep_order(void)
 {
 	struct drm_device *drm;
 
-	if (!dcp_typec_dual_stream())
+	if (!dcp_typec_ordered_dual_stream())
 		return false;
 	drm = dcp_typec_drm();
 	if (!drm || !READ_ONCE(drm->registered))
@@ -668,7 +675,7 @@ static bool dcp_hdmi_settle_enabled(struct apple_dcp *dcp)
 {
 	return dcp->hdmi_hpd &&
 	       dcp_fabric_hdmi_settle_enabled(!!dcp->fixed_phy, dcp->nr_typec_routes,
-					      dcp_typec_dual_stream());
+					      dcp_typec_ordered_dual_stream());
 }
 
 static enum dcp_fabric_presence_state dcp_hdmi_presence(struct apple_dcp *dcp)
@@ -1041,7 +1048,7 @@ static struct apple_dcp_typec_route *
 dcp_typec_free_route(struct apple_dcp_typec_port *port)
 {
 	struct dcp_fabric_policy policy = {
-		.dual_stream = dcp_typec_dual_stream(),
+		.dual_stream = dcp_typec_ordered_dual_stream(),
 		.follow = dcp_typec_port_follows(port),
 	};
 
@@ -1326,7 +1333,7 @@ static void dcp_typec_pipeline_freed(void)
  */
 void dcp_typec_reorder(void)
 {
-	if (!dcp_typec_dual_stream())
+	if (!dcp_typec_ordered_dual_stream())
 		return;
 
 	guard(mutex)(&dcp_typec_fabric_lock);
@@ -2132,7 +2139,9 @@ int dcp_tunnel_set_rate(struct apple_dcp *dcp, struct phy *phy, u32 unit,
 	if (!dcp_fabric_callback_valid(route->tunnel_generation, dcp->tb_generation))
 		return -ESTALE;
 	if (of_machine_is_compatible("apple,t6030") &&
-	    (unit || dcp->dptx_dfp_port != 1))
+	    (unit || dcp->dptx_dfp_port != 1 + route->tunnel_dpin ||
+	     apple_dp_tunnel_t6030_pclk(route->mux_index,
+				      route->tunnel_dpin) < 0))
 		return -EOPNOTSUPP;
 	if (unit) {
 		/* Each DP IN owns a reference, including on a shared clock. */
@@ -2321,7 +2330,7 @@ static int dcp_tb_candidate(void *data)
 
 	{
 		struct dcp_fabric_policy policy = {
-			.dual_stream = dcp_typec_dual_stream(),
+			.dual_stream = dcp_typec_ordered_dual_stream(),
 			.follow = dcp_typec_port_follows(port),
 		};
 		struct dcp_fabric_route *chosen;
@@ -2989,7 +2998,7 @@ static int dcp_typec_follow_decide(struct apple_dcp *dcp, struct drm_crtc *crtc,
 				   struct apple_connector *connector,
 				   struct dcp_typec_follow *follow)
 {
-	struct dcp_fabric_policy policy = { .dual_stream = dcp_typec_dual_stream() };
+	struct dcp_fabric_policy policy = { .dual_stream = dcp_typec_ordered_dual_stream() };
 	struct apple_dcp_typec_route *from, *to, *holder, *back = NULL;
 	struct apple_dcp_typec_port *port, *other = NULL;
 	bool secondary, off = false;
@@ -3765,6 +3774,13 @@ static int dcp_typec_route_wiring(struct apple_dcp_typec_route *route,
 				return -EINVAL;
 		}
 	}
+	if (!named[0] && !named[1] && !legacy &&
+	    apple_dp_tunnel_t6030_legacy_mux(dev->of_node, index)) {
+		if (route->xbar != &route->xbar->chip->mux[0] ||
+		    route->xbar->chip->controllers < 3)
+			return -EINVAL;
+		legacy = &route->xbar->chip->mux[1];
+	}
 	wiring = dcp_fabric_wiring(named[0], named[1], !!legacy,
 				   dcp_typec_route_endpoints(connector_np));
 	if (wiring == DCP_FABRIC_INVALID_WIRING)
@@ -3774,7 +3790,7 @@ static int dcp_typec_route_wiring(struct apple_dcp_typec_route *route,
 		/* Old j414/j416 ESP DTBs name cell 1 but never name cell 2. */
 		route->dpin[0] = legacy;
 		route->dpin[1] = &route->xbar->chip->mux[2];
-		dev_warn_once(dev, "legacy typecN-usb4 DPIN wiring; update the device tree\n");
+		dev_warn_once(dev, "implicit DPIN wiring; update the device tree\n");
 	}
 	return 0;
 }
@@ -4062,7 +4078,7 @@ static bool dcp_hdmi_keep_order(void *ctx)
 
 static bool dcp_hdmi_dual_stream(void *ctx)
 {
-	return dcp_typec_dual_stream();
+	return dcp_typec_ordered_dual_stream();
 }
 
 static int dcp_hdmi_read_hpd(void *ctx)
@@ -4253,7 +4269,7 @@ static bool dcp_typec_hdmi_reclaim(struct apple_dcp *dcp)
 	struct dcp_hdmi_reclaim_context ctx;
 
 	lockdep_assert_held(&dcp_typec_fabric_lock);
-	if (!owner || dcp_typec_dual_stream())
+	if (!owner || dcp_typec_ordered_dual_stream())
 		return false;
 	port = owner->port;
 	if (port->owner != owner || !dcp_typec_port_follows(port))

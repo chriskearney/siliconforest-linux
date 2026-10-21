@@ -8,6 +8,7 @@
 typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
+#define READ_ONCE(x) (x)
 #define BIT(n) (1U << (n))
 #define lockdep_assert_held(x) ((void)0)
 #define list_for_each_entry(r, head, link) \
@@ -21,7 +22,7 @@ struct apple_crtc { struct { unsigned int index; } base; };
 struct apple_dcp {
     struct dcp_fabric_pipeline fabric;
     struct apple_crtc *crtc;
-    bool tb_retiring, external;
+    bool tb_retiring, external, clamshell, clamshell_free;
     void *fixed_phy, *active_typec_route;
 };
 struct apple_dcp_typec_route {
@@ -76,12 +77,12 @@ int main(void)
             assert(port.core.routes == &source0.core);
             assert(source0.core.next == &source2.core);
             assert(!source2.core.next);
-            assert(source0.core.tunnel_clock_blocked == (soc ? BIT(1) : 0));
-            assert(source2.core.tunnel_clock_blocked == (soc ? BIT(1) : 0));
+            assert(source0.core.tunnel_clock_blocked == 0);
+            assert(source2.core.tunnel_clock_blocked == 0);
             assert(dcp_typec_tunnel_ctl(&source0, 0) == &chip.mux[1]);
-            assert(dcp_typec_tunnel_ctl(&source0, 1) == (soc ? NULL : &chip.mux[2]));
+            assert(dcp_typec_tunnel_ctl(&source0, 1) == &chip.mux[2]);
             assert(dcp_typec_tunnel_ctl(&source2, 0) == &chip.mux[1]);
-            assert(dcp_typec_tunnel_ctl(&source2, 1) == (soc ? NULL : &chip.mux[2]));
+            assert(dcp_typec_tunnel_ctl(&source2, 1) == &chip.mux[2]);
             assert(!dcp_typec_tunnel_ctl(&source0, 2));
             /* Late migration checks the real route, even with a stale snapshot. */
             source2.core.tunnel_clock_blocked = 0;

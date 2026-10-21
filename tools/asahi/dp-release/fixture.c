@@ -187,6 +187,7 @@ static bool of_machine_is_compatible(const char *s){return m3_soc&&!strcmp(s,"ap
 static inline int apple_dp_tunnel_t6030_pclk(unsigned source,unsigned dpin);
 static int apple_atc_dp_tunnel_rate_source(void *p,unsigned source,unsigned dpin,unsigned rate){clock_source=source;return apple_atc_dp_tunnel_rate(p,dpin,rate);}
 static bool dcp_modes_end_typec(struct apple_dcp *d,struct apple_dcp_typec_route *r){deactivations++;return false;}
+static bool dcp_typec_ordered_dual_stream(void){return false;}
 static bool dcp_typec_dual_stream(void){return false;}
 static void apple_connector_set_pipeline(struct apple_connector *c,void *p){c->dcp=p;}
 static void schedule_work(int *w){}
@@ -360,7 +361,8 @@ int main(int argc,char **argv)
         route.tunnel=true;route.tunnel_generation=d.tb_generation=7;
         route.mux_index=strstr(name,"source0")?0:strstr(name,"source1")?1:2;
         route.active_xbar=&xbar;route.xbar_up=true;
-        if(strstr(name,"dpin1"))route.tunnel_dpin=1;
+        if(strstr(name,"dpin1")){route.tunnel_dpin=1;d.dptx_dfp_port=2;}
+        if(strstr(name,"bad-port"))d.dptx_dfp_port=1;
         if(strstr(name,"stale"))route.tunnel_generation=6;
         if(strstr(name,"clock-error"))clock_error=-EIO;
         if(strstr(name,"deactivate")){
@@ -369,8 +371,9 @@ int main(int argc,char **argv)
             return 0;
         }
         unsigned rate=strstr(name,"stop")?0:0x14;
-        int ret=dcp_tunnel_set_rate(&d,(struct phy *)&d,0,rate);
-        if(route.mux_index==1||route.tunnel_dpin)assert(ret==-EOPNOTSUPP&&!clock_calls);
+        unsigned unit=strstr(name,"bad-unit")?1:0;
+        int ret=dcp_tunnel_set_rate(&d,(struct phy *)&d,unit,rate);
+        if(route.mux_index==1||strstr(name,"bad-port")||unit)assert(ret==-EOPNOTSUPP&&!clock_calls);
         else if(route.tunnel_generation!=d.tb_generation)assert(ret==-ESTALE&&!clock_calls);
         else assert(ret==clock_error&&clock_calls==1&&clock_source==(int)route.mux_index&&clock_rate==rate&&d.tb_clock_ok==(!ret&&rate));
         return 0;

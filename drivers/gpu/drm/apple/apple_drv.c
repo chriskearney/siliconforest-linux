@@ -699,15 +699,13 @@ static int apple_probe_typec_ports(struct drm_device *drm,
 			 * lowest-indexed Type-C-only pipeline (dcpext1). Fix the
 			 * connector to it: compositors read possible_crtcs once
 			 * and would otherwise pair it with a pipeline the stream
-			 * can never be routed to.
+			 * can never be routed to. T6030 instead narrows both
+			 * connectors to the native processor holding their route.
 			 */
-			if (secondary) {
-				if (dcp_is_typec_only(dcp[i]) &&
-				    (!mask || crtc_mask[i] < mask))
-					mask = crtc_mask[i];
-				continue;
-			}
-			mask |= crtc_mask[i];
+			mask = dcp_fabric_port_crtc_mask(secondary,
+						       dcp_typec_ordered_dual_stream(),
+						       dcp_is_typec_only(dcp[i]),
+						       mask, crtc_mask[i]);
 		}
 
 		if (!mask) {
