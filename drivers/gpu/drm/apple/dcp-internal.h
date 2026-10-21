@@ -264,6 +264,12 @@ struct apple_dcp {
 	bool ext_failsafe;
 	bool ext_dead;
 	/*
+	 * T8140 dcpext refused at probe because it was not in its inherited idle
+	 * state. Its session stays pinned until reboot and it never starts:
+	 * every bind, unbind, shutdown and PM entry leaves it untouched.
+	 */
+	bool ext_refused;
+	/*
 	 * A T6030 external processor in the main DRM device: the kernel starts
 	 * its firmware on first use, its modes come from the attached display.
 	 * Clear for the manual diagnostic path (separate scanout, explicit start).

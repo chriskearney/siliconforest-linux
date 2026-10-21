@@ -856,10 +856,17 @@ static int apple_drm_init_dcp(struct device *dev)
 		          of_property_present(np, "phys");
 
 		/* component_bind_all() established the matched provider lifetime. */
-		if (of_device_is_compatible(np, "apple,t8140-dcpext") &&
-		    !dcp_h17p_external_ready(np)) {
-			of_node_put(np);
-			return -ENODEV;
+		if (of_device_is_compatible(np, "apple,t8140-dcpext")) {
+			ret = dcp_h17p_external_admission(np);
+			if (ret > 0) {
+				dev_warn(dev, "%pOF: external display processor refused at probe, skipped\n",
+					 np);
+				continue;
+			}
+			if (ret < 0) {
+				of_node_put(np);
+				return ret;
+			}
 		}
 
 		dcp[num_dcp] = of_find_device_by_node(np);

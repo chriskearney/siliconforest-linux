@@ -35,6 +35,8 @@
 #include <linux/usb/typec_mux.h>
 #include <linux/workqueue.h>
 
+#include <kunit/static_stub.h>
+
 #include <drm/drm_edid.h>
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_drv.h>
@@ -2985,6 +2987,9 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
 
+	/* A refused external processor never started: nothing to stop. */
+	if (dcp && READ_ONCE(dcp->ext_refused))
+		return;
 	if (dcp && dcp->fw_compat == DCP_FIRMWARE_H17P)
 		return dcp_comp_unbind_h17p(dev, main, data);
 	if (!dcp || READ_ONCE(dcp->ext_dead))
@@ -3853,6 +3858,7 @@ static int dcp_pin_live_session(struct apple_dcp *dcp)
 {
 	struct dcp_session_ref *session;
 
+	KUNIT_STATIC_STUB_REDIRECT(dcp_pin_live_session, dcp);
 	if ((!dcp->hw.adopt_live_session &&
 	     dcp->hw.iomfb_method_profile !=
 	     DCP_IOMFB_METHODS_H17P_EXTERNAL) ||
@@ -3922,27 +3928,57 @@ bool dcp_h17p_external_supported(struct device_node *np)
 						    compat, compat_cells);
 }
 
+/*
+ * Called after component binding. component_add() may synchronously bind the
+ * master before the platform probe itself returns, so the driver core's bound
+ * flag is not a readiness condition here. A refused processor is never ready.
+ */
+static bool dcp_h17p_external_ready_dcp(struct apple_dcp *dcp)
+{
+	return dcp && READ_ONCE(dcp->external_prepared) && !READ_ONCE(dcp->ext_refused) &&
+	       !READ_ONCE(dcp->quiescing) && !READ_ONCE(dcp->crashed);
+}
+
+/* 0: admit; 1: skip a processor refused at probe; -ENODEV: not ready. */
+static int dcp_h17p_external_admit_dcp(struct apple_dcp *dcp)
+{
+	if (dcp && READ_ONCE(dcp->ext_refused))
+		return 1;
+	return dcp_h17p_external_ready_dcp(dcp) ? 0 : -ENODEV;
+}
+
 bool dcp_h17p_external_ready(struct device_node *np)
 {
 	struct platform_device *pdev;
-	struct apple_dcp *dcp;
-	bool ready = false;
+	bool ready;
 
 	if (!dcp_h17p_external_supported(np))
 		return false;
 	pdev = of_find_device_by_node(np);
 	if (!pdev)
 		return false;
-	/*
-	 * Called after component binding. component_add() may synchronously
-	 * bind the master before the platform probe itself returns, so the
-	 * driver core's bound flag is not a readiness condition here.
-	 */
-	dcp = platform_get_drvdata(pdev);
-	ready = dcp && READ_ONCE(dcp->external_prepared) &&
-		!READ_ONCE(dcp->quiescing) && !READ_ONCE(dcp->crashed);
+	ready = dcp_h17p_external_ready_dcp(platform_get_drvdata(pdev));
 	put_device(&pdev->dev);
 	return ready;
+}
+
+/*
+ * Whether the DRM device takes this external processor: 0 to admit it, 1 to
+ * go on without one that was refused at probe, -ENODEV when it is not ready.
+ */
+int dcp_h17p_external_admission(struct device_node *np)
+{
+	struct platform_device *pdev;
+	int ret;
+
+	if (!dcp_h17p_external_supported(np))
+		return -ENODEV;
+	pdev = of_find_device_by_node(np);
+	if (!pdev)
+		return -ENODEV;
+	ret = dcp_h17p_external_admit_dcp(platform_get_drvdata(pdev));
+	put_device(&pdev->dev);
+	return ret;
 }
 
 static bool dcp_firmware_metadata_enabled(struct apple_dcp *dcp)
@@ -4622,6 +4658,7 @@ static int dcp_external_disconnect(struct apple_dcp *dcp, bool physical)
 {
 	int ret;
 
+	KUNIT_STATIC_STUB_REDIRECT(dcp_external_disconnect, dcp, physical);
 	cancel_delayed_work_sync(&dcp->typec_reconnect_wq);
 	cancel_delayed_work_sync(&dcp->placeholder_edid_wq);
 	guard(mutex)(&dcp->external_lock);
@@ -5313,6 +5350,8 @@ static int dcp_create_piodma_iommu_dev_h17p(struct apple_dcp *dcp)
 	int ret;
 	struct device_node *node __free(device_node) = of_get_child_by_name(dcp->dev->of_node, "piodma");
 
+	KUNIT_STATIC_STUB_REDIRECT(dcp_create_piodma_iommu_dev_h17p, dcp);
+
 	if (!node)
 		return dev_err_probe(dcp->dev, -ENODEV,
 				     "Failed to get piodma child DT node\n");
@@ -5356,6 +5395,8 @@ static int dcp_get_disp_regs_h17p(struct apple_dcp *dcp)
 	struct platform_device *pdev = to_platform_device(dcp->dev);
 	int count = 0;
 	int i, ret;
+
+	KUNIT_STATIC_STUB_REDIRECT(dcp_get_disp_regs_h17p, dcp);
 	char name[16];
 	const char *reg_name;
 	struct resource *res;
@@ -5447,6 +5488,7 @@ static int dcp_get_disp_regs_h17p(struct apple_dcp *dcp)
 
 static void dcp_disable_typec_work_h17p(struct apple_dcp *dcp, bool release_cable)
 {
+	KUNIT_STATIC_STUB_REDIRECT(dcp_disable_typec_work_h17p, dcp, release_cable);
 	scoped_guard(mutex, &dcp->hpd_mutex) {
 		if (release_cable)
 			WRITE_ONCE(dcp->typec_cable_connected, false);
@@ -5463,6 +5505,7 @@ static void dcp_disable_typec_work_h17p(struct apple_dcp *dcp, bool release_cabl
 
 static void dcp_enable_typec_work_h17p(struct apple_dcp *dcp)
 {
+	KUNIT_STATIC_STUB_REDIRECT(dcp_enable_typec_work_h17p, dcp);
 	enable_delayed_work(&dcp->typec_reconnect_wq);
 	enable_delayed_work(&dcp->placeholder_edid_wq);
 	/* A cable can be routed before the DRM component binds. */
@@ -5470,15 +5513,53 @@ static void dcp_enable_typec_work_h17p(struct apple_dcp *dcp)
 		mod_delayed_work(system_freezable_wq, &dcp->typec_reconnect_wq, 0);
 }
 
+/* The coprocessor registers; the KUnit lifecycle tests supply their values. */
+static void __iomem *dcp_coproc_map(struct device *dev)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_coproc_map, dev);
+	return devm_platform_ioremap_resource_byname(to_platform_device(dev), "coproc");
+}
+
+static u32 dcp_coproc_read(struct apple_dcp *dcp, u32 reg)
+{
+	KUNIT_STATIC_STUB_REDIRECT(dcp_coproc_read, dcp, reg);
+	return readl_relaxed(dcp->coproc_reg + reg);
+}
+
 static bool dcp_external_is_idle(struct apple_dcp *dcp)
 {
-	u32 control = readl_relaxed(dcp->coproc_reg + APPLE_DCP_COPROC_CPU_CONTROL);
-	u32 status = readl_relaxed(dcp->coproc_reg + APPLE_DCP_COPROC_CPU_STATUS);
+	u32 control = dcp_coproc_read(dcp, APPLE_DCP_COPROC_CPU_CONTROL);
+	u32 status = dcp_coproc_read(dcp, APPLE_DCP_COPROC_CPU_STATUS);
 
 	/* Same externally inherited idle state accepted by the public loader. */
 	return (control & APPLE_DCP_COPROC_CPU_CONTROL_RUN) &&
 	       (status & APPLE_DCP_COPROC_CPU_STATUS_STOPPED) &&
 	       (status & APPLE_DCP_COPROC_CPU_STATUS_IDLE);
+}
+
+/*
+ * A T8140 external display processor is adopted only in its inherited idle
+ * state. Otherwise it becomes a bound component that never starts. Its
+ * inherited session, DMA domain and context are pinned until reboot, so that
+ * neither devres nor a USB-C controller still holding its Type-C routes sees
+ * them released, and its routes are disabled. Nothing is written to the
+ * processor. If the session cannot be pinned, @err is returned as before.
+ */
+static int dcp_h17p_external_refuse(struct apple_dcp *dcp, int err, const char *when)
+{
+	int ret = dcp_pin_live_session(dcp);
+
+	if (ret || !READ_ONCE(dcp->retain_dma)) {
+		dev_err(dcp->dev, "external display processor not idle at %s and its session cannot be retained (%d)\n",
+			when, ret);
+		return err;
+	}
+	WRITE_ONCE(dcp->ext_refused, true);
+	WRITE_ONCE(dcp->ext_dead, true);
+	dcp_typec_routes_disable(dcp);
+	dev_err(dcp->dev, "external display processor not idle at %s; external display unavailable until reboot\n",
+		when);
+	return 0;
 }
 
 static int dcp_comp_bind_h17p(struct device *dev, struct device *main, void *data)
@@ -5487,6 +5568,12 @@ static int dcp_comp_bind_h17p(struct device *dev, struct device *main, void *dat
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
 	u32 cpu_ctrl;
 	int ret;
+
+	KUNIT_STATIC_STUB_REDIRECT(dcp_comp_bind_h17p, dev, main, data);
+
+	/* Refused at probe: a no-op component, ahead of the rebind refusal. */
+	if (READ_ONCE(dcp->ext_refused))
+		return 0;
 
 	if (READ_ONCE(dcp->quiescing))
 		return dev_err_probe(dev, -EBUSY,
@@ -5507,29 +5594,31 @@ static int dcp_comp_bind_h17p(struct device *dev, struct device *main, void *dat
 	if (ret)
 		return ret;
 
-	dcp->coproc_reg = devm_platform_ioremap_resource_byname(to_platform_device(dev), "coproc");
+	dcp->coproc_reg = dcp_coproc_map(dev);
 	if (IS_ERR(dcp->coproc_reg))
 		return PTR_ERR(dcp->coproc_reg);
 
 	/*
-	 * Display coprocessors running H17-generation firmware are left running
-	 * by the bootloader with their firmware mapped through a locked DART.
-	 * Linux attaches to that session with a standard RTKit INIT/HELLO
-	 * exchange and must not stop or restart the ASC.
+	 * The external processor is adopted only in its inherited idle state,
+	 * which includes RUN; any other state, a cleared RUN included, refuses
+	 * it before anything else is set up.
 	 */
-	if (dcp->hw.adopt_live_session) {
-		cpu_ctrl = readl_relaxed(dcp->coproc_reg +
-					 APPLE_DCP_COPROC_CPU_CONTROL);
+	if (dcp->hw.iomfb_method_profile ==
+	    DCP_IOMFB_METHODS_H17P_EXTERNAL) {
+		if (!dcp_external_is_idle(dcp))
+			return dcp_h17p_external_refuse(dcp, -EBUSY, "bind");
+	} else if (dcp->hw.adopt_live_session) {
+		/*
+		 * Display coprocessors running H17-generation firmware are left
+		 * running by the bootloader with their firmware mapped through a
+		 * locked DART. Linux attaches to that session with a standard
+		 * RTKit INIT/HELLO exchange and must not stop or restart the ASC.
+		 */
+		cpu_ctrl = dcp_coproc_read(dcp, APPLE_DCP_COPROC_CPU_CONTROL);
 		if (!(cpu_ctrl & APPLE_DCP_COPROC_CPU_CONTROL_RUN))
 			return dev_err_probe(dev, -EOPNOTSUPP,
 					     "DCP was not left running by the bootloader\n");
 	}
-
-	if (dcp->hw.iomfb_method_profile ==
-	    DCP_IOMFB_METHODS_H17P_EXTERNAL &&
-	    !dcp_external_is_idle(dcp))
-		return dev_err_probe(dev, -EBUSY,
-				     "External DCP is not in the inherited idle state\n");
 
 	if (dcp->index || dcp->dptx_phy || dcp->dptx_die)
 		dev_info(dev, "DCP index:%u dptx target phy: %u dptx die: %u\n",
@@ -5627,9 +5716,9 @@ static int dcp_comp_bind_h17p(struct device *dev, struct device *main, void *dat
 		if (ret)
 			goto err_piodma;
 		if (!dcp_external_is_idle(dcp)) {
-			ret = dev_err_probe(dev, -EBUSY,
-					    "External DCP changed state before startup\n");
-			goto err_piodma;
+			/* Pinned: PIODMA and its domain are retained, not released. */
+			dcp_release_piodma_iommu_dev(dcp);
+			return dcp_h17p_external_refuse(dcp, -EBUSY, "startup");
 		}
 	}
 
@@ -5689,7 +5778,7 @@ static void dcp_comp_unbind_h17p(struct device *dev, struct device *main, void *
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
 
-	if (!dcp)
+	if (!dcp || READ_ONCE(dcp->ext_refused))
 		return;
 
 	if (dcp->retain_dma) {
@@ -5781,6 +5870,34 @@ static void dcp_comp_unbind_h17p(struct device *dev, struct device *main, void *
 	dcp->clk = NULL;
 	/* optional and possibly NULL, released with the bind's devres group */
 	dcp->clk_194 = NULL;
+}
+
+/*
+ * The external processor starts before the DRM master can depend on it, then
+ * the component is added. A refused external is added as a component that
+ * never starts and is never prepared.
+ */
+static int dcp_h17p_probe_finish(struct platform_device *pdev, struct apple_dcp *dcp)
+{
+	int ret;
+
+	if (dcp->hw.iomfb_method_profile ==
+	    DCP_IOMFB_METHODS_H17P_EXTERNAL) {
+		/* Complete optional startup before the DRM master can depend on it. */
+		ret = dcp_comp_bind_h17p(&pdev->dev, NULL, NULL);
+		if (ret) {
+			dcp_disable_typec_work_h17p(dcp, true);
+			return ret;
+		}
+		if (!READ_ONCE(dcp->ext_refused))
+			WRITE_ONCE(dcp->external_prepared, true);
+	}
+
+	ret = component_add(&pdev->dev, &dcp_comp_ops);
+	if (ret && dcp->external_prepared) {
+		dcp_disable_typec_work_h17p(dcp, true);
+	}
+	return ret;
 }
 
 static int dcp_platform_probe_h17p(struct platform_device *pdev)
@@ -6020,28 +6137,16 @@ static int dcp_platform_probe_h17p(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	if (dcp->hw.iomfb_method_profile ==
-	    DCP_IOMFB_METHODS_H17P_EXTERNAL) {
-		/* Complete optional startup before the DRM master can depend on it. */
-		ret = dcp_comp_bind_h17p(dev, NULL, NULL);
-		if (ret) {
-			dcp_disable_typec_work_h17p(dcp, true);
-			return ret;
-		}
-		WRITE_ONCE(dcp->external_prepared, true);
-	}
-
-	ret = component_add(&pdev->dev, &dcp_comp_ops);
-	if (ret && dcp->external_prepared) {
-		dcp_disable_typec_work_h17p(dcp, true);
-	}
-	return ret;
+	return dcp_h17p_probe_finish(pdev, dcp);
 }
 
 static void dcp_platform_shutdown_h17p(struct platform_device *pdev)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
 
+	/* A refused external processor keeps its pinned session until reset. */
+	if (dcp && READ_ONCE(dcp->ext_refused))
+		return;
 	if (dcp && dcp->retain_dma && dcp->hw.iomfb_method_profile ==
 	    DCP_IOMFB_METHODS_H17P_EXTERNAL) {
 		dcp_comp_unbind_h17p(&pdev->dev, NULL, NULL);
@@ -6151,6 +6256,11 @@ static int dcp_platform_suspend_h17p(struct device *dev)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
 
+	/* A refused external processor stays powered and untouched. */
+	if (READ_ONCE(dcp->ext_refused)) {
+		device_set_wakeup_path(dev);
+		return 0;
+	}
 	if (dcp_is_external_h17p(dcp)) {
 		int ret;
 
@@ -6200,6 +6310,8 @@ static int dcp_platform_resume_h17p(struct device *dev)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
 
+	if (READ_ONCE(dcp->ext_refused))
+		return 0;
 	dcp_release_after_sleep(dcp);
 	dcp_enable_typec_work_h17p(dcp);
 	if (dcp->hdmi_hpd_irq)
