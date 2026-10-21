@@ -28,6 +28,7 @@ CASES += ['fail-start-' + str(i) for i in range(4)]
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--mutations', action='store_true')
     parser.add_argument('--callback-ref')
     parser.add_argument('--pclk-function', type=Path)
     args = parser.parse_args()
@@ -81,5 +82,44 @@ def main():
     print(json.dumps(results, indent=2))
     if any(row['exit'] for row in results):
         raise SystemExit(1)
+    if args.mutations:
+        mutations = {
+            'no-source-owner': (
+                'if ((atcphy->tunnel_users & BIT(dpin)) &&\n\t    atcphy->tunnel_source[dpin] != source)',
+                'if (false)'),
+            'duplicate-source': (
+                'if ((atcphy->tunnel_users & BIT(1 - dpin)) &&\n\t    atcphy->tunnel_source[1 - dpin] == source)',
+                'if (false)'),
+            'stop-shared-pll': ('if (!(atcphy->tunnel_users & ~BIT(dpin)))', 'if (true)'),
+            'lose-failed-start-owner': (
+                'if (!ret || (atcphy->tunnel_clock_on && !atcphy->tunnel_rate))', 'if (!ret)'),
+            'wrong-clock-selector': (
+                'u32 select = pclk ? DPTX_PCLK2_SELECT : DPTX_PCLK1_SELECT;',
+                'u32 select = DPTX_PCLK1_SELECT;'),
+            'drop-prerequisite': ('if (!pclk && (atcphy->tunnel_users & BIT(1)))', 'if (false)'),
+        }
+        evidence = []
+        for name, (before, after) in mutations.items():
+            if code.count(before) != 1:
+                raise ValueError('Mutation no longer matches exactly once: ' + name)
+            mutant = code.replace(before, after)
+            source = args.out / (name + '.c')
+            binary = args.out / name
+            source.write_text(mutant)
+            subprocess.run(['cc', '-std=gnu11', '-g', '-Wall', '-Wextra', '-Werror',
+                            '-Wno-unused-parameter', str(source), '-o', str(binary)], check=True)
+            failures = []
+            for case in CASES:
+                result = subprocess.run([str(binary), case], capture_output=True,
+                                        text=True, preexec_fn=no_core)
+                if result.returncode:
+                    failures.append({'case': case, 'exit': result.returncode,
+                                     'stderr': result.stderr})
+            if not failures:
+                raise AssertionError('Mutation escaped the tests: ' + name)
+            evidence.append({'mutant': name, 'detected_by': failures,
+                             'translation_sha256': hashlib.sha256(mutant.encode()).hexdigest()})
+        (args.out / 'mutations.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        print('Clock mutation controls: all ' + str(len(evidence)) + ' detected')
 if __name__ == '__main__':
     main()
