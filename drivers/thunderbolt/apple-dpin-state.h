@@ -23,6 +23,8 @@ struct apple_dpin_policy {
 	bool t602x_handshake;
 	bool defer_new_bringup;
 	unsigned long host_policy;
+	/* Yield the shared ordered queue while another adapter makes progress. */
+	bool queued_readiness;
 };
 
 extern const struct apple_dpin_policy apple_dpin_disabled;
@@ -104,6 +106,8 @@ unsigned int apple_dpin_step(struct apple_dpin_state *state,
 			     const struct apple_dpin_policy *policy,
 			     enum apple_dpin_event event, bool mapped, int result);
 bool apple_dpin_readiness_retry(bool active, int result, unsigned int tries);
+int apple_dpin_queued_readiness(const struct apple_dpin_policy *policy,
+			       int result, unsigned int *tries);
 enum apple_dpin_flow apple_dpin_hooks(const struct apple_dpin_policy *policy,
 				      bool queue_present, bool display_enabled);
 bool apple_dpin_admission_blocked(const struct apple_dpin_state *state,

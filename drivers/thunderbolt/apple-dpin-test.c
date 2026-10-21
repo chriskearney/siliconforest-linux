@@ -312,6 +312,69 @@ static void apple_dpin_terminal_ends_wait(struct kunit *test)
 	}
 }
 
+static void apple_dpin_queued_readiness_budgets(struct kunit *test)
+{
+	unsigned int tries, i;
+	int result;
+	const int errors[] = { -ENODEV, -EAGAIN };
+
+	KUNIT_EXPECT_TRUE(test, apple_dpin_m3.queued_readiness);
+	KUNIT_EXPECT_FALSE(test, apple_dpin_m1.queued_readiness);
+	KUNIT_EXPECT_FALSE(test, apple_dpin_m2.queued_readiness);
+	for (i = 0; i < ARRAY_SIZE(errors); i++) {
+		unsigned int limit = errors[i] == -ENODEV ? 60 : 240;
+
+		tries = 0;
+		for (unsigned int attempt = 1; attempt <= limit; attempt++) {
+			result = apple_dpin_queued_readiness(&apple_dpin_m3, errors[i], &tries);
+			KUNIT_EXPECT_EQ(test, tries, attempt);
+			KUNIT_EXPECT_EQ(test, result, attempt < limit ? -EAGAIN : -ETIMEDOUT);
+		}
+	}
+	tries = 240;
+	KUNIT_EXPECT_EQ(test, apple_dpin_queued_readiness(&apple_dpin_m3, -EAGAIN,
+						       &tries), -ETIMEDOUT);
+	KUNIT_EXPECT_EQ(test, tries, 240U);
+	KUNIT_EXPECT_EQ(test, apple_dpin_queued_readiness(&apple_dpin_m3, 0, &tries), 0);
+	KUNIT_EXPECT_EQ(test, tries, 0U);
+	tries = 10;
+	KUNIT_EXPECT_EQ(test, apple_dpin_queued_readiness(&apple_dpin_m1, -ENODEV,
+						       &tries), -ENODEV);
+	KUNIT_EXPECT_EQ(test, tries, 10U);
+}
+
+static void apple_dpin_queued_two_adapters(struct kunit *test)
+{
+	struct apple_dpin_state first = { .alive = true };
+	struct apple_dpin_state second = { .alive = true };
+	unsigned int first_tries = 0, second_tries = 0, actions;
+	const struct apple_dpin_policy *p = &apple_dpin_m3;
+
+	/* The first pipe is not ready; its delayed retry must still get a turn. */
+	actions = apple_dpin_step(&first, p, APPLE_DPIN_RESULT, true, -EBUSY);
+	KUNIT_ASSERT_TRUE(test, actions & APPLE_DPIN_ARM_RETRY);
+	/* The second pipe waits for first-pipe tile discovery, yielding the queue. */
+	actions = apple_dpin_step(&second, p, APPLE_DPIN_RESULT, true,
+		apple_dpin_queued_readiness(p, -ENODEV, &second_tries));
+	KUNIT_ASSERT_TRUE(test, actions & APPLE_DPIN_ARM_RETRY);
+	KUNIT_EXPECT_FALSE(test, second.handed);
+	/* The first retry can now attach, then the independent second stream. */
+	KUNIT_ASSERT_TRUE(test, apple_dpin_step(&first, p, APPLE_DPIN_RETRY, true, 0) &
+			 APPLE_DPIN_QUEUE);
+	KUNIT_ASSERT_EQ(test, apple_dpin_step(&first, p, APPLE_DPIN_WORK, true, 0),
+			APPLE_DPIN_ATTACH);
+	apple_dpin_step(&first, p, APPLE_DPIN_RESULT, true,
+		apple_dpin_queued_readiness(p, 0, &first_tries));
+	KUNIT_ASSERT_TRUE(test, first.handed);
+	apple_dpin_step(&second, p, APPLE_DPIN_RETRY, true, 0);
+	KUNIT_ASSERT_EQ(test, apple_dpin_step(&second, p, APPLE_DPIN_WORK, true, 0),
+			APPLE_DPIN_ATTACH);
+	apple_dpin_step(&second, p, APPLE_DPIN_RESULT, true,
+		apple_dpin_queued_readiness(p, 0, &second_tries));
+	KUNIT_EXPECT_TRUE(test, second.handed);
+	KUNIT_EXPECT_EQ(test, second_tries, 0U);
+}
+
 static void apple_dpin_readiness_budgets(struct kunit *test)
 {
 	const int results[] = { 0, -ENODEV, -EAGAIN, -EBUSY, -EADDRINUSE, -ESHUTDOWN };
@@ -384,12 +447,12 @@ static void apple_dpin_all_policy_fields(struct kunit *test)
 	};
 	const struct apple_dpin_policy expected[] = {
 		{},
-		{ APPLE_DPIN_CHANGED, true, true, false, true, TB_HOST_DP_NOTIFY },
+		{ APPLE_DPIN_CHANGED, true, true, false, true, TB_HOST_DP_NOTIFY, false },
 		{ APPLE_DPIN_PRE_POST, false, false, true, false,
 		  TB_HOST_DP_HPD_ON_ACTIVATE | TB_HOST_DP_ACTIVE_BEFORE_DPRX |
 		  TB_HOST_DP_KEEP_DPRX_TIMEOUT | TB_HOST_DP_ADAPTER_QUIRKS |
-		  TB_HOST_DP_INITIAL_BW_GRANT },
-		{ APPLE_DPIN_CHANGED, true, false, false, true, TB_HOST_DP_NOTIFY },
+		  TB_HOST_DP_INITIAL_BW_GRANT, false },
+		{ APPLE_DPIN_CHANGED, true, false, false, true, TB_HOST_DP_NOTIFY, true },
 	};
 	unsigned int i, queue, display;
 
@@ -401,6 +464,7 @@ static void apple_dpin_all_policy_fields(struct kunit *test)
 		KUNIT_EXPECT_EQ(test, actual[i]->t602x_handshake, expected[i].t602x_handshake);
 		KUNIT_EXPECT_EQ(test, actual[i]->host_policy, expected[i].host_policy);
 		KUNIT_EXPECT_EQ(test, actual[i]->defer_new_bringup, expected[i].defer_new_bringup);
+		KUNIT_EXPECT_EQ(test, actual[i]->queued_readiness, expected[i].queued_readiness);
 		for (queue = 0; queue < 2; queue++) {
 			for (display = 0; display < 2; display++) {
 				enum apple_dpin_flow old_hooks, new_hooks;
@@ -1157,6 +1221,8 @@ static void apple_dpin_m3_capacity_suspend(struct kunit *test)
 }
 
 static struct kunit_case apple_dpin_cases[] = {
+	KUNIT_CASE(apple_dpin_queued_readiness_budgets),
+	KUNIT_CASE(apple_dpin_queued_two_adapters),
 	KUNIT_CASE(apple_dpin_m3_capacity_suspend),
 	KUNIT_CASE(apple_dpin_provider_handed_lifetime),
 	KUNIT_CASE(apple_dpin_provider_failed_retry),

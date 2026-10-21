@@ -280,6 +280,8 @@ struct apple_cio {
 		struct apple_dpin_state state;
 		struct apple_dpin_tokens tokens;
 		struct apple_dpin_binding *binding; /* worker-owned, handed to DCP */
+		u64 readiness_generation; /* worker-owned retry budget */
+		unsigned int readiness_tries;
 	} dpin[2];
 };
 
@@ -561,6 +563,14 @@ static int apple_dpin_connect(struct apple_dpin_ctx *c,
 			scoped_guard(mutex, &c->lock)
 				apple_dpin_token_revoke(&c->tokens, binding->generation);
 		}
+		/*
+		 * Both adapters share this ordered queue. DP IN1 may need DP IN0
+		 * to attach first (tile discovery), so waiting here can prevent
+		 * the very retry that makes the provider ready. The worker keeps
+		 * the bounded retry budget and queues a fresh immutable binding.
+		 */
+		if (active && acio->dp->queued_readiness)
+			return ret;
 		/* ENODEV is driver probing; EAGAIN is a registered external
 		 * route whose firmware services have not been published yet.
 		 * Neither has handed a callback or changed the display route.
@@ -693,7 +703,7 @@ static void apple_dpin_work_fn(struct work_struct *work)
 	struct apple_dpin_ctx *c = container_of(work, struct apple_dpin_ctx, work);
 	struct apple_dpin_binding *binding;
 	enum apple_dpin_event event;
-	bool deferred, stale;
+	bool deferred, stale, readiness_retry;
 	unsigned int actions;
 	u64 generation;
 	int ret;
@@ -722,12 +732,22 @@ static void apple_dpin_work_fn(struct work_struct *work)
 
 		binding = kzalloc_obj(*binding);
 		deferred = false;
+		readiness_retry = false;
+		if (c->readiness_generation != generation) {
+			c->readiness_generation = generation;
+			c->readiness_tries = 0;
+		}
 		if (binding) {
 			binding->ctx = c;
 			binding->generation = generation;
 			ret = apple_dpin_up(c, binding, &deferred);
 		} else {
 			ret = -ENOMEM;
+		}
+		if (!deferred && c->acio->dp->queued_readiness) {
+			readiness_retry = ret == -ENODEV || ret == -EAGAIN;
+			ret = apple_dpin_queued_readiness(c->acio->dp, ret,
+							 &c->readiness_tries);
 		}
 		event = deferred ? APPLE_DPIN_DEFER_FIRST : APPLE_DPIN_RESULT;
 		scoped_guard(mutex, &c->lock) {
@@ -771,7 +791,8 @@ static void apple_dpin_work_fn(struct work_struct *work)
 				 c->idx);
 		if (actions & APPLE_DPIN_ARM_RETRY)
 			mod_delayed_work(c->acio->dp_wq, &c->retry,
-					 msecs_to_jiffies(APPLE_DPIN_RETRY_MS));
+					 msecs_to_jiffies(readiness_retry ?
+						APPLE_DP_CONNECT_WAIT_MS : APPLE_DPIN_RETRY_MS));
 		if (actions & APPLE_DPIN_WARN)
 			dev_warn(c->acio->dev, "dpin%u: DP tunnel setup failed: %d\n",
 				 c->idx, ret);

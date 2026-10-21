@@ -30,6 +30,7 @@ const struct apple_dpin_policy apple_dpin_m3 = {
 	.flow = APPLE_DPIN_CHANGED,
 	.capacity_retry = true,
 	.defer_new_bringup = true,
+	.queued_readiness = true,
 	.host_policy = TB_HOST_DP_NOTIFY,
 };
 
@@ -47,6 +48,22 @@ bool apple_dpin_readiness_retry(bool active, int result, unsigned int tries)
 		return false;
 	return tries < (result == -EAGAIN ? APPLE_DP_FIRMWARE_TRIES :
 					  APPLE_DP_CONNECT_TRIES);
+}
+
+/* A refused provider call owns no route or callback; retry from delayed work. */
+int apple_dpin_queued_readiness(const struct apple_dpin_policy *policy,
+			       int result, unsigned int *tries)
+{
+	if (!policy->queued_readiness)
+		return result;
+	if (result != -ENODEV && result != -EAGAIN) {
+		*tries = 0;
+		return result;
+	}
+	/* Saturate so an exhausted request can never wrap back into admission. */
+	if (*tries < APPLE_DP_FIRMWARE_TRIES)
+		++*tries;
+	return apple_dpin_readiness_retry(true, result, *tries) ? -EAGAIN : -ETIMEDOUT;
 }
 
 bool apple_dpin_token_request(struct apple_dpin_tokens *t, u64 generation, bool active)
