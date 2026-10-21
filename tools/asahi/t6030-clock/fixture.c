@@ -100,6 +100,42 @@ int main(int argc,char **argv) {
  struct apple_atcphy d={.hw=&hw,.regs.core=regs,.mode=APPLE_ATCPHY_MODE_USB4};
  running_phy=&d;
  struct phy phy={.ops=&apple_atc_dp_phy_ops,.data=&d};
+ if(!strcmp(name,"rate-matrix")) {
+  const u8 rates[]={0x06,0x0a,0x14,0x1e};
+  const unsigned selectors[]={4,3,1,0};
+  unsigned sequences=0;
+  for(unsigned swap=0;swap<2;swap++)
+   for(unsigned first=0;first<2;first++)
+    for(unsigned a=0;a<4;a++) for(unsigned b=0;b<4;b++)
+     for(unsigned stop=0;stop<2;stop++) {
+      memset(regs,0,sizeof(regs));
+      d=(struct apple_atcphy){.hw=&hw,.regs.core=regs,.mode=APPLE_ATCPHY_MODE_USB4};
+      polls=apb_requests=stop_requests=writes=0; faults=0;
+      unsigned source[2]={2*swap,2*(1-swap)};
+      u8 rate[2]={rates[a],rates[b]};
+      assert(!clock_call(&phy,source[first],first,rate[first]));
+      unsigned starts=apb_requests;
+      assert(!clock_call(&phy,source[1-first],1-first,rate[1-first]));
+      assert(apb_requests==starts && d.tunnel_users==3);
+      assert((tx()&DPTX_PCLK1_SELECT)==FIELD_PREP(DPTX_PCLK1_SELECT,selectors[a]));
+      assert((tx()&DPTX_PCLK2_SELECT)==FIELD_PREP(DPTX_PCLK2_SELECT,selectors[b]));
+      for(unsigned target=0;target<2;target++) {
+       unsigned other_mask=target ? DPTX_PCLK1_SELECT : DPTX_PCLK2_SELECT;
+       u32 other=tx()&other_mask;
+       for(unsigned r=0;r<4;r++) {
+        assert(!clock_call(&phy,source[target],target,rates[r]));
+        assert((tx()&other_mask)==other && apb_requests==starts);
+       }
+      }
+      assert(!clock_call(&phy,source[stop],stop,0));
+      assert(d.tunnel_users==BIT(1-stop) && !stop_requests && d.tunnel_clock_on);
+      assert(tx()&DPTX_PCLK1_ENABLE);
+      assert(!clock_call(&phy,source[1-stop],1-stop,0));
+      assert(!d.tunnel_users && !d.tunnel_clock_on && !(tx()&T8122_PCLK_ENABLES));
+      sequences++;
+     }
+  assert(sequences==128);printf("PASS %u lifecycle sequences, all rates, owners, orders and per-stream retunes\n",sequences);return 0;
+ }
  if(!strcmp(name,"wrong-generation")) {hw.gen=ATCPHY_GENERATION_T8103;assert(clock_call(&phy,0,0,0x14)==-EOPNOTSUPP&&!writes);return 0;}
  if(!strncmp(name,"fail-start-",11)) {
   unsigned n=strtoul(name+11,NULL,10);faults=UINT64_C(1)<<n;

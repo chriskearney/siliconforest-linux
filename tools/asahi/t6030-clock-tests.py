@@ -20,7 +20,7 @@ FUNCTIONS = {
     'drivers/gpu/drm/apple/dcp-fabric.c': [
         'dcp_route_clock_rate', 'dcp_tunnel_set_rate'],
 }
-CASES = ['dual-start', 'reverse-start', 'stop-second', 'same-rate',
+CASES = ['rate-matrix', 'dual-start', 'reverse-start', 'stop-second', 'same-rate',
          'stale-owner', 'same-source', 'retune-one', 'busy-mode', 'busy-pll',
          'invalid-source', 'invalid-rate', 'wrong-generation', 'failed-cleanup', 'failed-final-stop']
 CASES += ['fail-start-' + str(i) for i in range(4)]
