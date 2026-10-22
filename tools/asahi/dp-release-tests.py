@@ -41,7 +41,8 @@ FUNCTIONS = {
 }
 CASES = ['m3-source2-deactivate', 'm3-source2-rate', 'm3-source2-stop', 'm3-source2-clock-error',
          'm3-source0-rate', 'm3-source1-rate', 'm3-source2-dpin1',
-         'm3-source2-stale',
+         'm3-source2-stale', 'm3-source2-dpin1-bad-port', 'm3-source2-dpin1-bad-unit',
+         'm3-source2-dpin1-stale', 'm3-source2-dpin1-stop',
 'release-success', 'release-failure', 'hpd-failure',
          'release-repeat', 'invalid-cache-repeat', 'replug',
          'safe-release-failure', 'safe-release-success',

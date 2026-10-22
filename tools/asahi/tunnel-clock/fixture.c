@@ -25,7 +25,7 @@ struct resource {u64 start,size;};
 struct apple_atcphy {int lock,mode;void *dev,*np;
  struct {u8 *core;} regs;struct {struct resource *core;} res;
  bool tunnel_clock_on,tunnel_dual_stream,tunnel_routes_present;
- u8 tunnel_rate;unsigned tunnel_users,tunnel_source;int dp_link_rate;};
+ u8 tunnel_rate,tunnel_dpin_rate[2];unsigned tunnel_users,tunnel_source[2];int dp_link_rate;};
 struct phy {const void *ops;struct apple_atcphy *data;};
 static int apple_atc_dp_phy_ops;
 static const char *soc;
@@ -37,7 +37,7 @@ static bool apple_atc_tunnel_is_t6030(struct apple_atcphy *p){return of_machine_
 static bool apple_atc_t602x_core_valid(void *p,u64 base,u64 size){return true;}
 static void atcphy_restore_after_pd_off(struct apple_atcphy *p){}
 static int atc_t8122_tunnel_stop(struct apple_atcphy *p){other_calls++;return 0;}
-static int atc_t8122_tunnel_start(struct apple_atcphy *p,u8 rate){other_calls++;return 0;}
+static int atc_t8122_tunnel_start(struct apple_atcphy *p,unsigned pclk,u8 rate){other_calls++;return 0;}
 static void atc_tunnel_stop_t602x(struct apple_atcphy *p,unsigned dpin){other_calls++;}
 static int atc_tunnel_set_t602x(struct apple_atcphy *p,unsigned dpin,u8 rate){other_calls++;return 0;}
 static u32 readl(const void *p){u32 v;memcpy(&v,p,4);return v;}
@@ -86,7 +86,9 @@ int main(int argc,char **argv){
   assert(ret&& !d.tunnel_users&&!d.tunnel_clock_on&&!d.tunnel_rate);
   if(poll_fault==1||apb_fault>=0)assert(stop_count==1);
   else assert(!stop_count&&writes==before);
- }else if(!strcmp(name,"m2pro-sequence")||!strcmp(name,"m3pro-sequence")){
+ }else if(!strcmp(name,"m3pro-sequence")){
+  assert(!ret&&other_calls==1&&d.tunnel_users==1&&!writes);
+ }else if(!strcmp(name,"m2pro-sequence")){
   assert(!ret&&other_calls==1&&!d.tunnel_users&&!writes);
  }else{
   assert(!ret&&d.tunnel_clock_on&&d.tunnel_users==1&&d.tunnel_rate==0x14);

@@ -107,7 +107,7 @@ MODULE_PARM_DESC(bw_alloc_mode,
 static bool dp_video_counter;
 module_param(dp_video_counter, bool, 0444);
 MODULE_PARM_DESC(dp_video_counter,
-		 "diagnostic: count packets on the DP video path's DP IN hop and its downstream (hub-side) hop (Apple M2 Pro/Max laptop right ACIO route only; read via debugfs port counters); default: false");
+		 "diagnostic: count packets on the DP video path's DP IN hop and its downstream (hub-side) hop (Apple M2 Pro/Max laptop right ACIO route, or M3 Pro host DP IN adapters; read via debugfs port counters); default: false");
 
 static void tb_dp_dump_apple(struct tb_tunnel *tunnel);
 static int tb_apple_nhi_typec_index(struct tb_nhi *nhi);
@@ -1820,10 +1820,16 @@ static int tb_dp_init_video_credits(struct tb_path_hop *hop)
 
 static bool tb_dp_video_counter_wanted(const struct tb_path *path)
 {
+	const struct tb_port *in;
+
 	if (!dp_video_counter || !path->path_length)
 		return false;
 
-	return tb_dp_is_apple_t602x_right_dpin(path->hops[0].in_port);
+	in = path->hops[0].in_port;
+	return tb_dp_is_apple_t602x_right_dpin(in) ||
+	       (of_machine_is_compatible("apple,t6030") &&
+		tb_port_is_apple_host_dpin(in) &&
+		(in->port == 5 || in->port == 6));
 }
 
 static int tb_dp_init_video_path(struct tb_path *path, bool pm_support)
@@ -1839,10 +1845,14 @@ static int tb_dp_init_video_path(struct tb_path *path, bool pm_support)
 
 	if (tb_dp_video_counter_wanted(path)) {
 		struct tb_path_hop *last = &path->hops[path->path_length - 1];
+		/* Two streams share the downstream ingress port, not its counter. */
+		int counter = of_machine_is_compatible("apple,t6030") &&
+			      path->hops[0].in_port->port == 6 ? 1 : 0;
 
-		path->hops[0].in_counter_index = 0;
+		path->hops[0].in_counter_index = counter;
 		tb_port_dbg(path->hops[0].in_port,
-			   "dp_video_counter: enabling counter 0 on DP IN hop\n");
+			   "dp_video_counter: enabling counter %d on DP IN hop\n",
+			   counter);
 
 		/*
 		 * Second checkpoint: the downstream router's ingress side of
@@ -1852,9 +1862,10 @@ static int tb_dp_init_video_path(struct tb_path *path, bool pm_support)
 		 * leaves the host.
 		 */
 		if (last != &path->hops[0]) {
-			last->in_counter_index = 0;
+			last->in_counter_index = counter;
 			tb_port_dbg(last->in_port,
-				   "dp_video_counter: enabling counter 0 on downstream hop\n");
+				   "dp_video_counter: enabling counter %d on downstream hop\n",
+				   counter);
 		}
 	}
 

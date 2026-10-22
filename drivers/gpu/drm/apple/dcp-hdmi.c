@@ -29,6 +29,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/jiffies.h>
 #include <linux/ktime.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
@@ -53,6 +54,12 @@
 #define DPTX_CMD_SINK_IRQ		9
 #define DPTX_SINK_IRQ_PAD		16
 
+/* Attended diagnostic only: the dock converter path is not qualified yet. */
+static bool usb4_sink_service;
+module_param(usb4_sink_service, bool, 0600);
+MODULE_PARM_DESC(usb4_sink_service,
+		 "diagnostic: service the connected T6030 HDMI pipeline's borrowed USB4 sink (default: false)");
+
 struct dcp_hdmi {
 	struct apple_dcp *dcp;
 	struct delayed_work work;
@@ -72,8 +79,13 @@ struct dcp_hdmi {
 
 static bool dcp_hdmi_link_up(struct apple_dcp *dcp)
 {
-	/* A Type-C display that borrowed this pipeline has its own HPD. */
-	return !READ_ONCE(dcp->crashed) && !READ_ONCE(dcp->active_typec_route) &&
+	/* Direct Type-C has its own HPD. Test the missing tunneled service path
+	 * only when explicitly requested, on a pipeline already admitted by init.
+	 */
+	bool route_ok = !READ_ONCE(dcp->active_typec_route) ||
+		       (READ_ONCE(usb4_sink_service) && READ_ONCE(dcp->dptx_tunnel));
+
+	return !READ_ONCE(dcp->crashed) && route_ok &&
 	       READ_ONCE(dcp->dptxport[0].enabled) &&
 	       READ_ONCE(dcp->dptxport[0].connected);
 }

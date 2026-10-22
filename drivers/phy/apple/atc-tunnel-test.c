@@ -96,10 +96,13 @@ static void atc_tunnel_t6030_clock_sources(struct kunit *test)
 {
 	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(0, 0), 0);
 	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(2, 0), 0);
-	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(0, 1), -EOPNOTSUPP);
-	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(2, 1), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(0, 1), 1);
+	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(2, 1), 1);
 	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(1, 0), -EOPNOTSUPP);
 	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(4, 0), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(1, 1), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(0, 2), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, apple_dp_tunnel_t6030_pclk(2, ~0U), -EOPNOTSUPP);
 }
 
 static struct kunit_case atc_tunnel_cases[] = {

@@ -15,6 +15,12 @@ jobs:
       - run: python3 tools/testing/selftests/drivers/gpu/asahi-g15/run.py
         env:
           RUSTUP_TOOLCHAIN: 1.93.1
+      - name: T6030 dual-tunnel clocks and shared display wiring
+        run: |
+          python3 tools/asahi/t6030-clock-tests.py --mutations --out "$RUNNER_TEMP/t6030-clock"
+          python3 tools/asahi/t6030-wiring-tests.py --out "$RUNNER_TEMP/t6030-wiring"
+          python3 tools/asahi/tunnel-clock-tests.py --out "$RUNNER_TEMP/legacy-tunnel-clocks"
+          python3 tools/asahi/tunnel-route-tests.py --out "$RUNNER_TEMP/tunnel-routes"
       - name: USB3 handoff failure and retry controls
         run: python3 tools/asahi/atc-usb3-tests.py --mutations
       - name: UVC zero-length control and USB error-path controls
